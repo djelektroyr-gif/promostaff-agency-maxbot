@@ -42,4 +42,5 @@ async def post_answer(token: str, callback_id: str, payload: dict[str, Any]) -> 
                 return False
     except Exception:
         logger.exception("MAX post_answer error")
+        return False
     return True

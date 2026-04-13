@@ -14,6 +14,7 @@ uvicorn app:app --reload --host 0.0.0.0 --port 8000
 
 - `GET http://127.0.0.1:8000/health` — проверка живости  
 - `POST http://127.0.0.1:8000/webhook` — URL для подписки в кабинете MAX  
+- Визитка: `/start` или «меню» — главное меню с разделами; опционально `AGENCY_SITE_URL`, `AGENCY_EMAIL`, `AGENCY_PHONE`, `PRO_TELEGRAM_BOT_URL` (см. `.env.example`).  
 
 ## Timeweb App Platform
 

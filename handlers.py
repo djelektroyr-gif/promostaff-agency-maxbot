@@ -1,6 +1,5 @@
 """
-Обработка входящих апдейтов MAX. Здесь позже — сценарий визитки (меню, edit, кнопки).
-Сейчас: приветствие на /start и bot_started/user_added.
+Обработка входящих апдейтов MAX: визитка (меню, разделы, inline-кнопки).
 """
 from __future__ import annotations
 
@@ -10,6 +9,8 @@ from typing import Any
 
 from config import MAX_TOKEN
 from max_client import post_answer, post_message
+
+import visit_card
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +39,19 @@ def _max_uid_from_update(update_type: str, body: dict[str, Any]) -> int | None:
     return None
 
 
-async def _send_plain(max_uid: int, text: str, *, fmt: str | None = None) -> None:
-    body: dict = {"text": text}
-    if fmt:
-        body["format"] = fmt
+async def _send_message(max_uid: int, body: dict[str, Any]) -> None:
     await post_message(MAX_TOKEN, max_uid, body)
+
+
+async def _send_main_menu(max_uid: int) -> None:
+    await _send_message(
+        max_uid,
+        {
+            "text": visit_card.text_welcome(),
+            "format": "markdown",
+            "attachments": visit_card.attachments_main_menu(),
+        },
+    )
 
 
 async def process_update(body: dict[str, Any]) -> None:
@@ -51,12 +60,7 @@ async def process_update(body: dict[str, Any]) -> None:
     logger.info("MAX update: type=%r max_uid=%r", update_type, max_uid)
 
     if update_type in ("bot_started", "user_added") and max_uid is not None:
-        await _send_plain(
-            max_uid,
-            "👋 Добро пожаловать в PROMOSTAFF Agency.\n\n"
-            "Сценарий визитки подключим в следующих коммитах. "
-            "Отправьте /start для проверки.",
-        )
+        await _send_main_menu(max_uid)
         return
 
     if update_type == "message_created" and max_uid is not None:
@@ -64,17 +68,32 @@ async def process_update(body: dict[str, Any]) -> None:
         inner = msg.get("body") or {}
         text = (inner.get("text") or "").strip()
         if re.match(r"^/(start|старт)\b", text, re.I):
-            await _send_plain(
-                max_uid,
-                "🏢 *PROMOSTAFF Agency*\n\n"
-                "Визитка в MAX — в разработке. Здесь будут разделы и кнопки, как в Telegram-боте агентства.",
-                fmt="markdown",
-            )
+            await _send_main_menu(max_uid)
+            return
+        if re.match(r"^(меню|menu)\b", text, re.I):
+            await _send_main_menu(max_uid)
+            return
         return
 
     if update_type == "message_callback" and max_uid is not None:
         cb = body.get("callback") or {}
-        callback_id = cb.get("callback_id") or ""
-        if callback_id:
+        callback_id = (cb.get("callback_id") or "").strip()
+        payload = (cb.get("payload") or "").strip()
+        if not callback_id:
+            return
+        msg = visit_card.message_for_payload(payload)
+        if msg is not None:
+            ok = await post_answer(
+                MAX_TOKEN,
+                callback_id,
+                {
+                    "notification": " ",
+                    "message": msg,
+                },
+            )
+            if not ok:
+                logger.warning("post_answer failed for payload=%r, sending new message", payload)
+                await _send_message(max_uid, msg)
+        else:
             await post_answer(MAX_TOKEN, callback_id, {"notification": " "})
         return
