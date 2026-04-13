@@ -14,7 +14,7 @@ uvicorn app:app --reload --host 0.0.0.0 --port 8000
 
 - `GET http://127.0.0.1:8000/health` — проверка живости  
 - `POST http://127.0.0.1:8000/webhook` — URL для подписки в кабинете MAX  
-- Визитка: `/start` или «меню» — главное меню с разделами; опционально `AGENCY_SITE_URL`, `AGENCY_EMAIL`, `AGENCY_PHONE`, `PRO_TELEGRAM_BOT_URL` (см. `.env.example`).  
+- Визитка: сценарий перенесён с **PROMOSTAFF-AGENCY BOT** (`keyboards.py` + тексты/FSM из `handlers.py`): главное меню, разделы, расчёт (6 шагов), вопрос, анкета в команду (5 шагов + выбор должности). Контакты и ссылки — из `config` (см. `.env.example`, дефолты как на рабочем столе).  
 
 ## Timeweb App Platform
 
