@@ -25,6 +25,7 @@ uvicorn app:app --reload --host 0.0.0.0 --port 8000
    Не используйте в одной строке с uvicorn конструкцию `${PORT:-8000}` — без оболочки она не раскрывается.  
 3. Запасной вариант без скрипта: `uvicorn app:app --host 0.0.0.0 --port 8000` — только если в настройках сервиса явно указан внутренний порт **8000**.  
 4. Переменные окружения: **`MAX_TOKEN`** (токен бота визитки), при необходимости **`PORT`**.  
+   Для будущих уведомлений (расчёты, отклики): **`SMTP_*`**, **`NOTIFY_EMAIL_TO`**, **`SMTP_PASSWORD`**; в MAX — **`ADMIN_MAX_USER_IDS`** (числовые `user_id` через запятую). См. `.env.example`. В **`/health`** отображаются флаги `smtp_configured` и `admin_max_ids_count` (без секретов).  
 5. Подписка MAX: `POST …/subscriptions` с `url` = `https://<ваш-домен>/webhook` и `update_types`: `bot_started`, `user_added`, `message_created`, `message_callback`.
 
 Связанный план в монорепо PRO: репозиторий `promostaff-bot`, файл `docs/PLAN_AGENCY_MAX_VISIT_BOT.md`.

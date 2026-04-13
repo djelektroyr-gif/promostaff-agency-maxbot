@@ -8,7 +8,8 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from config import MAX_TOKEN
+from config import ADMIN_MAX_USER_IDS, MAX_TOKEN
+from notify import smtp_configured
 from handlers import process_update
 
 logging.basicConfig(level=logging.INFO)
@@ -20,7 +21,12 @@ app = FastAPI(title="PROMOSTAFF Agency MAX", version="0.1.0")
 @app.get("/health")
 async def health():
     ok = bool(MAX_TOKEN)
-    return {"ok": True, "max_token_configured": ok}
+    return {
+        "ok": True,
+        "max_token_configured": ok,
+        "smtp_configured": smtp_configured(),
+        "admin_max_ids_count": len(ADMIN_MAX_USER_IDS),
+    }
 
 
 @app.get("/")

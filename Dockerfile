@@ -9,7 +9,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-COPY app.py config.py handlers.py max_client.py max_attachments.py visit_card.py start.sh ./
+COPY app.py config.py handlers.py max_client.py max_attachments.py visit_card.py notify.py start.sh ./
 
 # Явный запуск без shell-подстановок в одной строке uvicorn (как в панели Timeweb).
 CMD ["sh", "start.sh"]
