@@ -7,14 +7,17 @@ from __future__ import annotations
 from typing import Any
 
 from config import (
+    APPLICANT_POSITIONS,
+    CLIENT_POSITIONS,
     COMPANY_NAME,
     CONTACT_EMAIL,
     CONTACT_PHONE,
     CONTACT_TELEGRAM,
+    EXPERIENCE_OPTIONS,
     PORTFOLIO_URL,
     WEBSITE_URL,
-    contact_phone_tel,
     contact_telegram_url,
+    contact_whatsapp_url,
 )
 from max_attachments import cb_btn, inline_keyboard, link_btn
 
@@ -22,7 +25,7 @@ from max_attachments import cb_btn, inline_keyboard, link_btn
 FLOW_PAYLOADS = frozenset(
     {
         "calculate",
-        "ask_question",
+        "ask_manager",
         "fill_anketa",
         "main_menu",
         "back_to_main",
@@ -30,20 +33,32 @@ FLOW_PAYLOADS = frozenset(
         "none",
     }
 )
-POS_PREFIX = "pos_"
+VAC_PREFIX = "vac_apply_"
+
+
+def is_visit_flow_payload(p: str) -> bool:
+    """Колбэки сценария (order/join), не статические экраны."""
+    if p in FLOW_PAYLOADS or p.startswith(VAC_PREFIX):
+        return True
+    if p.startswith(("o_", "jpos_", "exp_")):
+        return True
+    if p in ("staff_done", "sv_add", "sv_skip", "order_send", "order_edit", "submit_join"):
+        return True
+    return False
 
 
 def main_menu_keyboard() -> list[dict]:
+    # Тот же порядок и подписи, что в Telegram-визитке (без эмодзи в кнопках главного меню).
     rows: list[list[dict]] = [
-        [cb_btn("📋 О PROMOSTAFF AGENCY", "about")],
-        [cb_btn("⭐ Преимущества", "advantages")],
-        [cb_btn("🔄 Как мы работаем", "how_we_work")],
-        [link_btn("💬 Отзывы", PORTFOLIO_URL)],
-        [cb_btn("💰 Заказать расчёт", "calculate")],
-        [link_btn("🌐 Наш сайт", WEBSITE_URL)],
-        [cb_btn("❓ Задать вопрос", "ask_question")],
-        [cb_btn("👥 Хочу в команду", "join_team")],
-        [cb_btn("📞 Связаться с менеджером", "contact_manager")],
+        [cb_btn("Об агентстве", "about")],
+        [cb_btn("Преимущества", "advantages")],
+        [cb_btn("Как мы работаем", "how_we_work")],
+        [cb_btn("Заказать расчёт", "calculate")],
+        [cb_btn("Хочу в команду", "join_team")],
+        [link_btn("Наш сайт", WEBSITE_URL)],
+        [cb_btn("Отзывы", "reviews")],
+        [cb_btn("FAQ", "faq")],
+        [cb_btn("Связаться с менеджером", "contact_manager")],
     ]
     return inline_keyboard(rows)
 
@@ -61,7 +76,7 @@ def advantages_keyboard() -> list[dict]:
     return inline_keyboard(
         [
             [cb_btn("💰 Заказать расчёт", "calculate")],
-            [link_btn("💬 Отзывы клиентов", PORTFOLIO_URL)],
+            [cb_btn("💬 Отзывы", "reviews")],
             [cb_btn("⬅️ Назад", "back_to_main")],
             [cb_btn("🏠 В главное меню", "main_menu")],
         ]
@@ -73,7 +88,7 @@ def about_keyboard() -> list[dict]:
         [
             [cb_btn("⭐ Преимущества", "advantages")],
             [cb_btn("💰 Заказать расчёт", "calculate")],
-            [link_btn("💬 Отзывы", PORTFOLIO_URL)],
+            [cb_btn("💬 Отзывы", "reviews")],
             [cb_btn("⬅️ Назад", "back_to_main")],
             [cb_btn("🏠 В главное меню", "main_menu")],
         ]
@@ -91,11 +106,12 @@ def how_we_work_keyboard() -> list[dict]:
 
 
 def contact_keyboard() -> list[dict]:
-    tel = contact_phone_tel()
     rows: list[list[dict]] = [
-        [link_btn(f"📞 Позвонить: {CONTACT_PHONE}", f"tel:{tel}")],
-        [link_btn("💬 Написать в Telegram", contact_telegram_url())],
-        [link_btn(f"📧 {CONTACT_EMAIL}", f"mailto:{CONTACT_EMAIL}")],
+        [cb_btn(f"Телефон: {CONTACT_PHONE}", "contact_show_phone")],
+        [link_btn("WhatsApp", contact_whatsapp_url())],
+        [link_btn("Telegram", contact_telegram_url())],
+        [cb_btn(f"Email: {CONTACT_EMAIL}", "contact_show_email")],
+        [cb_btn("Написать менеджеру", "ask_manager")],
         [cb_btn("🏠 В главное меню", "main_menu")],
     ]
     return inline_keyboard(rows)
@@ -112,15 +128,64 @@ def join_team_keyboard() -> list[dict]:
     )
 
 
-def join_position_keyboard() -> list[dict]:
+def join_applicant_pick_keyboard() -> list[dict]:
+    rows: list[list[dict]] = []
+    row: list[dict] = []
+    for i, pos in enumerate(APPLICANT_POSITIONS[:12]):
+        row.append(cb_btn(pos if len(pos) <= 30 else pos[:27] + "…", f"jpos_{i}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([cb_btn("Другое (введу текстом)", "jpos_other")])
+    rows.append([cb_btn("🏠 В главное меню", "main_menu")])
+    return inline_keyboard(rows)
+
+
+def order_staff_keyboard(selected: dict[str, int] | None) -> list[dict]:
+    sel = selected or {}
+    rows: list[list[dict]] = []
+    for i, pos in enumerate(CLIENT_POSITIONS):
+        c = int(sel.get(pos, 0) or 0)
+        label = f"{pos} ({c})" if c else pos
+        rows.append([cb_btn(label, f"o_{i}")])
+    rows.append([cb_btn("Готово", "staff_done")])
+    rows.append([cb_btn("🏠 В главное меню", "main_menu")])
+    return inline_keyboard(rows)
+
+
+def supervisor_offer_keyboard() -> list[dict]:
     return inline_keyboard(
         [
-            [cb_btn("Хелпер", "pos_helper")],
-            [cb_btn("Гардеробщик", "pos_cloakroom")],
-            [cb_btn("Парковщик", "pos_parking")],
-            [cb_btn("Промоутер / Хостес", "pos_promo")],
-            [cb_btn("Супервайзер", "pos_supervisor")],
-            [cb_btn("Другое", "pos_other")],
+            [cb_btn("Добавить в расчёт", "sv_add")],
+            [cb_btn("Без супервайзера", "sv_skip")],
+            [cb_btn("🏠 В главное меню", "main_menu")],
+        ]
+    )
+
+
+def experience_keyboard() -> list[dict]:
+    rows = [[cb_btn(exp, f"exp_{i}")] for i, exp in enumerate(EXPERIENCE_OPTIONS)]
+    rows.append([cb_btn("🏠 В главное меню", "main_menu")])
+    return inline_keyboard(rows)
+
+
+def submit_join_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("Отправить анкету", "submit_join")],
+            [cb_btn("👥 К работе в команде", "join_team")],
+            [cb_btn("🏠 В главное меню", "main_menu")],
+        ]
+    )
+
+
+def order_confirm_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("Отправить заявку на расчёт", "order_send")],
+            [cb_btn("Изменить данные", "order_edit")],
             [cb_btn("🏠 В главное меню", "main_menu")],
         ]
     )
@@ -129,19 +194,25 @@ def join_position_keyboard() -> list[dict]:
 def vacancies_keyboard() -> list[dict]:
     return inline_keyboard(
         [
-            [cb_btn("📝 Хочу на эту вакансию", "fill_anketa")],
-            [cb_btn("⬅️ Назад", "join_team")],
-            [cb_btn("🏠 В главное меню", "main_menu")],
+            [cb_btn("Хочу: Хелпер", "vac_apply_helper")],
+            [cb_btn("Хочу: Грузчик", "vac_apply_loader")],
+            [cb_btn("Хочу: Промоутер", "vac_apply_promoter")],
+            [cb_btn("Хочу: Гардеробщик", "vac_apply_cloakroom")],
+            [cb_btn("Хочу: Парковщик", "vac_apply_parking")],
+            [cb_btn("Хочу: Хостес", "vac_apply_hostess")],
+            [cb_btn("Хочу: Супервайзер", "vac_apply_supervisor")],
+            [cb_btn("\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", "join_team")],
+            [cb_btn("\U0001f3e0 \u0412 \u0433\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e", "main_menu")],
         ]
     )
 
 
 def text_welcome() -> str:
     return (
-        f"🏢 *{COMPANY_NAME}*\n\n"
+        f"*{COMPANY_NAME}*\n\n"
         "Ваш надёжный партнёр в подборе временного персонала.\n"
         "Мы создаём идеальные команды для вашего бизнеса.\n\n"
-        "Выберите интересующий раздел:"
+        "Выберите раздел в меню ниже:"
     )
 
 
@@ -246,19 +317,41 @@ def text_requirements() -> str:
 
 def text_vacancies() -> str:
     return (
-        "📂 *Открытые вакансии и ставки*\n\n"
-        "🔹 *Хелпер* — от 6 000 ₽/смена\n"
-        "Навигация, логистика, поддержка\n\n"
-        "🔹 *Гардеробщик* — от 7 500 ₽/смена\n"
-        "Обслуживание гардероба, учёт вещей\n\n"
-        "🔹 *Парковщик* — от 7 500 ₽/смена\n"
-        "Организация парковки, управление потоками\n\n"
-        "🔹 *Промоутер* — от 7 500 ₽/смена\n"
-        "Презентация продуктов, раздача материалов\n\n"
-        "🔹 *Хостес* — от 8 000 ₽/смена\n"
-        "Работа с гостями, регистрация\n\n"
-        "🔹 *Супервайзер* — от 12 000 ₽/смена\n"
-        "Координация команды, контроль"
+        "📂 *Открытые вакансии*\n\n"
+        "🔹 *Хелпер* — навигация, поддержка гостей\n\n"
+        "🔹 *Грузчик* — погрузка, перенос\n\n"
+        "🔹 *Промоутер* — презентация\n\n"
+        "🔹 *Гардеробщик* — гардероб\n\n"
+        "🔹 *Парковщик* — парковка\n\n"
+        "🔹 *Хостес* — встреча гостей, регистрация\n\n"
+        "🔹 *Супервайзер* — координация на площадке"
+    )
+
+def text_faq() -> str:
+    return (
+        "*FAQ*\n\n"
+        "*Как быстро вы подбираете персонал?*\n"
+        "Обычно за 24–48 часов, в срочных случаях — быстрее по согласованию.\n\n"
+        "*Работаете ли вы по всей России?*\n"
+        "Да, организуем проекты в разных городах — уточните локацию при расчёте.\n\n"
+        "*Что входит в стоимость?*\n"
+        "Подбор, согласование состава, базовый инструктаж и координация на площадке; "
+        "детали фиксируем в коммерческом предложении.\n\n"
+        "*Можно ли заменить сотрудника?*\n"
+        "Да, при необходимости организуем замену, условия обсуждаются по договорённости.\n\n"
+        "*Как оставить заявку?*\n"
+        "«Заказать расчёт» в меню или «Связаться с менеджером»."
+    )
+
+
+def text_reviews() -> str:
+    return (
+        "*Отзывы о нас*\n\n"
+        "Мы много лет собираем команды для выставок, корпоративов, промо и крупных событий. "
+        "Клиенты отмечают пунктуальность персонала, аккуратность на площадке и понятную коммуникацию "
+        "с координаторами.\n\n"
+        "Нам доверяют повторные запуски: чёткий бриф, быстрый отклик и спокойствие в день мероприятия — "
+        "то, ради чего к нам приходят агентства и бренды."
     )
 
 
@@ -268,7 +361,7 @@ def message_main_menu() -> dict[str, Any]:
 
 def message_for_static_payload(payload: str) -> dict[str, Any] | None:
     p = (payload or "").strip()
-    if p in FLOW_PAYLOADS or p.startswith(POS_PREFIX):
+    if is_visit_flow_payload(p):
         return None
     if p == "about":
         return {"text": text_about(), "format": "markdown", "attachments": about_keyboard()}
@@ -284,4 +377,8 @@ def message_for_static_payload(payload: str) -> dict[str, Any] | None:
         return {"text": text_requirements(), "format": "markdown", "attachments": back_to_main_keyboard()}
     if p == "vacancies":
         return {"text": text_vacancies(), "format": "markdown", "attachments": vacancies_keyboard()}
+    if p == "faq":
+        return {"text": text_faq(), "format": "markdown", "attachments": back_to_main_keyboard()}
+    if p == "reviews":
+        return {"text": text_reviews(), "format": "markdown", "attachments": back_to_main_keyboard()}
     return None

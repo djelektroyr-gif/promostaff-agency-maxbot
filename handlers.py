@@ -99,7 +99,7 @@ async def process_update(body: dict[str, Any]) -> None:
             await _sync_funnel(max_uid)
             return
 
-        reply = await visit_flows.process_text(max_uid, text, sender)
+        reply = await visit_flows.process_text(max_uid, text, sender, inner)
         await _sync_funnel(max_uid)
         if reply is not None:
             await _send_message(max_uid, reply)
@@ -128,9 +128,29 @@ async def process_update(body: dict[str, Any]) -> None:
             await _sync_funnel(max_uid)
             return
 
-        if payload == "ask_question":
+        if payload == "ask_manager":
             msg = visit_flows.start_question(max_uid)
             await _answer_message(callback_id, max_uid, msg)
+            await _sync_funnel(max_uid)
+            return
+
+        if payload in ("contact_show_phone", "contact_show_email"):
+            from config import CONTACT_EMAIL, CONTACT_PHONE
+
+            note = CONTACT_PHONE if payload == "contact_show_phone" else CONTACT_EMAIL
+            await post_answer(
+                MAX_TOKEN,
+                callback_id,
+                {"notification": (note or "")[:200]},
+            )
+            return
+
+        if payload.startswith("vac_apply_"):
+            msg = visit_flows.join_from_vacancy(max_uid, payload)
+            if msg is not None:
+                await _answer_message(callback_id, max_uid, msg)
+            else:
+                await post_answer(MAX_TOKEN, callback_id, {"notification": " "})
             await _sync_funnel(max_uid)
             return
 
@@ -140,20 +160,21 @@ async def process_update(body: dict[str, Any]) -> None:
             await _sync_funnel(max_uid)
             return
 
-        if payload.startswith("pos_"):
-            msg = visit_flows.join_select_position(max_uid, payload)
-            if msg is not None:
-                await _answer_message(callback_id, max_uid, msg)
-            else:
-                await post_answer(MAX_TOKEN, callback_id, {"notification": " "})
+        sender_cb = cb.get("user") if isinstance(cb.get("user"), dict) else None
+        flow_reply = await visit_flows.process_callback(max_uid, payload, sender_cb)
+        if flow_reply is not None:
+            await _answer_message(callback_id, max_uid, flow_reply)
             await _sync_funnel(max_uid)
             return
 
-        visit_flows.clear_session(max_uid)
         static_msg = visit_card.message_for_static_payload(payload)
         if static_msg is not None:
+            visit_flows.clear_session(max_uid)
             await _answer_message(callback_id, max_uid, static_msg)
+        elif visit_card.is_visit_flow_payload(payload):
+            await post_answer(MAX_TOKEN, callback_id, {"notification": " "})
         else:
+            visit_flows.clear_session(max_uid)
             await post_answer(MAX_TOKEN, callback_id, {"notification": " "})
         await _sync_funnel(max_uid)
         return
