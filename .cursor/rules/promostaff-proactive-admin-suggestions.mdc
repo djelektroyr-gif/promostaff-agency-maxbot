@@ -1,0 +1,13 @@
+---
+description: Proactively suggest useful admin/productivity functionality
+alwaysApply: true
+---
+
+# Proactive functional suggestions
+
+- When user asks for admin, operations, or bot UX changes, always propose 2-4 adjacent useful features.
+- Prioritize suggestions that reduce manual work: metrics, audit log, safe delete, filters, bulk actions.
+- If a feature improves testability, explicitly suggest it (seed data, e2e checklist, debug command).
+- Keep suggestions short and practical, with clear "why it helps now".
+- Do not block implementation; implement requested change first, then suggest extras.
+
