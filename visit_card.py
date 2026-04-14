@@ -37,7 +37,6 @@ def main_menu_keyboard() -> list[dict]:
     rows: list[list[dict]] = [
         [cb_btn("📋 О PROMOSTAFF AGENCY", "about")],
         [cb_btn("⭐ Преимущества", "advantages")],
-        [cb_btn("💰 Цены", "prices")],
         [cb_btn("🔄 Как мы работаем", "how_we_work")],
         [link_btn("💬 Отзывы", PORTFOLIO_URL)],
         [cb_btn("💰 Заказать расчёт", "calculate")],
@@ -73,18 +72,8 @@ def about_keyboard() -> list[dict]:
     return inline_keyboard(
         [
             [cb_btn("⭐ Преимущества", "advantages")],
-            [cb_btn("💰 Цены", "prices")],
+            [cb_btn("💰 Заказать расчёт", "calculate")],
             [link_btn("💬 Отзывы", PORTFOLIO_URL)],
-            [cb_btn("⬅️ Назад", "back_to_main")],
-            [cb_btn("🏠 В главное меню", "main_menu")],
-        ]
-    )
-
-
-def prices_keyboard() -> list[dict]:
-    return inline_keyboard(
-        [
-            [cb_btn("💰 Заказать точный расчёт", "calculate")],
             [cb_btn("⬅️ Назад", "back_to_main")],
             [cb_btn("🏠 В главное меню", "main_menu")],
         ]
@@ -199,30 +188,6 @@ def text_advantages() -> str:
     )
 
 
-def text_prices() -> str:
-    return (
-        "💰 *Базовые тарифы (смена 8 часов)*\n\n"
-        "👥 *Хелперы* — 6 000–9 000 ₽\n"
-        "Навигация, логистика, поддержка организаторов\n\n"
-        "🧥 *Гардеробщики* — 7 500–9 500 ₽\n"
-        "Обслуживание гардеробной зоны, учёт вещей\n\n"
-        "🅿️ *Парковщики* — 7 500–10 000 ₽\n"
-        "Организация парковки, управление потоками\n\n"
-        "📢 *Промоутеры* — 7 500–11 000 ₽\n"
-        "Презентация продуктов, раздача материалов\n\n"
-        "👩‍💼 *Хостес* — 8 000–12 000 ₽\n"
-        "Униформа, работа с VIP‑гостями, регистрация\n\n"
-        "👤 *Супервайзеры* — 12 000–18 000 ₽\n"
-        "Координация команды, контроль качества\n\n"
-        "📌 *Дополнительно:*\n"
-        "• Минимальная смена — 4 часа\n"
-        "• Ночные/выходные — +20–30%\n"
-        "• Срочная подача (<24ч) — +15%\n"
-        "• Скидка от 20 чел — 5%\n\n"
-        "📍 *География:* вся Россия"
-    )
-
-
 def text_how_we_work() -> str:
     return (
         "🔄 *Как мы работаем*\n\n"
@@ -309,8 +274,6 @@ def message_for_static_payload(payload: str) -> dict[str, Any] | None:
         return {"text": text_about(), "format": "markdown", "attachments": about_keyboard()}
     if p == "advantages":
         return {"text": text_advantages(), "format": "markdown", "attachments": advantages_keyboard()}
-    if p == "prices":
-        return {"text": text_prices(), "format": "markdown", "attachments": prices_keyboard()}
     if p == "how_we_work":
         return {"text": text_how_we_work(), "format": "markdown", "attachments": how_we_work_keyboard()}
     if p == "contact_manager":
