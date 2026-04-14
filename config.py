@@ -44,6 +44,11 @@ def _env_int_list(name: str) -> list[int]:
 
 MAX_TOKEN = _env("MAX_TOKEN")
 
+# Опционально: Postgres для воронки и напоминаний (как funnel_* в PRO).
+DATABASE_URL = _env("DATABASE_URL")
+FUNNEL_REMINDERS_ENABLED = _env_bool("FUNNEL_REMINDERS_ENABLED", False)
+FUNNEL_REMINDERS_INTERVAL_SEC = _env_int("FUNNEL_REMINDERS_INTERVAL_SEC", 600)
+
 # Как в Desktop PROMOSTAFF-AGENCY BOT/config.py (можно переопределить в Timeweb).
 COMPANY_NAME = _env("COMPANY_NAME") or "PROMOSTAFF AGENCY"
 WEBSITE_URL = _env("WEBSITE_URL") or "https://promostaff-agency.ru"

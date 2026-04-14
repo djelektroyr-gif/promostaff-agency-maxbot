@@ -12,6 +12,7 @@ from typing import Any
 from config import COMPANY_NAME, WEBSITE_URL
 
 import visit_card
+from funnel_store import funnel_touch_complete
 from notify import notify_agency_admins
 
 logger = logging.getLogger(__name__)
@@ -227,6 +228,7 @@ async def process_text(max_uid: int, text: str, sender: dict[str, Any] | None) -
             oid = _new_id()
             plain = _format_order_plain(data, oid, who)
             await _notify_plain(f"Новая заявка на расчёт #{oid}", plain)
+            funnel_touch_complete(max_uid)
             clear_session(max_uid)
             return {
                 "text": (
@@ -269,6 +271,7 @@ async def process_text(max_uid: int, text: str, sender: dict[str, Any] | None) -
             rid = _new_id()
             plain = _format_join_plain(data, rid, who)
             await _notify_plain(f"Новая заявка в команду #{rid}", plain)
+            funnel_touch_complete(max_uid)
             clear_session(max_uid)
             return {
                 "text": (
