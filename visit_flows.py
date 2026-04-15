@@ -768,7 +768,7 @@ async def process_callback(
             "notification": "✅ Анкета у команды. Ответим после рассмотрения.",
             "text": (
                 f"*Заявка #{rid} принята.*\n\n"
-                "Спасибо за интерес к PROMOSTAFF AGENCY!"
+                f"Спасибо за интерес к {COMPANY_NAME}!"
             ),
             "format": "markdown",
             "attachments": visit_card.main_menu_keyboard(),

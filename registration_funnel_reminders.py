@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import psycopg2
 
-from config import DATABASE_URL, MAX_TOKEN
+from config import COMPANY_NAME, DATABASE_URL, MAX_TOKEN
 from max_client import post_message
 
 logger = logging.getLogger(__name__)
@@ -22,12 +22,12 @@ def _utc_naive() -> datetime:
 
 
 MSG_24H = (
-    "Вы начали оформление заявки в боте PROMOSTAFF AGENCY, но не завершили его.\n\n"
+    f"Вы начали оформление заявки в боте {COMPANY_NAME}, но не завершили его.\n\n"
     "Продолжите в любое время: откройте этот чат с ботом — мы подхватим с того же шага."
 )
 
 MSG_72H_WARM = (
-    "Напоминаем: заявка в PROMOSTAFF AGENCY всё ещё не отправлена.\n\n"
+    f"Напоминаем: заявка в {COMPANY_NAME} всё ещё не отправлена.\n\n"
     "Напишите боту «меню» или нажмите /start и продолжите с нужного раздела."
 )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 
 
 def _env(name: str) -> str:
@@ -50,8 +51,11 @@ FUNNEL_REMINDERS_ENABLED = _env_bool("FUNNEL_REMINDERS_ENABLED", False)
 FUNNEL_REMINDERS_INTERVAL_SEC = _env_int("FUNNEL_REMINDERS_INTERVAL_SEC", 600)
 
 # Как в Desktop PROMOSTAFF-AGENCY BOT/config.py (можно переопределить в Timeweb).
-COMPANY_NAME = _env("COMPANY_NAME") or "PROMOSTAFF AGENCY"
+COMPANY_NAME = _env("COMPANY_NAME") or "PROMOSTAFF-AGENCY"
 WEBSITE_URL = _env("WEBSITE_URL") or "https://promostaff-agency.ru"
+_BASE_DIR = Path(__file__).resolve().parent
+LOGO_PNG_PATH = _BASE_DIR / "assets" / "logo.png"
+# Публичный HTTPS URL логотипа (для MAX и опционально в тексте). Файл в репо: assets/logo.png — см. assets/README.txt
 BRAND_LOGO_URL = _env("BRAND_LOGO_URL")
 # Политика ПДн — та же страница, что на promostaff.pro (лендинг PRO).
 PRIVACY_POLICY_URL = _env("PRIVACY_POLICY_URL") or "https://promostaff.pro/privacy"
