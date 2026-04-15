@@ -1,5 +1,6 @@
 """
-Обработка MAX: клон сценария PROMOSTAFF-AGENCY BOT (меню, колбэки, FSM в visit_flows).
+Обработка MAX: визитка как в Telegram, плюс нативные возможности MAX
+(в т.ч. короткий текст в `notification` при ответе на callback — «всплывашка» у кнопки).
 """
 from __future__ import annotations
 
@@ -57,14 +58,21 @@ def _sender_from_message(body: dict[str, Any]) -> dict[str, Any] | None:
 
 
 async def _send_message(max_uid: int, body: dict[str, Any]) -> None:
+    body = dict(body)
+    body.pop("notification", None)
     await post_message(MAX_TOKEN, max_uid, body)
 
 
 async def _answer_message(callback_id: str, max_uid: int, msg: dict[str, Any]) -> None:
+    msg = dict(msg)
+    raw = msg.pop("notification", None)
+    notif = (raw if isinstance(raw, str) else None) or " "
+    notif = notif.strip() or " "
+    api_msg = {k: v for k, v in msg.items()}
     ok = await post_answer(
         MAX_TOKEN,
         callback_id,
-        {"notification": " ", "message": msg},
+        {"notification": notif[:200], "message": api_msg},
     )
     if not ok:
         logger.warning("post_answer failed, sending new message")

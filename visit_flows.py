@@ -1,6 +1,9 @@
 """
 Сценарии FSM: заказ расчёта (как Telegram-визитка), вопрос менеджеру, анкета в команду.
 Состояние в памяти. Уведомления — notify.notify_agency_admins.
+
+Визитка: где уместно — явные офферы (супервайзер при 2+ в смене, менеджер для сметы/периода)
+и короткий `notification` в ответах на callback — нативная обратная связь MAX.
 """
 from __future__ import annotations
 
@@ -38,6 +41,8 @@ SHIFT_STEP_TEXT = (
     "Если в смене есть хотя бы один ночной час — минимум *8* оплачиваемых часов на человека; "
     "если смена только дневная — минимум *6* часов.\n\n"
     "Дату или период вы уже указали выше — здесь только время смены.\n\n"
+    "💡 *Несколько дней подряд?* Оценка в боте — за *один* типичный день с этим графиком; "
+    "сводку по периоду и КП — с менеджером.\n\n"
     "_Образец:_ `10:00-22:00`"
 )
 
@@ -350,7 +355,9 @@ async def process_callback(
         pos = CLIENT_POSITIONS[idx]
         temp = s.setdefault("temp_staff", {})
         temp[pos] = int(temp.get(pos, 0)) + 1
+        n = temp[pos]
         return {
+            "notification": f"+1 {pos} → всего {n} чел.",
             "text": (
                 "Выберите категории персонала и количество (нажимайте для увеличения).\n\n"
                 "_После выбора нажмите «Готово»._"
@@ -363,6 +370,7 @@ async def process_callback(
         temp = s.get("temp_staff") or {}
         if not any(int(v) > 0 for v in temp.values()):
             return {
+                "notification": "Сначала добавьте позиции кнопками.",
                 "text": "Выберите хотя бы одну позицию кнопками выше, затем «Готово».",
                 "format": "markdown",
                 "attachments": visit_card.order_staff_keyboard(temp),
@@ -374,6 +382,7 @@ async def process_callback(
         if total < 2:
             s["step"] = "contact_phone"
             return {
+                "notification": "Дальше — телефон для связи.",
                 "text": (
                     "Укажите контактный телефон.\n\n"
                     "_Образец:_ `+79001234567`"
@@ -385,6 +394,7 @@ async def process_callback(
         data["supervisor_recommend"] = rec
         s["step"] = "supervisor_offer"
         return {
+            "notification": "👔 Рекомендуем супервайзера — см. сообщение.",
             "text": _supervisor_offer_text(total, rec),
             "format": "markdown",
             "attachments": visit_card.supervisor_offer_keyboard(),
@@ -398,6 +408,7 @@ async def process_callback(
         sv_word = "супервайдер" if rec == 1 else "супервайзеров"
         s["step"] = "contact_phone"
         return {
+            "notification": "✅ Супервайзер в оценке. Дальше — телефон.",
             "text": f"В предварительный расчёт добавлено: *{rec}* {sv_word}.\n\nУкажите телефон.\n\n_Образец:_ `+79001234567`",
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
@@ -407,6 +418,7 @@ async def process_callback(
         data["supervisor_count"] = 0
         s["step"] = "contact_phone"
         return {
+            "notification": "Ок, без супервайзера в черновике. Дальше — телефон.",
             "text": (
                 "Супервайзер в расчёт не включён — при необходимости менеджер предложит варианты.\n\n"
                 "Укажите контактный телефон.\n\n"
@@ -434,6 +446,7 @@ async def process_callback(
         funnel_touch_complete(max_uid)
         clear_session(max_uid)
         return {
+            "notification": "✅ Заявка у команды. Менеджер свяжется.",
             "text": (
                 f"*Заявка #{oid} принята.*\n\n"
                 "Спасибо! Менеджер свяжется с вами в ближайшее время."
@@ -444,7 +457,9 @@ async def process_callback(
 
     if flow == "order" and step == "confirm" and payload == "order_edit":
         clear_session(max_uid)
-        return start_order(max_uid)
+        msg = start_order(max_uid)
+        msg["notification"] = "Заполняем заявку заново…"
+        return msg
 
     if flow == "join" and step == "experience_years" and payload.startswith("exp_"):
         try:
@@ -455,7 +470,9 @@ async def process_callback(
             return None
         data["experience_years"] = EXPERIENCE_OPTIONS[ei]
         s["step"] = "experience_desc"
+        exp_label = EXPERIENCE_OPTIONS[ei]
         return {
+            "notification": f"Стаж: {exp_label}",
             "text": (
                 "Кратко опишите опыт: где работали, какие задачи.\n\n"
                 "_Образец:_ `Промо в торговых центрах 2 года, выкладка, коммуникация с гостями`"
@@ -471,6 +488,7 @@ async def process_callback(
         funnel_touch_complete(max_uid)
         clear_session(max_uid)
         return {
+            "notification": "✅ Анкета у команды. Ответим после рассмотрения.",
             "text": (
                 f"*Заявка #{rid} принята.*\n\n"
                 "Спасибо за интерес к PROMOSTAFF AGENCY!"
@@ -483,6 +501,7 @@ async def process_callback(
         if payload == "jpos_other":
             s["step"] = "position_text"
             return {
+                "notification": "Введите должность текстом.",
                 "text": "Введите желаемую должность одной строкой:",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
@@ -497,6 +516,7 @@ async def process_callback(
             data["position"] = APPLICANT_POSITIONS[idx]
             s["step"] = "full_name"
             return {
+                "notification": f"Должность: {APPLICANT_POSITIONS[idx]}",
                 "text": (
                     "Укажите ваше полное ФИО.\n\n"
                     "_Образец:_ `Иванов Иван Иванович`"

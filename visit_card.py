@@ -48,17 +48,17 @@ def is_visit_flow_payload(p: str) -> bool:
 
 
 def main_menu_keyboard() -> list[dict]:
-    # Тот же порядок и подписи, что в Telegram-визитке (без эмодзи в кнопках главного меню).
+    # Главное меню: тот же порядок, что в Telegram; эмодзи — нативное «богатство» интерфейса MAX.
     rows: list[list[dict]] = [
-        [cb_btn("Об агентстве", "about")],
-        [cb_btn("Преимущества", "advantages")],
-        [cb_btn("Как мы работаем", "how_we_work")],
-        [cb_btn("Заказать расчёт", "calculate")],
-        [cb_btn("Хочу в команду", "join_team")],
-        [link_btn("Наш сайт", WEBSITE_URL)],
-        [cb_btn("Отзывы", "reviews")],
-        [cb_btn("FAQ", "faq")],
-        [cb_btn("Связаться с менеджером", "contact_manager")],
+        [cb_btn("📋 Об агентстве", "about")],
+        [cb_btn("⭐ Преимущества", "advantages")],
+        [cb_btn("🔄 Как мы работаем", "how_we_work")],
+        [cb_btn("💰 Заказать расчёт", "calculate")],
+        [cb_btn("👥 Хочу в команду", "join_team")],
+        [link_btn("🌐 Наш сайт", WEBSITE_URL)],
+        [cb_btn("💬 Отзывы", "reviews")],
+        [cb_btn("❓ FAQ", "faq")],
+        [cb_btn("📞 Связаться с менеджером", "contact_manager")],
     ]
     return inline_keyboard(rows)
 
@@ -209,7 +209,7 @@ def vacancies_keyboard() -> list[dict]:
 
 def text_welcome() -> str:
     return (
-        f"*{COMPANY_NAME}*\n\n"
+        f"🏢 *{COMPANY_NAME}*\n\n"
         "Ваш надёжный партнёр в подборе временного персонала.\n"
         "Мы создаём идеальные команды для вашего бизнеса.\n\n"
         "Выберите раздел в меню ниже:"
