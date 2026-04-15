@@ -155,3 +155,58 @@ def get_visitcard_stats() -> dict[str, int]:
             cur.execute("SELECT COUNT(*) FROM agency_visit_questions")
             questions = int((cur.fetchone() or [0])[0] or 0)
     return {"orders": orders, "join": join, "questions": questions}
+
+
+def list_visit_rows(kind: str, limit: int = 100, date_from: str = "", date_to: str = "") -> list[dict]:
+    if not DATABASE_URL:
+        return []
+    table_map = {
+        "orders": "agency_visit_orders",
+        "join": "agency_visit_join_requests",
+        "questions": "agency_visit_questions",
+    }
+    table = table_map.get(kind)
+    if not table:
+        return []
+    where = []
+    params: list = []
+    if date_from:
+        where.append("date(created_at) >= date(%s)")
+        params.append(date_from)
+    if date_to:
+        where.append("date(created_at) <= date(%s)")
+        params.append(date_to)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    with connection() as conn:
+        with conn.cursor() as cur:
+            if kind == "questions":
+                cur.execute(
+                    f"""
+                    SELECT id, created_at, user_id, username, question
+                    FROM {table}
+                    {where_sql}
+                    ORDER BY id DESC
+                    LIMIT %s
+                    """,
+                    (*params, int(limit)),
+                )
+                rows = cur.fetchall() or []
+                return [
+                    {"id": int(r[0]), "created_at": str(r[1] or ""), "user_id": int(r[2] or 0), "username": str(r[3] or ""), "question": str(r[4] or "")}
+                    for r in rows
+                ]
+            cur.execute(
+                f"""
+                SELECT id, created_at, user_id, username, payload::text
+                FROM {table}
+                {where_sql}
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (*params, int(limit)),
+            )
+            rows = cur.fetchall() or []
+            return [
+                {"id": int(r[0]), "created_at": str(r[1] or ""), "user_id": int(r[2] or 0), "username": str(r[3] or ""), "payload": str(r[4] or "{}")}
+                for r in rows
+            ]

@@ -4,11 +4,14 @@ PROMOSTAFF Agency — MAX webhook (Timeweb / локально).
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
+import json
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from config import (
     ADMIN_MAX_USER_IDS,
@@ -248,7 +251,13 @@ async def admin():
 
 
 @app.get("/admin/ui", response_class=HTMLResponse)
-async def admin_ui(run: str | None = Query(default=None), confirm: int = Query(default=0)):
+async def admin_ui(
+    run: str | None = Query(default=None),
+    confirm: int = Query(default=0),
+    visit_kind: str = Query(default="orders"),
+    date_from: str = Query(default=""),
+    date_to: str = Query(default=""),
+):
     action_note = ""
     action_error = ""
     if run == "funnel_scan":
@@ -268,6 +277,13 @@ async def admin_ui(run: str | None = Query(default=None), confirm: int = Query(d
                 action_error = f"Ошибка ручного скана: {e}"
     funnel = _funnel_metrics()
     visit = _visitcard_metrics()
+    visit_rows = []
+    try:
+        from funnel_db import list_visit_rows
+
+        visit_rows = list_visit_rows(visit_kind, 20, date_from=date_from, date_to=date_to)
+    except Exception:
+        logger.exception("list_visit_rows")
     cards = [
         ("DB", "OK" if DATABASE_URL else "OFF"),
         ("MAX token", "OK" if MAX_TOKEN else "OFF"),
@@ -345,6 +361,30 @@ async def admin_ui(run: str | None = Query(default=None), confirm: int = Query(d
         </div>
 
         <div class="box">
+          <h3>Visitcard leads</h3>
+          <p class="muted">Фильтр лидов по типу и дате.</p>
+          <form method="get" action="/admin/ui">
+            <label>Тип:
+              <select name="visit_kind">
+                <option value="orders" {"selected" if visit_kind == "orders" else ""}>orders</option>
+                <option value="join" {"selected" if visit_kind == "join" else ""}>join</option>
+                <option value="questions" {"selected" if visit_kind == "questions" else ""}>questions</option>
+              </select>
+            </label>
+            <label> c: <input name="date_from" value="{date_from}" placeholder="YYYY-MM-DD"/></label>
+            <label> по: <input name="date_to" value="{date_to}" placeholder="YYYY-MM-DD"/></label>
+            <button type="submit">Применить</button>
+          </form>
+          <p class="muted"><a href="/admin/export?kind={visit_kind}&date_from={date_from}&date_to={date_to}">Скачать CSV по фильтру</a></p>
+          <table>
+            <thead><tr><th>ID</th><th>Дата</th><th>User</th><th>Preview</th></tr></thead>
+            <tbody>
+              {"".join([f"<tr><td>{r.get('id')}</td><td>{r.get('created_at')}</td><td>{r.get('username') or r.get('user_id')}</td><td>{((r.get('question') or r.get('payload') or '')[:120]).replace('<','&lt;')}</td></tr>" for r in visit_rows]) or "<tr><td colspan='4'>Нет данных</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="box">
           <h3>Funnel breakdown</h3>
           <p class="muted">Незавершённые сценарии по последнему шагу.</p>
           <table>
@@ -365,6 +405,52 @@ async def admin_ui(run: str | None = Query(default=None), confirm: int = Query(d
       </body>
     </html>
     """
+
+
+@app.get("/admin/export")
+async def admin_export_csv(
+    kind: str = Query(default="orders"),
+    date_from: str = Query(default=""),
+    date_to: str = Query(default=""),
+):
+    from funnel_db import list_visit_rows
+
+    rows = list_visit_rows(kind, 1000, date_from=date_from, date_to=date_to)
+    if not rows:
+        return Response(content="id\n", media_type="text/csv")
+    output = io.StringIO()
+    if kind == "questions":
+        cols = ["id", "created_at", "user_id", "username", "question"]
+    else:
+        cols = ["id", "created_at", "user_id", "username", "event_type", "contact_name", "phone", "city", "event_date", "total_cost"]
+    writer = csv.DictWriter(output, fieldnames=cols)
+    writer.writeheader()
+    for r in rows:
+        if kind == "questions":
+            writer.writerow({k: r.get(k, "") for k in cols})
+            continue
+        payload_raw = r.get("payload") or "{}"
+        try:
+            payload = json.loads(payload_raw)
+        except Exception:
+            payload = {}
+        writer.writerow(
+            {
+                "id": r.get("id"),
+                "created_at": r.get("created_at"),
+                "user_id": r.get("user_id"),
+                "username": r.get("username"),
+                "event_type": payload.get("event_type", ""),
+                "contact_name": payload.get("contact_name", ""),
+                "phone": payload.get("contact_phone", ""),
+                "city": payload.get("city", ""),
+                "event_date": payload.get("event_date", ""),
+                "total_cost": payload.get("total_cost", 0),
+            }
+        )
+    data = output.getvalue()
+    headers = {"Content-Disposition": f'attachment; filename="visit_{kind}.csv"'}
+    return Response(content=data, media_type="text/csv; charset=utf-8", headers=headers)
 
 
 @app.post("/webhook")

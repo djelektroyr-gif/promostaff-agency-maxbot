@@ -30,6 +30,7 @@ uvicorn app:app --reload --host 0.0.0.0 --port 8000
 5. Подписка MAX: `POST …/subscriptions` с `url` = `https://<ваш-домен>/webhook` и `update_types`: `bot_started`, `user_added`, `message_created`, `message_callback`.
 
 Связанный план в монорепо PRO: репозиторий `promostaff-bot`, файл `docs/PLAN_AGENCY_MAX_VISIT_BOT.md`.
+Операционные процедуры: `OPERATIONS_VISITCARD.md`.
 
 ## Секреты
 
