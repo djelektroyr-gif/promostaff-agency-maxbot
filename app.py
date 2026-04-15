@@ -10,7 +10,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query, Request, Form
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from config import (
@@ -22,9 +22,34 @@ from config import (
 )
 from notify import smtp_configured
 from handlers import process_update
+from max_client import post_message
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _parse_broadcast_filter(raw: str) -> dict[str, str | bool]:
+    out: dict[str, str | bool] = {"position": "", "experience": "", "priority": False}
+    text = (raw or "").strip()
+    if not text or text.lower() == "all":
+        return out
+    if text.lower() == "priority":
+        out["priority"] = True
+        return out
+    parts = [p.strip() for p in text.replace(";", ",").split(",") if p.strip()]
+    for p in parts:
+        if "=" not in p:
+            continue
+        k, v = p.split("=", 1)
+        key = k.strip().lower()
+        val = v.strip()
+        if key in ("position", "должность"):
+            out["position"] = val
+        elif key in ("experience", "опыт"):
+            out["experience"] = val
+        elif key in ("priority", "приоритет"):
+            out["priority"] = val in ("1", "true", "yes", "да")
+    return out
 
 
 def _funnel_metrics() -> dict:
@@ -361,6 +386,20 @@ async def admin_ui(
         </div>
 
         <div class="box">
+          <h3>Рассылка вакансии (MAX)</h3>
+          <p class="muted">Сегментированная отправка предложения о работе по базе MAX.</p>
+          <form method="post" action="/admin/broadcast">
+            <label>Фильтр аудитории:</label><br/>
+            <input style="width: 100%; max-width: 720px;" name="filter_text" value="all" placeholder="all | priority | position=Хостес | experience=Более 3 лет"/><br/><br/>
+            <label>Текст вакансии:</label><br/>
+            <textarea name="message_text" rows="6" style="width: 100%; max-width: 720px;" placeholder="Опишите вакансию, условия и как откликнуться"></textarea><br/><br/>
+            <button type="submit" name="action" value="preview">Предпросмотр</button>
+            <button type="submit" name="action" value="send">Отправить рассылку</button>
+          </form>
+          <p class="muted">Примеры фильтров: <code>all</code>, <code>priority</code>, <code>position=Промоутер,priority=1</code></p>
+        </div>
+
+        <div class="box">
           <h3>Visitcard leads</h3>
           <p class="muted">Фильтр лидов по типу и дате.</p>
           <form method="get" action="/admin/ui">
@@ -451,6 +490,83 @@ async def admin_export_csv(
     data = output.getvalue()
     headers = {"Content-Disposition": f'attachment; filename="visit_{kind}.csv"'}
     return Response(content=data, media_type="text/csv; charset=utf-8", headers=headers)
+
+
+@app.post("/admin/broadcast", response_class=HTMLResponse)
+async def admin_broadcast(
+    filter_text: str = Form(default="all"),
+    message_text: str = Form(default=""),
+    action: str = Form(default="preview"),
+):
+    filt_raw = (filter_text or "all").strip() or "all"
+    body = (message_text or "").strip()
+    if len(body) < 5:
+        return HTMLResponse(
+            "<h3>Ошибка: слишком короткий текст рассылки.</h3><p><a href='/admin/ui'>Вернуться в админку</a></p>",
+            status_code=400,
+        )
+    if not MAX_TOKEN:
+        return HTMLResponse(
+            "<h3>Ошибка: MAX_TOKEN не задан.</h3><p><a href='/admin/ui'>Вернуться в админку</a></p>",
+            status_code=503,
+        )
+    from funnel_db import list_max_join_broadcast_targets
+
+    filt = _parse_broadcast_filter(filt_raw)
+    targets = list_max_join_broadcast_targets(
+        position=str(filt.get("position") or ""),
+        experience_years=str(filt.get("experience") or ""),
+        priority_only=bool(filt.get("priority")),
+        limit=1500,
+    )
+    if not targets:
+        return HTMLResponse(
+            f"<h3>По фильтру `{filt_raw}` получатели не найдены.</h3><p><a href='/admin/ui'>Вернуться в админку</a></p>",
+            status_code=200,
+        )
+    preview_rows = "".join(
+        [
+            f"<tr><td>{t.get('user_id')}</td><td>{(t.get('username') or '').replace('<','&lt;')}</td><td>{(t.get('position') or '').replace('<','&lt;')}</td><td>{(t.get('experience_years') or '').replace('<','&lt;')}</td></tr>"
+            for t in targets[:10]
+        ]
+    )
+    if action != "send":
+        return HTMLResponse(
+            f"""
+            <h3>Предпросмотр рассылки</h3>
+            <p>Фильтр: <code>{filt_raw}</code></p>
+            <p>Потенциальных получателей: {len(targets)}</p>
+            <table border="1" cellpadding="6" cellspacing="0">
+              <thead><tr><th>User ID</th><th>Username</th><th>Position</th><th>Experience</th></tr></thead>
+              <tbody>{preview_rows or "<tr><td colspan='4'>Нет данных</td></tr>"}</tbody>
+            </table>
+            <p style="margin-top:12px;"><a href='/admin/ui'>Назад</a></p>
+            """,
+            status_code=200,
+        )
+    sent = 0
+    failed = 0
+    payload = {
+        "text": f"📣 *Предложение о работе*\n\n{body}\n\nЕсли интересно, ответьте на это сообщение.",
+        "format": "markdown",
+    }
+    for t in targets:
+        ok = await post_message(MAX_TOKEN, int(t["user_id"]), payload)
+        if ok:
+            sent += 1
+        else:
+            failed += 1
+    return HTMLResponse(
+        f"""
+        <h3>Рассылка завершена</h3>
+        <p>Фильтр: <code>{filt_raw}</code></p>
+        <p>Получателей: {len(targets)}</p>
+        <p>Доставлено: {sent}</p>
+        <p>Ошибок: {failed}</p>
+        <p><a href='/admin/ui'>Вернуться в админку</a></p>
+        """,
+        status_code=200,
+    )
 
 
 @app.post("/webhook")

@@ -20,6 +20,7 @@ from config import (
     COMPANY_NAME,
     EXPERIENCE_OPTIONS,
     SUPERVISOR_TM_LEAD,
+    PRIVACY_POLICY_URL,
     WEBSITE_URL,
     order_hourly_rates,
 )
@@ -51,6 +52,19 @@ SHIFT_STEP_TEXT = (
 
 def _new_id() -> int:
     return int(time.time()) % 900_000_000 + random.randint(0, 99_999)
+
+
+def _consent_gate_text(scope: str) -> str:
+    return (
+        f"*Согласие на обработку персональных данных ({scope})*\n\n"
+        "Перед продолжением ознакомьтесь с Политикой и подтвердите согласие на обработку "
+        "персональных данных в соответствии с 152-ФЗ.\n\n"
+        "Оператор данных: ООО «ПРОМОСТАФФ» (ИНН 5003172663, КПП 500301001, "
+        "ОГРН 1265000003025). Мы используем только необходимые данные для связи, "
+        "обработки заявки и предоставления сервиса.\n\n"
+        "Нажимая «Согласен с обработкой данных», вы подтверждаете ознакомление с Политикой "
+        "и даёте согласие на обработку персональных данных для указанной цели."
+    )
 
 
 def clear_session(max_uid: int) -> None:
@@ -105,6 +119,45 @@ def validate_metro(text: str) -> bool:
     return len(t) >= 2
 
 
+def validate_radius_km(text: str) -> int | None:
+    t = re.sub(r"[^\d]", "", (text or "").strip())
+    if not t:
+        return None
+    v = int(t)
+    if v < 0 or v > 200:
+        return None
+    return v
+
+
+def _experience_tag(value: str) -> str:
+    v = (value or "").strip().lower()
+    if "менее" in v:
+        return "junior"
+    if "1-3" in v or "1–3" in v:
+        return "middle"
+    if "более" in v:
+        return "senior"
+    return "unknown"
+
+
+def _build_specialization_tags(data: dict[str, Any]) -> str:
+    tags: list[str] = []
+    pos = (data.get("position") or "").strip()
+    track = (data.get("profile_track") or "").strip()
+    shift = (data.get("preferred_shift") or "").strip()
+    if pos:
+        tags.append(pos)
+    if track:
+        tags.append(track)
+    if shift:
+        tags.append(f"смены:{shift}")
+    uniq: list[str] = []
+    for t in tags:
+        if t not in uniq:
+            uniq.append(t)
+    return ", ".join(uniq)
+
+
 def total_staff_in_shift(staff_counts: dict | None) -> int:
     if not staff_counts:
         return 0
@@ -152,6 +205,31 @@ def _image_ref_from_body(message_body: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _media_ref_from_body(message_body: dict[str, Any] | None) -> str | None:
+    if not message_body:
+        return None
+    raw = message_body.get("attachments")
+    if raw is None and isinstance(message_body.get("attachment"), dict):
+        raw = [message_body["attachment"]]
+    if not isinstance(raw, list):
+        return None
+    for a in raw:
+        if not isinstance(a, dict):
+            continue
+        t = (a.get("type") or "").lower()
+        if t not in ("image", "photo", "picture", "video", "file"):
+            continue
+        p = a.get("payload")
+        if isinstance(p, dict):
+            for key in ("url", "photo_url", "video_url", "small_url", "medium_url", "token"):
+                v = p.get(key)
+                if v:
+                    return str(v)
+        if isinstance(p, str) and p:
+            return p
+    return None
+
+
 VAC_FROM_KEY = {
     "vac_apply_helper": "Хелпер",
     "vac_apply_loader": "Грузчик",
@@ -165,38 +243,35 @@ VAC_FROM_KEY = {
 
 def start_order(max_uid: int) -> dict[str, Any]:
     clear_session(max_uid)
-    SESSIONS[max_uid] = {"flow": "order", "step": "event_type", "data": {}}
+    SESSIONS[max_uid] = {"flow": "order", "step": "consent", "data": {}}
     return {
-        "text": (
-            "*Заказ расчёта стоимости*\n\n"
-            "Укажите тип мероприятия (выставка, концерт, корпоратив и т.д.).\n\n"
-            "_Образец:_ `Корпоратив, 200 гостей`"
-        ),
+        "text": _consent_gate_text("заказ расчёта"),
         "format": "markdown",
-        "attachments": visit_card.back_to_main_keyboard(),
+        "attachments": visit_card.consent_gate_keyboard("order"),
     }
 
 
 def start_question(max_uid: int) -> dict[str, Any]:
     clear_session(max_uid)
-    SESSIONS[max_uid] = {"flow": "question", "step": "text", "data": {}}
+    SESSIONS[max_uid] = {"flow": "question", "step": "consent", "data": {}}
     return {
-        "text": (
-            "*Сообщение менеджеру*\n\n"
-            "Напишите вопрос одним сообщением — мы ответим в рабочее время."
-        ),
+        "text": _consent_gate_text("вопрос менеджеру"),
         "format": "markdown",
-        "attachments": visit_card.back_to_main_keyboard(),
+        "attachments": visit_card.consent_gate_keyboard("question"),
     }
 
 
 def start_join(max_uid: int) -> dict[str, Any]:
     clear_session(max_uid)
-    SESSIONS[max_uid] = {"flow": "join", "step": "position_pick", "data": {}}
+    SESSIONS[max_uid] = {
+        "flow": "join",
+        "step": "consent",
+        "data": {"profile_track": "", "join_entry": "profile"},
+    }
     return {
-        "text": "Выберите желаемую должность:",
+        "text": _consent_gate_text("отклик в команду"),
         "format": "markdown",
-        "attachments": visit_card.join_applicant_pick_keyboard(),
+        "attachments": visit_card.consent_gate_keyboard("join"),
     }
 
 
@@ -205,16 +280,15 @@ def join_from_vacancy(max_uid: int, payload: str) -> dict[str, Any] | None:
     if not title:
         return None
     clear_session(max_uid)
-    SESSIONS[max_uid] = {"flow": "join", "step": "full_name", "data": {"position": title}}
+    SESSIONS[max_uid] = {
+        "flow": "join",
+        "step": "consent",
+        "data": {"position": title, "join_entry": "vacancy"},
+    }
     return {
-        "text": (
-            f"*Анкета*\n\n"
-            f"Должность: *{title}*\n\n"
-            "Укажите ваше полное ФИО.\n\n"
-            "_Образец:_ `Иванов Иван Иванович`"
-        ),
+        "text": _consent_gate_text("отклик в команду"),
         "format": "markdown",
-        "attachments": visit_card.back_to_main_keyboard(),
+        "attachments": visit_card.consent_gate_keyboard("join"),
     }
 
 
@@ -260,18 +334,32 @@ def _format_question_plain(q: str, qid: int, who: str) -> str:
 
 def _format_join_plain(data: dict[str, Any], rid: int, who: str) -> str:
     selfie = (data.get("selfie_ref") or "").strip() or "—"
+    track = (data.get("profile_track") or "").strip() or "—"
+    portfolio = data.get("portfolio_refs") or []
+    p_count = len(portfolio) if isinstance(portfolio, list) else 0
+    priority = "Да" if data.get("priority_pool") else "Нет"
+    spec_tags = (data.get("specialization_tags") or "").strip() or "—"
+    exp_tag = (data.get("experience_tag") or "").strip() or "—"
     return (
         f"Новая заявка в команду #{rid}\n"
         f"================================\n\n"
         f"От: {who}\n\n"
         f"ФИО: {data.get('full_name', '—')}\n"
         f"Телефон: {data.get('phone', '—')}\n"
+        f"Трек: {track}\n"
         f"Должность: {data.get('position', '—')}\n"
         f"Город: {data.get('city', '—')}\n"
         f"Метро: {data.get('metro', '—')}\n"
+        f"Предпочтительные смены: {data.get('preferred_shift', '—')}\n"
+        f"Радиус выезда: {data.get('travel_radius_km', '—')} км\n"
+        f"Документы: {data.get('docs_ready', '—')}\n"
         f"Стаж: {data.get('experience_years', '—')}\n"
         f"Опыт: {data.get('experience_desc', '—')}\n"
         f"Навыки: {(data.get('skills') or '').strip() or '—'}\n"
+        f"Портфолио: {p_count} файл(ов)\n"
+        f"Приоритетный пул: {priority}\n"
+        f"Теги специализации: {spec_tags}\n"
+        f"Тег опыта: {exp_tag}\n"
         f"Селфи (ссылка/токен): {selfie}\n\n"
         f"---\n{COMPANY_NAME}\nСайт: {WEBSITE_URL}\n"
     )
@@ -309,7 +397,7 @@ def _order_preview_text(data: dict[str, Any]) -> str:
         f"• Время смены: {shift_human}\n\n"
         f"*Персонал*\n{details or '—'}\n\n"
         f"_Сумма ориентировочная: один день с указанным графиком смены. "
-        f"Итоговую стоимость проекта уточняйте у менеджера._\n\n"
+        f"Итоговую стоимость проекта уточняйте у менеджера._\n"
         f"*ИТОГО (ориентир): {total:,} RUB*".replace(",", " ")
     )
 
@@ -322,12 +410,12 @@ def _supervisor_offer_text(total: int, rec: int) -> str:
             "супервайзера/тимлидера — координация состава и связь с заказчиком.\n\n"
             "Ориентировочно *900* ₽/ч в дневное окно 10:00–22:00; ночные часы смены — "
             "*+15%* к часу (как у остальных ролей в расчёте).\n\n"
-            "Можно включить *1* супервайдера в предварительную оценку или оставить только исполнителей — "
+            "Можно включить *1* супервайзера в предварительную оценку или оставить только исполнителей — "
             "итоговую схему уточнит менеджер."
         )
     return (
         "*Супервайзер / тимлидер*\n\n"
-        f"При *{total}* сотрудниках обычно нужен *{rec}* супервайдер(ов) — "
+        f"При *{total}* сотрудниках обычно нужен *{rec}* супервайзер(ов) — "
         "ориентир *около одного на каждые 5* человек.\n\n"
         "Ориентировочно *900* ₽/ч в дневное окно 10:00–22:00; ночные часы смены — "
         "*+15%* к часу (как у остальных ролей).\n\n"
@@ -346,6 +434,55 @@ async def process_callback(
     flow = s.get("flow")
     step = s.get("step")
     data = s.setdefault("data", {})
+
+    if flow == "order" and step == "consent" and payload == "consent_order_accept":
+        data["order_consent_accepted"] = True
+        s["step"] = "event_type"
+        return {
+            "notification": "Согласие принято ✅",
+            "text": (
+                "*Заказ расчёта стоимости*\n\n"
+                "Выберите быстрый сценарий или введите тип проекта вручную.\n\n"
+                "Быстрый сценарий ускорит заполнение формы."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.order_quickstart_keyboard(),
+        }
+
+    if flow == "question" and step == "consent" and payload == "consent_question_accept":
+        data["question_consent_accepted"] = True
+        s["step"] = "text"
+        return {
+            "notification": "Согласие принято ✅",
+            "text": (
+                "*Сообщение менеджеру*\n\n"
+                "Напишите вопрос одним сообщением — мы ответим в рабочее время."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.back_to_main_keyboard(),
+        }
+
+    if flow == "join" and step == "consent" and payload == "consent_join_accept":
+        data["join_consent_accepted"] = True
+        if data.get("join_entry") == "vacancy" and data.get("position"):
+            s["step"] = "full_name"
+            return {
+                "notification": "Согласие принято ✅",
+                "text": (
+                    f"Должность: *{data.get('position')}*\n\n"
+                    "Укажите ваше полное ФИО.\n\n"
+                    "_Образец:_ `Иванов Иван Иванович`"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        s["step"] = "profile_pick"
+        return {
+            "notification": "Согласие принято ✅",
+            "text": "Выберите ваш формат занятости, чтобы мы быстрее подобрали подходящую роль:",
+            "format": "markdown",
+            "attachments": visit_card.join_profile_keyboard(),
+        }
 
     if flow == "order" and step == "staff_pick" and payload.startswith("o_"):
         try:
@@ -366,6 +503,34 @@ async def process_callback(
             ),
             "format": "markdown",
             "attachments": visit_card.order_staff_keyboard(temp),
+        }
+
+    if flow == "order" and step == "event_type" and payload.startswith("quick_"):
+        presets = {
+            "quick_urgent": "Срочный проект (24 часа), оперативный запуск",
+            "quick_expo": "Выставка, стенд и поток гостей",
+            "quick_corp": "Корпоративное мероприятие",
+        }
+        if payload == "quick_custom":
+            return {
+                "notification": "Введите свой тип проекта.",
+                "text": (
+                    "Укажите тип мероприятия (выставка, концерт, корпоратив и т.д.).\n\n"
+                    "_Образец:_ `Корпоратив, 200 гостей`"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        preset = presets.get(payload)
+        if not preset:
+            return None
+        data["event_type"] = preset
+        s["step"] = "city"
+        return {
+            "notification": "Сценарий применён ✅",
+            "text": "Укажите город проведения мероприятия.\n\n_Образец:_ `Москва`",
+            "format": "markdown",
+            "attachments": visit_card.back_to_main_keyboard(),
         }
 
     if flow == "order" and step == "staff_pick" and payload == "staff_done":
@@ -407,7 +572,7 @@ async def process_callback(
         if rec < 1:
             rec = 1
         data["supervisor_count"] = rec
-        sv_word = "супервайдер" if rec == 1 else "супервайзеров"
+        sv_word = "супервайзер" if rec == 1 else "супервайзеров"
         s["step"] = "contact_phone"
         return {
             "notification": "✅ Супервайзер в оценке. Дальше — телефон.",
@@ -431,6 +596,16 @@ async def process_callback(
         }
 
     if flow == "order" and step == "confirm" and payload == "order_send":
+        if not data.get("order_consent_accepted"):
+            return {
+                "notification": "Нужно подтвердить согласие на обработку данных.",
+                "text": (
+                    "Перед отправкой заявки подтвердите согласие кнопкой ниже.\n\n"
+                    f"Политика: {PRIVACY_POLICY_URL}"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.order_confirm_keyboard(),
+            }
         oid = _new_id()
         to_save = dict(data)
         sc = int(to_save.get("supervisor_count") or 0)
@@ -488,6 +663,96 @@ async def process_callback(
             "attachments": visit_card.back_to_main_keyboard(),
         }
 
+    if flow == "join" and step == "preferred_shift" and payload.startswith("shift_"):
+        mapping = {
+            "shift_day": "Дневные",
+            "shift_night": "Ночные",
+            "shift_both": "Оба варианта",
+        }
+        label = mapping.get(payload)
+        if not label:
+            return None
+        data["preferred_shift"] = label
+        s["step"] = "travel_radius"
+        return {
+            "notification": f"Смены: {label}",
+            "text": "Укажите радиус выезда от вашего города в км.\n\n_Образец:_ `15`",
+            "format": "markdown",
+            "attachments": visit_card.back_to_main_keyboard(),
+        }
+
+    if flow == "join" and step == "docs_ready" and payload.startswith("docs_"):
+        mapping = {
+            "docs_med": "Медкнижка",
+            "docs_self": "Самозанятость",
+            "docs_ip": "ИП",
+            "docs_later": "Оформлю при необходимости",
+        }
+        label = mapping.get(payload)
+        if not label:
+            return None
+        data["docs_ready"] = label
+        s["step"] = "experience_years"
+        return {
+            "notification": f"Документы: {label}",
+            "text": "Выберите стаж кнопкой.",
+            "format": "markdown",
+            "attachments": visit_card.experience_keyboard(),
+        }
+
+    if flow == "join" and step == "portfolio" and payload == "portfolio_done":
+        refs = list(data.get("portfolio_refs") or [])
+        if not refs:
+            return {
+                "notification": "Нужно минимум 1 фото/видео.",
+                "text": "Сначала отправьте минимум 1 файл портфолио.",
+                "format": "markdown",
+                "attachments": visit_card.join_portfolio_keyboard(),
+            }
+        s["step"] = "priority_pool"
+        return {
+            "notification": "Портфолио сохранено ✅",
+            "text": (
+                "Хотите попасть в приоритетный пул исполнителей?\n\n"
+                "В приоритетном пуле чаще предлагаем проекты первыми."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.join_priority_keyboard(),
+        }
+
+    if flow == "join" and step == "priority_pool" and payload in ("prio_yes", "prio_no"):
+        data["priority_pool"] = payload == "prio_yes"
+        data["specialization_tags"] = _build_specialization_tags(data)
+        data["experience_tag"] = _experience_tag(str(data.get("experience_years") or ""))
+        s["step"] = "review_submit"
+        priority_text = "Да" if data.get("priority_pool") else "Нет"
+        p_count = len(data.get("portfolio_refs") or [])
+        preview = (
+            "*Проверьте анкету*\n\n"
+            f"ФИО: {data.get('full_name')}\n"
+            f"Телефон: {data.get('phone')}\n"
+            f"Трек: {data.get('profile_track') or '—'}\n"
+            f"Должность: {data.get('position')}\n"
+            f"Город: {data.get('city')}\n"
+            f"Метро: {data.get('metro')}\n"
+            f"Предпочтительные смены: {data.get('preferred_shift')}\n"
+            f"Радиус выезда: {data.get('travel_radius_km')} км\n"
+            f"Документы: {data.get('docs_ready')}\n"
+            f"Стаж: {data.get('experience_years')}\n"
+            f"Опыт: {data.get('experience_desc')}\n"
+            f"Навыки: {data.get('skills') or '—'}\n"
+            f"Портфолио: {p_count} файл(ов)\n"
+            f"Приоритетный пул: {priority_text}\n"
+            "Селфи: получено\n\n"
+            "Нажмите *«Отправить анкету»*."
+        )
+        return {
+            "notification": "Отметили ✅",
+            "text": preview,
+            "format": "markdown",
+            "attachments": visit_card.submit_join_keyboard(),
+        }
+
     if flow == "join" and step == "review_submit" and payload == "submit_join":
         rid = _new_id()
         plain = _format_join_plain(data, rid, who)
@@ -537,6 +802,25 @@ async def process_callback(
                 "attachments": visit_card.back_to_main_keyboard(),
             }
 
+    if flow == "join" and step == "profile_pick" and payload.startswith("jp_"):
+        tracks = {
+            "jp_exp": "С опытом в ивентах",
+            "jp_beginner": "Начинающий",
+            "jp_weekend": "Подработка по выходным",
+            "jp_direct": "Без трека (прямой выбор роли)",
+        }
+        track = tracks.get(payload)
+        if not track:
+            return None
+        data["profile_track"] = track
+        s["step"] = "position_pick"
+        return {
+            "notification": "Отлично, идём дальше.",
+            "text": "Выберите желаемую должность:",
+            "format": "markdown",
+            "attachments": visit_card.join_applicant_pick_keyboard(),
+        }
+
     return None
 
 
@@ -554,7 +838,25 @@ async def process_text(
     step = s.get("step")
     data = s.setdefault("data", {})
 
+    if step == "consent":
+        scope = {
+            "order": "заказ расчёта",
+            "join": "отклик в команду",
+            "question": "вопрос менеджеру",
+        }.get(str(flow), "форма")
+        return {
+            "text": _consent_gate_text(scope),
+            "format": "markdown",
+            "attachments": visit_card.consent_gate_keyboard(str(flow)),
+        }
+
     if flow == "question" and step == "text":
+        if not data.get("question_consent_accepted"):
+            return {
+                "text": _consent_gate_text("вопрос менеджеру"),
+                "format": "markdown",
+                "attachments": visit_card.consent_gate_keyboard("question"),
+            }
         qid = _new_id()
         plain = _format_question_plain(text, qid, who)
         await _notify_plain(f"Новый вопрос #{qid}", plain)
@@ -621,6 +923,12 @@ async def process_text(
                 "attachments": visit_card.order_staff_keyboard({}),
             }
         if step == "contact_phone":
+            if not data.get("order_consent_accepted"):
+                return {
+                    "text": _consent_gate_text("заказ расчёта"),
+                    "format": "markdown",
+                    "attachments": visit_card.consent_gate_keyboard("order"),
+                }
             v = validate_phone(text)
             if not v:
                 return {
@@ -665,31 +973,31 @@ async def process_text(
             }
         if step == "company_name":
             company = text.strip()
-            if company == "—":
-                company = ""
+            if not company or company == "—":
+                return {
+                    "text": "Название компании обязательно. Пример: ООО «Ромашка»",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
             data["company_name"] = company
             s["step"] = "company_inn"
             return {
                 "text": (
                     "Укажите ИНН компании (10 или 12 цифр).\n\n"
-                    "_Образец:_ `7707083893`\n"
-                    "Если ИНН нет — отправьте `0`."
+                    "_Образец:_ `7707083893`"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
         if step == "company_inn":
             raw = text.strip()
-            if raw == "0":
-                data["company_inn"] = ""
-            else:
-                if not validate_inn(raw):
-                    return {
-                        "text": "ИНН должен содержать 10 или 12 цифр. Пример: 7707083893",
-                        "format": "markdown",
-                        "attachments": visit_card.back_to_main_keyboard(),
-                    }
-                data["company_inn"] = re.sub(r"\D", "", raw)
+            if not validate_inn(raw):
+                return {
+                    "text": "ИНН обязателен и должен содержать 10 или 12 цифр. Пример: 7707083893",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["company_inn"] = re.sub(r"\D", "", raw)
             s["step"] = "call_time"
             return {
                 "text": "Когда удобно принять звонок менеджера?\n\n_Образец:_ `будни 10:00–18:00`",
@@ -742,6 +1050,12 @@ async def process_text(
                 "attachments": visit_card.back_to_main_keyboard(),
             }
         if step == "full_name":
+            if not data.get("join_consent_accepted"):
+                return {
+                    "text": _consent_gate_text("отклик в команду"),
+                    "format": "markdown",
+                    "attachments": visit_card.consent_gate_keyboard("join"),
+                }
             if not validate_full_name(text):
                 return {
                     "text": "ФИО: минимум 2 слова. Пример: Иванов Иван Иванович",
@@ -789,11 +1103,26 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["metro"] = text.strip()
-            s["step"] = "experience_years"
+            s["step"] = "preferred_shift"
             return {
-                "text": "Выберите стаж кнопкой ниже.",
+                "text": "Какие смены вам удобнее?\n\nВыберите один вариант.",
                 "format": "markdown",
-                "attachments": visit_card.experience_keyboard(),
+                "attachments": visit_card.join_shift_pref_keyboard(),
+            }
+        if step == "travel_radius":
+            km = validate_radius_km(text)
+            if km is None:
+                return {
+                    "text": "Укажите число от 0 до 200. Пример: 15",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["travel_radius_km"] = str(km)
+            s["step"] = "docs_ready"
+            return {
+                "text": "Какие документы уже готовы?",
+                "format": "markdown",
+                "attachments": visit_card.join_docs_keyboard(),
             }
         if step == "experience_desc":
             if len(text.strip()) < 5:
@@ -836,24 +1165,42 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["selfie_ref"] = ref
-            s["step"] = "review_submit"
-            preview = (
-                "*Проверьте анкету*\n\n"
-                f"ФИО: {data.get('full_name')}\n"
-                f"Телефон: {data.get('phone')}\n"
-                f"Должность: {data.get('position')}\n"
-                f"Город: {data.get('city')}\n"
-                f"Метро: {data.get('metro')}\n"
-                f"Стаж: {data.get('experience_years')}\n"
-                f"Опыт: {data.get('experience_desc')}\n"
-                f"Навыки: {data.get('skills') or '—'}\n"
-                "Селфи: получено\n\n"
-                "Нажмите *«Отправить анкету»*."
-            )
+            data["portfolio_refs"] = []
+            s["step"] = "portfolio"
             return {
-                "text": preview,
+                "text": (
+                    "Добавьте мини-портфолио: 1–2 фото/видео с проектов.\n\n"
+                    "Отправьте минимум 1 файл, затем нажмите *«Продолжить»*."
+                ),
                 "format": "markdown",
-                "attachments": visit_card.submit_join_keyboard(),
+                "attachments": visit_card.join_portfolio_keyboard(),
+            }
+        if step == "portfolio":
+            ref = _media_ref_from_body(message_body)
+            if not ref:
+                return {
+                    "text": "Отправьте фото или видео. После этого нажмите «Продолжить».",
+                    "format": "markdown",
+                    "attachments": visit_card.join_portfolio_keyboard(),
+                }
+            refs = list(data.get("portfolio_refs") or [])
+            if len(refs) >= 2:
+                return {
+                    "text": "Уже получено 2 файла. Нажмите «Продолжить».",
+                    "format": "markdown",
+                    "attachments": visit_card.join_portfolio_keyboard(),
+                }
+            refs.append(ref)
+            data["portfolio_refs"] = refs
+            left = 2 - len(refs)
+            if left > 0:
+                txt = f"Файл получен ✅ Можно добавить ещё {left} или нажать «Продолжить»."
+            else:
+                txt = "Получено 2 файла ✅ Нажмите «Продолжить»."
+            return {
+                "text": txt,
+                "format": "markdown",
+                "attachments": visit_card.join_portfolio_keyboard(),
             }
         if step == "review_submit":
             return {
@@ -866,6 +1213,24 @@ async def process_text(
                 "text": "Выберите стаж кнопкой.",
                 "format": "markdown",
                 "attachments": visit_card.experience_keyboard(),
+            }
+        if step == "preferred_shift":
+            return {
+                "text": "Выберите предпочтительные смены кнопкой.",
+                "format": "markdown",
+                "attachments": visit_card.join_shift_pref_keyboard(),
+            }
+        if step == "docs_ready":
+            return {
+                "text": "Выберите документы кнопкой.",
+                "format": "markdown",
+                "attachments": visit_card.join_docs_keyboard(),
+            }
+        if step == "priority_pool":
+            return {
+                "text": "Выберите вариант кнопкой.",
+                "format": "markdown",
+                "attachments": visit_card.join_priority_keyboard(),
             }
 
     return None

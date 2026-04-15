@@ -52,6 +52,9 @@ FUNNEL_REMINDERS_INTERVAL_SEC = _env_int("FUNNEL_REMINDERS_INTERVAL_SEC", 600)
 # Как в Desktop PROMOSTAFF-AGENCY BOT/config.py (можно переопределить в Timeweb).
 COMPANY_NAME = _env("COMPANY_NAME") or "PROMOSTAFF AGENCY"
 WEBSITE_URL = _env("WEBSITE_URL") or "https://promostaff-agency.ru"
+BRAND_LOGO_URL = _env("BRAND_LOGO_URL")
+# Политика ПДн — та же страница, что на promostaff.pro (лендинг PRO).
+PRIVACY_POLICY_URL = _env("PRIVACY_POLICY_URL") or "https://promostaff.pro/privacy"
 ANKETA_URL = _env("ANKETA_URL") or "https://promostaff-agency.ru/#contact"
 PORTFOLIO_URL = _env("PORTFOLIO_URL") or "https://promostaff-agency.ru/#reviews"
 CONTACT_PHONE = _env("CONTACT_PHONE") or "+7 (929) 556-56-96"

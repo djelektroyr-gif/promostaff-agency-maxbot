@@ -210,3 +210,47 @@ def list_visit_rows(kind: str, limit: int = 100, date_from: str = "", date_to: s
                 {"id": int(r[0]), "created_at": str(r[1] or ""), "user_id": int(r[2] or 0), "username": str(r[3] or ""), "payload": str(r[4] or "{}")}
                 for r in rows
             ]
+
+
+def list_max_join_broadcast_targets(
+    position: str = "",
+    experience_years: str = "",
+    priority_only: bool = False,
+    limit: int = 1500,
+) -> list[dict]:
+    if not DATABASE_URL:
+        return []
+    where = ["source = 'max'", "user_id IS NOT NULL"]
+    params: list = []
+    if position:
+        where.append("payload ->> 'position' = %s")
+        params.append(position)
+    if experience_years:
+        where.append("payload ->> 'experience_years' = %s")
+        params.append(experience_years)
+    if priority_only:
+        where.append("COALESCE((payload ->> 'priority_pool')::boolean, false) = true")
+    where_sql = " AND ".join(where)
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT DISTINCT user_id, username, payload ->> 'position', payload ->> 'experience_years'
+                FROM agency_visit_join_requests
+                WHERE {where_sql}
+                ORDER BY user_id DESC
+                LIMIT %s
+                """,
+                (*params, int(limit)),
+            )
+            rows = cur.fetchall() or []
+    return [
+        {
+            "user_id": int(r[0] or 0),
+            "username": str(r[1] or ""),
+            "position": str(r[2] or ""),
+            "experience_years": str(r[3] or ""),
+        }
+        for r in rows
+        if int(r[0] or 0) > 0
+    ]

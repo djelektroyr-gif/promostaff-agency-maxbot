@@ -21,6 +21,7 @@ Required:
 
 Recommended:
 - `DATABASE_URL` (stores visitcard leads + funnel tables)
+- `BRAND_LOGO_URL` (logo URL shown in welcome text)
 - `ADMIN_MAX_USER_IDS` (admin notifications)
 - `SMTP_*`, `NOTIFY_EMAIL_TO` (email notifications)
 
@@ -41,3 +42,8 @@ Recommended:
 6. `/admin` metrics include visitcard counters.
 7. `/admin/ui` filters show lead rows by kind/date.
 8. `/admin/export` returns valid CSV files.
+
+## Deferred item
+
+- Channel subscription verification in MAX is **not configured** yet.
+- Status: deferred by decision, return later when platform/API constraints are finalized.
