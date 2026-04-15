@@ -129,6 +129,21 @@ def _funnel_metrics() -> dict:
     return out
 
 
+def _visitcard_metrics() -> dict:
+    out = {"orders": 0, "join": 0, "questions": 0, "db_error": ""}
+    if not DATABASE_URL:
+        return out
+    try:
+        from funnel_db import get_visitcard_stats
+
+        stats = get_visitcard_stats()
+        stats["db_error"] = ""
+        return stats
+    except Exception as e:
+        out["db_error"] = str(e)
+        return out
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if DATABASE_URL:
@@ -200,6 +215,7 @@ async def root():
 @app.get("/admin")
 async def admin():
     funnel = _funnel_metrics()
+    visit = _visitcard_metrics()
     return {
         "status": "ok",
         "message": "PROMOSTAFF AGENCY MAX admin",
@@ -220,6 +236,9 @@ async def admin():
             "funnel_incomplete_warm": funnel["incomplete_warm"],
             "funnel_ready_24h": funnel["ready_24h"],
             "funnel_ready_72h": funnel["ready_72h"],
+            "visit_orders": visit["orders"],
+            "visit_join": visit["join"],
+            "visit_questions": visit["questions"],
         },
         "quick_links": {
             "ui": "/admin/ui",
@@ -248,6 +267,7 @@ async def admin_ui(run: str | None = Query(default=None), confirm: int = Query(d
             except Exception as e:
                 action_error = f"Ошибка ручного скана: {e}"
     funnel = _funnel_metrics()
+    visit = _visitcard_metrics()
     cards = [
         ("DB", "OK" if DATABASE_URL else "OFF"),
         ("MAX token", "OK" if MAX_TOKEN else "OFF"),
@@ -260,6 +280,9 @@ async def admin_ui(run: str | None = Query(default=None), confirm: int = Query(d
         ("Funnel warm", str(funnel["incomplete_warm"])),
         ("Ready 24h", str(funnel["ready_24h"])),
         ("Ready 72h", str(funnel["ready_72h"])),
+        ("Visit orders", str(visit["orders"])),
+        ("Visit join", str(visit["join"])),
+        ("Visit questions", str(visit["questions"])),
     ]
     cards_html = "\n".join(
         f'<div class="card"><div class="title">{title}</div><div class="value">{value}</div></div>'
@@ -278,9 +301,12 @@ async def admin_ui(run: str | None = Query(default=None), confirm: int = Query(d
         )
     else:
         users_rows = '<tr><td colspan="3">Нет данных</td></tr>'
-    db_note = (
-        f"<p class='warn'>DB error: {funnel['db_error']}</p>" if funnel.get("db_error") else ""
-    )
+    db_errors = []
+    if funnel.get("db_error"):
+        db_errors.append(f"Funnel DB error: {funnel['db_error']}")
+    if visit.get("db_error"):
+        db_errors.append(f"Visitcard DB error: {visit['db_error']}")
+    db_note = "".join([f"<p class='warn'>{e}</p>" for e in db_errors])
     return f"""
     <html lang="ru">
       <head>

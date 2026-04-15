@@ -11,6 +11,7 @@ import logging
 import random
 import re
 import time
+import json
 from typing import Any
 
 from config import (
@@ -25,6 +26,7 @@ from config import (
 
 import visit_card
 from funnel_store import funnel_touch_complete
+from funnel_db import save_visit_order, save_visit_join, save_visit_question
 from notify import notify_agency_admins
 from shift_pricing import calculate_order_cost, parse_shift_interval
 
@@ -443,6 +445,11 @@ async def process_callback(
         to_save["cost_meta"] = meta
         plain = _format_order_plain(to_save, oid, who)
         await _notify_plain(f"Новая заявка на расчёт #{oid}", plain)
+        username = (sender or {}).get("username") if isinstance(sender, dict) else ""
+        try:
+            save_visit_order(max_uid, str(username or ""), json.dumps(to_save, ensure_ascii=False))
+        except Exception:
+            logger.exception("save_visit_order")
         funnel_touch_complete(max_uid)
         clear_session(max_uid)
         return {
@@ -485,6 +492,11 @@ async def process_callback(
         rid = _new_id()
         plain = _format_join_plain(data, rid, who)
         await _notify_plain(f"Новая заявка в команду #{rid}", plain)
+        username = (sender or {}).get("username") if isinstance(sender, dict) else ""
+        try:
+            save_visit_join(max_uid, str(username or ""), json.dumps(data, ensure_ascii=False))
+        except Exception:
+            logger.exception("save_visit_join")
         funnel_touch_complete(max_uid)
         clear_session(max_uid)
         return {
@@ -546,6 +558,11 @@ async def process_text(
         qid = _new_id()
         plain = _format_question_plain(text, qid, who)
         await _notify_plain(f"Новый вопрос #{qid}", plain)
+        username = (sender or {}).get("username") if isinstance(sender, dict) else ""
+        try:
+            save_visit_question(max_uid, str(username or ""), text)
+        except Exception:
+            logger.exception("save_visit_question")
         clear_session(max_uid)
         return {
             "text": "*Сообщение отправлено.* Спасибо!",

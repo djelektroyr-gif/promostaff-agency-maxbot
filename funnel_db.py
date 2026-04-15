@@ -53,4 +53,105 @@ def init_schema() -> None:
                 WHERE funnel_completed_at IS NULL
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agency_visit_orders (
+                    id BIGSERIAL PRIMARY KEY,
+                    source TEXT NOT NULL DEFAULT 'max',
+                    user_id BIGINT,
+                    username TEXT,
+                    payload JSONB NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agency_visit_join_requests (
+                    id BIGSERIAL PRIMARY KEY,
+                    source TEXT NOT NULL DEFAULT 'max',
+                    user_id BIGINT,
+                    username TEXT,
+                    payload JSONB NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agency_visit_questions (
+                    id BIGSERIAL PRIMARY KEY,
+                    source TEXT NOT NULL DEFAULT 'max',
+                    user_id BIGINT,
+                    username TEXT,
+                    question TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+                """
+            )
     logger.info("agency_max_funnel schema ensured")
+
+
+def save_visit_order(max_user_id: int, username: str, payload_json: str) -> int | None:
+    if not DATABASE_URL:
+        return None
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO agency_visit_orders (source, user_id, username, payload)
+                VALUES ('max', %s, %s, %s::jsonb)
+                RETURNING id
+                """,
+                (max_user_id, username, payload_json),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row else None
+
+
+def save_visit_join(max_user_id: int, username: str, payload_json: str) -> int | None:
+    if not DATABASE_URL:
+        return None
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO agency_visit_join_requests (source, user_id, username, payload)
+                VALUES ('max', %s, %s, %s::jsonb)
+                RETURNING id
+                """,
+                (max_user_id, username, payload_json),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row else None
+
+
+def save_visit_question(max_user_id: int, username: str, question: str) -> int | None:
+    if not DATABASE_URL:
+        return None
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO agency_visit_questions (source, user_id, username, question)
+                VALUES ('max', %s, %s, %s)
+                RETURNING id
+                """,
+                (max_user_id, username, question),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row else None
+
+
+def get_visitcard_stats() -> dict[str, int]:
+    if not DATABASE_URL:
+        return {"orders": 0, "join": 0, "questions": 0}
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM agency_visit_orders")
+            orders = int((cur.fetchone() or [0])[0] or 0)
+            cur.execute("SELECT COUNT(*) FROM agency_visit_join_requests")
+            join = int((cur.fetchone() or [0])[0] or 0)
+            cur.execute("SELECT COUNT(*) FROM agency_visit_questions")
+            questions = int((cur.fetchone() or [0])[0] or 0)
+    return {"orders": orders, "join": join, "questions": questions}
