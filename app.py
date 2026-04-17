@@ -181,12 +181,6 @@ async def lifespan(app: FastAPI):
             init_schema()
         except Exception:
             logger.exception("funnel init_schema")
-        try:
-            from pro_max_integration import init_promostaff_postgres
-
-            init_promostaff_postgres(DATABASE_URL)
-        except Exception:
-            logger.exception("promostaff init_postgres (vendor/registracija PRO v MAX)")
 
     stop = asyncio.Event()
     reminder_task: asyncio.Task | None = None

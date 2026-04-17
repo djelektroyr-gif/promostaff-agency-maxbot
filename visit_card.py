@@ -34,7 +34,6 @@ FLOW_PAYLOADS = frozenset(
         "back",
         "none",
         "consent_client_visit_accept",
-        "consent_worker_pro_accept",
         "confirm_client_visit_yes",
         "confirm_client_visit_edit",
     }
@@ -46,15 +45,16 @@ def is_visit_flow_payload(p: str) -> bool:
     """Колбэки сценария (order/join), не статические экраны."""
     if p in FLOW_PAYLOADS or p.startswith(VAC_PREFIX):
         return True
-    if p.startswith(("o_", "jpos_", "exp_", "quick_", "jp_", "shift_", "docs_", "prio_")):
+    if p.startswith(("pos_", "jpos_", "exp_", "quick_", "jp_", "shift_", "docs_", "prio_")):
         return True
     if p in (
-        "staff_done",
+        "positions_done",
         "sv_add",
         "sv_skip",
-        "order_send",
-        "order_edit",
+        "confirm_order",
+        "edit_order",
         "submit_join",
+        "submit_join_anketa",
         "portfolio_done",
         "consent_order_accept",
         "consent_join_accept",
@@ -220,12 +220,12 @@ def join_applicant_pick_keyboard() -> list[dict]:
 def order_staff_keyboard(selected: dict[str, int] | None) -> list[dict]:
     sel = selected or {}
     rows: list[list[dict]] = []
-    for i, pos in enumerate(CLIENT_POSITIONS):
+    for pos in CLIENT_POSITIONS:
         c = int(sel.get(pos, 0) or 0)
         label = f"{pos} ({c})" if c else pos
-        rows.append([cb_btn(label, f"o_{i}")])
-    rows.append([cb_btn("Готово", "staff_done")])
-    rows.append([cb_btn("🏠 В главное меню", "main_menu")])
+        rows.append([cb_btn(label, f"pos_{pos}")])
+    rows.append([cb_btn("Готово", "positions_done")])
+    rows.append([cb_btn("Назад", "back_to_main")])
     return inline_keyboard(rows)
 
 
@@ -236,7 +236,7 @@ def order_quickstart_keyboard() -> list[dict]:
             [cb_btn("🏢 Выставка", "quick_expo")],
             [cb_btn("🎤 Корпоратив", "quick_corp")],
             [cb_btn("✍️ Ввести свой вариант", "quick_custom")],
-            [cb_btn("🏠 В главное меню", "main_menu")],
+            [cb_btn("В главное меню", "main_menu")],
         ]
     )
 
@@ -246,13 +246,12 @@ def supervisor_offer_keyboard() -> list[dict]:
         [
             [cb_btn("Добавить в расчёт", "sv_add")],
             [cb_btn("Без супервайзера", "sv_skip")],
-            [cb_btn("🏠 В главное меню", "main_menu")],
         ]
     )
 
 
 def experience_keyboard() -> list[dict]:
-    rows = [[cb_btn(exp, f"exp_{i}")] for i, exp in enumerate(EXPERIENCE_OPTIONS)]
+    rows = [[cb_btn(exp, f"exp_{exp}")] for exp in EXPERIENCE_OPTIONS]
     rows.append([cb_btn("🏠 В главное меню", "main_menu")])
     return inline_keyboard(rows)
 
@@ -260,7 +259,7 @@ def experience_keyboard() -> list[dict]:
 def submit_join_keyboard() -> list[dict]:
     return inline_keyboard(
         [
-            [cb_btn("Отправить анкету", "submit_join")],
+            [cb_btn("Отправить анкету", "submit_join_anketa")],
             [cb_btn("👥 К работе в команде", "join_team")],
             [cb_btn("🏠 В главное меню", "main_menu")],
         ]
@@ -270,9 +269,9 @@ def submit_join_keyboard() -> list[dict]:
 def order_confirm_keyboard() -> list[dict]:
     return inline_keyboard(
         [
-            [cb_btn("Отправить заявку на расчёт", "order_send")],
-            [cb_btn("Изменить данные", "order_edit")],
-            [cb_btn("🏠 В главное меню", "main_menu")],
+            [cb_btn("Отправить заявку на расчёт", "confirm_order")],
+            [cb_btn("Изменить данные", "edit_order")],
+            [cb_btn("Отменить", "main_menu")],
         ]
     )
 
@@ -282,7 +281,7 @@ def client_reg_confirm_keyboard() -> list[dict]:
         [
             [cb_btn("✅ Данные верны, завершить регистрацию", "confirm_client_visit_yes")],
             [cb_btn("✏️ Заполнить заново", "confirm_client_visit_edit")],
-            [cb_btn("🏠 В главное меню", "main_menu")],
+            [cb_btn("⬅️ В меню", "main_menu")],
         ]
     )
 
@@ -292,7 +291,6 @@ def consent_gate_keyboard(flow: str) -> list[dict]:
         "order": "consent_order_accept",
         "join": "consent_join_accept",
         "question": "consent_question_accept",
-        "worker_pro": "consent_worker_pro_accept",
         "client_visit": "consent_client_visit_accept",
     }
     cb = callbacks.get(flow, "main_menu")

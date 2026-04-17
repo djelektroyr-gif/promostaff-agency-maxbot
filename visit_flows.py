@@ -46,12 +46,13 @@ SHIFT_STEP_TEXT = (
     "Время работы персонала (одна смена в типичный день)\n\n"
     "Укажите интервал в формате *чч:мм - чч:мм* по времени площадки.\n\n"
     "*Примеры:* `10:00-22:00` (дневная), `22:00-06:00` (через полночь), `08:00-18:00`.\n\n"
-    "Дневной тариф: часы с *10:00 до 22:00*. Остальные часы смены — ночные (*+15% к часу*).\n"
+    "Дневной тариф: часы с *10:00 до 22:00*. Остальные часы смены — ночные "
+    "(*+15% к часу*).\n"
     "Если в смене есть хотя бы один ночной час — минимум *8* оплачиваемых часов на человека; "
     "если смена только дневная — минимум *6* часов.\n\n"
     "Дату или период вы уже указали выше — здесь только время смены.\n\n"
     "💡 *Несколько дней подряд?* Оценка в боте — за *один* типичный день с этим графиком; "
-    "сводку по периоду и КП — с менеджером.\n\n"
+    "сводку по всему периоду и КП — с менеджером (раздел «Связаться с менеджером»).\n\n"
     "_Образец:_ `10:00-22:00`"
 )
 
@@ -86,16 +87,6 @@ def _client_visit_entry_text() -> str:
     return (
         "*Регистрация заказчика (юрлицо)*\n\n"
         "Перед расчётом нужно указать реквизиты организации и пройти подтверждение данных.\n\n"
-        + _consent_pd_tail()
-    )
-
-
-def _worker_pro_entry_text() -> str:
-    return (
-        "*Регистрация исполнителя (PROMOSTAFF PRO)*\n\n"
-        "Дальше — полная анкета, как в основном боте: налоговый статус, подтверждение самозанятости, "
-        "регистрация в личном кабинете Т-Банка, реквизиты при необходимости, селфи и документы — "
-        "все обязательные шаги по правилам сервиса.\n\n"
         + _consent_pd_tail()
     )
 
@@ -274,7 +265,7 @@ VAC_FROM_KEY = {
 }
 
 
-def start_order(max_uid: int) -> dict[str, Any]:
+def start_order(max_uid: int, *, announce_order_consent: bool = True) -> dict[str, Any]:
     clear_session(max_uid)
     if not is_max_visit_client_verified(max_uid):
         SESSIONS[max_uid] = {"flow": "client_visit", "step": "consent", "data": {}}
@@ -285,22 +276,19 @@ def start_order(max_uid: int) -> dict[str, Any]:
             "attachments": visit_card.consent_gate_keyboard("client_visit"),
         }
     SESSIONS[max_uid] = {"flow": "order", "step": "consent", "data": {}}
-    return {
+    msg: dict[str, Any] = {
         "text": _consent_gate_text("заказ расчёта"),
         "format": "markdown",
         "attachments": visit_card.consent_gate_keyboard("order"),
     }
+    if announce_order_consent:
+        msg["notification"] = "Сначала подтвердите согласие на обработку данных."
+    return msg
 
 
 def start_fill_anketa(max_uid: int) -> dict[str, Any]:
-    """Как в Telegram: до полной анкеты PRO — отдельный экран согласия; в MAX дальше — ссылка в Telegram."""
-    clear_session(max_uid)
-    SESSIONS[max_uid] = {"flow": "worker_pro", "step": "consent", "data": {}}
-    return {
-        "text": _worker_pro_entry_text(),
-        "format": "markdown",
-        "attachments": visit_card.consent_gate_keyboard("worker_pro"),
-    }
+    """Запуск полной анкеты исполнителя прямо в MAX-визитке."""
+    return start_join(max_uid)
 
 
 def start_question(max_uid: int) -> dict[str, Any]:
@@ -448,8 +436,7 @@ def _order_preview_text(data: dict[str, Any]) -> str:
         f"• Дата / период: {data.get('event_date')}\n"
         f"• Время смены: {shift_human}\n\n"
         f"*Персонал*\n{details or '—'}\n\n"
-        f"_Сумма ориентировочная: один день с указанным графиком смены. "
-        f"Итоговую стоимость проекта уточняйте у менеджера._\n"
+        "_Сумма ориентировочная: один день с указанным графиком смены. Итог по проекту и договорённостям — у менеджера._\n"
         f"*ИТОГО (ориентир): {total:,} RUB*".replace(",", " ")
     )
 
@@ -521,30 +508,10 @@ async def process_callback(
         data.clear()
         s["step"] = "consent"
         return {
-            "notification": "Заполним заново",
             "text": _client_visit_entry_text(),
             "format": "markdown",
             "attachments": visit_card.consent_gate_keyboard("client_visit"),
         }
-
-    if flow == "worker_pro" and step == "consent" and payload == "consent_worker_pro_accept":
-        clear_session(max_uid)
-        from agency_pro_vendor import vendor_help_message
-        from pro_max_integration import bootstrap_visit_worker_pro_max
-
-        try:
-            await bootstrap_visit_worker_pro_max(max_uid)
-            return {"_answer_only": True, "notification": "Согласие принято ✅"}
-        except Exception:
-            logger.exception("bootstrap_visit_worker_pro_max")
-            return {
-                "text": (
-                    "Не удалось запустить регистрацию (сценарий как в PROMOSTAFF PRO).\n\n"
-                    f"{vendor_help_message()}"
-                ),
-                "format": "markdown",
-                "attachments": visit_card.main_menu_keyboard(),
-            }
 
     if flow == "order" and step == "consent" and payload == "consent_order_accept":
         data["order_consent_accepted"] = True
@@ -581,7 +548,7 @@ async def process_callback(
                 "notification": "Согласие принято ✅",
                 "text": (
                     f"Должность: *{data.get('position')}*\n\n"
-                    "Укажите ваше полное ФИО.\n\n"
+                    "Введите полное ФИО.\n\n"
                     "_Образец:_ `Иванов Иван Иванович`"
                 ),
                 "format": "markdown",
@@ -595,19 +562,15 @@ async def process_callback(
             "attachments": visit_card.join_profile_keyboard(),
         }
 
-    if flow == "order" and step == "staff_pick" and payload.startswith("o_"):
-        try:
-            idx = int(payload[2:])
-        except ValueError:
+    if flow == "order" and step == "staff_pick" and payload.startswith("pos_"):
+        pos = payload.replace("pos_", "", 1)
+        if pos not in CLIENT_POSITIONS:
             return None
-        if idx < 0 or idx >= len(CLIENT_POSITIONS):
-            return None
-        pos = CLIENT_POSITIONS[idx]
         temp = s.setdefault("temp_staff", {})
         temp[pos] = int(temp.get(pos, 0)) + 1
         n = temp[pos]
         return {
-            "notification": f"+1 {pos} → всего {n} чел.",
+            "notification": f"{pos}: {n} чел.",
             "text": (
                 "Выберите категории персонала и количество (нажимайте для увеличения).\n\n"
                 "_После выбора нажмите «Готово»._"
@@ -624,7 +587,7 @@ async def process_callback(
         }
         if payload == "quick_custom":
             return {
-                "notification": "Введите свой тип проекта.",
+                "notification": "Введите свой тип проекта",
                 "text": (
                     "Укажите тип мероприятия (выставка, концерт, корпоратив и т.д.).\n\n"
                     "_Образец:_ `Корпоратив, 200 гостей`"
@@ -644,11 +607,11 @@ async def process_callback(
             "attachments": visit_card.back_to_main_keyboard(),
         }
 
-    if flow == "order" and step == "staff_pick" and payload == "staff_done":
+    if flow == "order" and step == "staff_pick" and payload == "positions_done":
         temp = s.get("temp_staff") or {}
         if not any(int(v) > 0 for v in temp.values()):
             return {
-                "notification": "Сначала добавьте позиции кнопками.",
+                "notification": "Выберите хотя бы одну позицию.",
                 "text": "Выберите хотя бы одну позицию кнопками выше, затем «Готово».",
                 "format": "markdown",
                 "attachments": visit_card.order_staff_keyboard(temp),
@@ -660,9 +623,9 @@ async def process_callback(
         if total < 2:
             s["step"] = "contact_phone"
             return {
-                "notification": "Дальше — телефон для связи.",
+                "notification": "📞 Дальше — контакт для связи.",
                 "text": (
-                    "Укажите контактный телефон.\n\n"
+                    "Отправьте контакт телефона кнопкой ниже или введите вручную.\n\n"
                     "_Образец:_ `+79001234567`"
                 ),
                 "format": "markdown",
@@ -672,7 +635,7 @@ async def process_callback(
         data["supervisor_recommend"] = rec
         s["step"] = "supervisor_offer"
         return {
-            "notification": "👔 Рекомендуем супервайзера — см. сообщение.",
+            "notification": "👔 Рекомендуем супервайзера/тимлидера — см. следующее сообщение.",
             "text": _supervisor_offer_text(total, rec),
             "format": "markdown",
             "attachments": visit_card.supervisor_offer_keyboard(),
@@ -686,8 +649,12 @@ async def process_callback(
         sv_word = "супервайзер" if rec == 1 else "супервайзеров"
         s["step"] = "contact_phone"
         return {
-            "notification": "✅ Супервайзер в оценке. Дальше — телефон.",
-            "text": f"В предварительный расчёт добавлено: *{rec}* {sv_word}.\n\nУкажите телефон.\n\n_Образец:_ `+79001234567`",
+            "notification": "✅ Супервайзер в оценке (900 ₽/ч днём, ночь +15%). Дальше — телефон.",
+            "text": (
+                f"В предварительный расчёт добавлено: *{rec}* {sv_word}.\n\n"
+                "Отправьте контакт телефона кнопкой ниже или введите вручную.\n\n"
+                "_Образец:_ `+79001234567`"
+            ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
         }
@@ -696,20 +663,20 @@ async def process_callback(
         data["supervisor_count"] = 0
         s["step"] = "contact_phone"
         return {
-            "notification": "Ок, без супервайзера в черновике. Дальше — телефон.",
+            "notification": "Ок. По супервайзеру и составу можно обсудить с менеджером после заявки.",
             "text": (
                 "Супервайзер в расчёт не включён — при необходимости менеджер предложит варианты.\n\n"
-                "Укажите контактный телефон.\n\n"
+                "Отправьте контакт телефона кнопкой ниже или введите вручную.\n\n"
                 "_Образец:_ `+79001234567`"
             ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
         }
 
-    if flow == "order" and step == "confirm" and payload == "order_send":
+    if flow == "order" and step == "confirm" and payload == "confirm_order":
         if not data.get("order_consent_accepted"):
             return {
-                "notification": "Нужно подтвердить согласие на обработку данных.",
+                "notification": "Подтвердите согласие на обработку персональных данных перед отправкой заявки.",
                 "text": (
                     "Перед отправкой заявки подтвердите согласие кнопкой ниже.\n\n"
                     f"Политика: {PRIVACY_POLICY_URL}"
@@ -739,7 +706,7 @@ async def process_callback(
         funnel_touch_complete(max_uid)
         clear_session(max_uid)
         return {
-            "notification": "✅ Заявка у команды. Менеджер свяжется.",
+            "notification": "✅ Заявка у команды. Менеджер свяжется для уточнения деталей и точной сметы.",
             "text": (
                 f"*Заявка #{oid} принята.*\n\n"
                 "Спасибо! Менеджер свяжется с вами в ближайшее время."
@@ -748,24 +715,18 @@ async def process_callback(
             "attachments": visit_card.main_menu_keyboard(),
         }
 
-    if flow == "order" and step == "confirm" and payload == "order_edit":
+    if flow == "order" and step == "confirm" and payload == "edit_order":
         clear_session(max_uid)
-        msg = start_order(max_uid)
+        msg = start_order(max_uid, announce_order_consent=False)
         msg["notification"] = "Заполняем заявку заново…"
         return msg
 
     if flow == "join" and step == "experience_years" and payload.startswith("exp_"):
-        try:
-            ei = int(payload.replace("exp_", "", 1))
-        except ValueError:
-            return None
-        if ei < 0 or ei >= len(EXPERIENCE_OPTIONS):
-            return None
-        data["experience_years"] = EXPERIENCE_OPTIONS[ei]
+        exp = payload.replace("exp_", "", 1)
+        data["experience_years"] = exp
         s["step"] = "experience_desc"
-        exp_label = EXPERIENCE_OPTIONS[ei]
         return {
-            "notification": f"Стаж: {exp_label}",
+            "notification": f"Стаж: {exp}",
             "text": (
                 "Кратко опишите опыт: где работали, какие задачи.\n\n"
                 "_Образец:_ `Промо в торговых центрах 2 года, выкладка, коммуникация с гостями`"
@@ -854,6 +815,8 @@ async def process_callback(
             f"Навыки: {data.get('skills') or '—'}\n"
             f"Портфолио: {p_count} файл(ов)\n"
             f"Приоритетный пул: {priority_text}\n"
+            f"Теги специализации: {data.get('specialization_tags') or '—'}\n"
+            f"Тег опыта: {data.get('experience_tag') or '—'}\n"
             "Селфи: получено\n\n"
             "Нажмите *«Отправить анкету»*."
         )
@@ -864,7 +827,7 @@ async def process_callback(
             "attachments": visit_card.submit_join_keyboard(),
         }
 
-    if flow == "join" and step == "review_submit" and payload == "submit_join":
+    if flow == "join" and step == "review_submit" and payload == "submit_join_anketa":
         rid = _new_id()
         plain = _format_join_plain(data, rid, who)
         await _notify_plain(f"Новая заявка в команду #{rid}", plain)
@@ -906,7 +869,7 @@ async def process_callback(
             return {
                 "notification": f"Должность: {APPLICANT_POSITIONS[idx]}",
                 "text": (
-                    "Укажите ваше полное ФИО.\n\n"
+                    "Введите полное ФИО.\n\n"
                     "_Образец:_ `Иванов Иван Иванович`"
                 ),
                 "format": "markdown",
@@ -952,15 +915,9 @@ async def process_text(
     if step == "consent":
         if flow == "client_visit":
             return {
-                "text": _client_visit_entry_text(),
+                "text": "Нажмите кнопку согласия ниже или вернитесь в меню.",
                 "format": "markdown",
                 "attachments": visit_card.consent_gate_keyboard("client_visit"),
-            }
-        if flow == "worker_pro":
-            return {
-                "text": _worker_pro_entry_text(),
-                "format": "markdown",
-                "attachments": visit_card.consent_gate_keyboard("worker_pro"),
             }
         scope = {
             "order": "заказ расчёта",
@@ -1032,7 +989,7 @@ async def process_text(
             data["position_in_org"] = t
             s["step"] = "phone"
             return {
-                "text": "Шаг 5/6: введите номер телефона в формате +7…",
+                "text": "Шаг 5/6: отправьте номер телефона кнопкой или введите вручную в формате +7…",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
@@ -1040,7 +997,7 @@ async def process_text(
             v = validate_phone(text)
             if not v:
                 return {
-                    "text": "❌ Не удалось распознать номер. Введите +7XXXXXXXXXX.",
+                    "text": "❌ Не удалось распознать номер. Введите +7XXXXXXXXXX или отправьте контакт кнопкой.",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -1048,6 +1005,7 @@ async def process_text(
             s["step"] = "confirm"
             inn = (data.get("inn") or "").strip()
             preview = (
+                "Номер сохранён.\n\n"
                 "📋 *Шаг 6/6: проверка данных*\n\n"
                 f"🏢 Организация: {data.get('company_name', '')}\n"
                 f"🧾 ИНН: {inn}\n"
@@ -1150,7 +1108,7 @@ async def process_text(
             v = validate_phone(text)
             if not v:
                 return {
-                    "text": "Неверный формат. Пример: `+79001234567`",
+                    "text": "Неверный формат. Пример: +79001234567 или кнопка «Отправить контакт».",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -1164,7 +1122,7 @@ async def process_text(
         if step == "contact_name":
             if not validate_full_name(text):
                 return {
-                    "text": "Введите полное ФИО (минимум 2 слова). Пример: Иванов Иван Иванович",
+                    "text": "Введите полное ФИО (минимум 2 слова, буквы и дефис). Пример: Иванов Иван Иванович",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -1261,7 +1219,7 @@ async def process_text(
             s["step"] = "full_name"
             return {
                 "text": (
-                    "Укажите ваше полное ФИО.\n\n"
+                    "Введите полное ФИО.\n\n"
                     "_Образец:_ `Иванов Иван Иванович`"
                 ),
                 "format": "markdown",
@@ -1270,9 +1228,9 @@ async def process_text(
         if step == "full_name":
             if not data.get("join_consent_accepted"):
                 return {
-                    "text": _consent_gate_text("отклик в команду"),
+                    "text": "Сначала подтвердите согласие на обработку данных.",
                     "format": "markdown",
-                    "attachments": visit_card.consent_gate_keyboard("join"),
+                    "attachments": visit_card.back_to_main_keyboard(),
                 }
             if not validate_full_name(text):
                 return {
@@ -1283,7 +1241,10 @@ async def process_text(
             data["full_name"] = text.strip()
             s["step"] = "phone"
             return {
-                "text": "Укажите телефон.\n\n_Образец:_ `+79001234567`",
+                "text": (
+                    "Отправьте телефон кнопкой или введите вручную.\n\n"
+                    "_Образец:_ `+79001234567`"
+                ),
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
@@ -1353,8 +1314,8 @@ async def process_text(
             s["step"] = "skills"
             return {
                 "text": (
-                    "Дополнительные навыки (языки, ПО, права, медкнижка и т.д.).\n\n"
-                    "_Образец:_ `Английский B1, права кат. B`\n"
+                    "Дополнительные навыки и инструменты (языки, ПО, права, медкнижка и т.д.).\n\n"
+                    "_Образец:_ `Английский B1, права кат. B, опыт работы с кассой`\n"
                     "Если нечего добавить — отправьте `—`."
                 ),
                 "format": "markdown",
@@ -1368,7 +1329,7 @@ async def process_text(
             s["step"] = "selfie"
             return {
                 "text": (
-                    "Пришлите *селфи* для подтверждения анкеты (фото вложением).\n\n"
+                    "Пришлите *селфи* для подтверждения анкеты (только фото, без текста).\n\n"
                     "Лицо должно быть хорошо видно."
                 ),
                 "format": "markdown",
@@ -1378,7 +1339,7 @@ async def process_text(
             ref = _image_ref_from_body(message_body)
             if not ref:
                 return {
-                    "text": "Нужно отправить фото (селфи) вложением, не только текст.",
+                    "text": "Нужно отправить фото (селфи), не текст.",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -1404,7 +1365,7 @@ async def process_text(
             refs = list(data.get("portfolio_refs") or [])
             if len(refs) >= 2:
                 return {
-                    "text": "Уже получено 2 файла. Нажмите «Продолжить».",
+                    "text": "Достаточно, уже получено 2 файла. Нажмите «Продолжить».",
                     "format": "markdown",
                     "attachments": visit_card.join_portfolio_keyboard(),
                 }
@@ -1428,19 +1389,19 @@ async def process_text(
             }
         if step == "experience_years":
             return {
-                "text": "Выберите стаж кнопкой.",
+                "text": "Выберите стаж.",
                 "format": "markdown",
                 "attachments": visit_card.experience_keyboard(),
             }
         if step == "preferred_shift":
             return {
-                "text": "Выберите предпочтительные смены кнопкой.",
+                "text": "Какие смены вам удобнее?\n\nВыберите один вариант.",
                 "format": "markdown",
                 "attachments": visit_card.join_shift_pref_keyboard(),
             }
         if step == "docs_ready":
             return {
-                "text": "Выберите документы кнопкой.",
+                "text": "Какие документы уже готовы?",
                 "format": "markdown",
                 "attachments": visit_card.join_docs_keyboard(),
             }

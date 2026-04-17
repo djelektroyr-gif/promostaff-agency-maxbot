@@ -45,11 +45,11 @@ def _env_int_list(name: str) -> list[int]:
 
 MAX_TOKEN = _env("MAX_TOKEN")
 
-# Опционально: Postgres для воронки и напоминаний (как funnel_* в PRO).
+# Опционально: Postgres для воронки и напоминаний.
 DATABASE_URL = _env("DATABASE_URL")
-# Как в promostaff-bot/config.py — одна версия согласия для users.pd_consent_version и регистрации MAX/Telegram.
+# Версия согласия ПДн для регистрации в визитках.
 PD_CONSENT_VERSION = _env("PD_CONSENT_VERSION") or "2026-04-10-v1"
-# Кнопка Т-Банка в шагах самозанятости (как в PRO); только через env.
+# Кнопка Т-Банка в шагах самозанятости; только через env.
 TBANK_LK_URL = _env("TBANK_LK_URL") or _env("PROMOSTAFF_TBANK_PORTAL_URL")
 FUNNEL_REMINDERS_ENABLED = _env_bool("FUNNEL_REMINDERS_ENABLED", False)
 FUNNEL_REMINDERS_INTERVAL_SEC = _env_int("FUNNEL_REMINDERS_INTERVAL_SEC", 600)
