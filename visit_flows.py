@@ -53,7 +53,8 @@ SHIFT_STEP_TEXT = (
     "Дату или период вы уже указали выше — здесь только время смены.\n\n"
     "💡 *Несколько дней подряд?* Оценка в боте — за *один* типичный день с этим графиком; "
     "сводку по всему периоду и КП — с менеджером (раздел «Связаться с менеджером»).\n\n"
-    "_Образец:_ `10:00-22:00`"
+    "_Образец:_ `10:00-22:00`\n\n"
+    "👇"
 )
 
 
@@ -70,7 +71,8 @@ def _consent_gate_text(scope: str) -> str:
         "ОГРН 1265000003025). Мы используем только необходимые данные для связи, "
         "обработки заявки и предоставления сервиса.\n\n"
         "Нажимая «Согласен с обработкой данных», вы подтверждаете ознакомление с Политикой "
-        "и даёте согласие на обработку персональных данных для указанной цели."
+        "и даёте согласие на обработку персональных данных для указанной цели.\n\n"
+        "👇"
     )
 
 
@@ -88,6 +90,7 @@ def _client_visit_entry_text() -> str:
         "*Регистрация заказчика (юрлицо)*\n\n"
         "Перед расчётом нужно указать реквизиты организации и пройти подтверждение данных.\n\n"
         + _consent_pd_tail()
+        + "\n\n👇"
     )
 
 
@@ -438,6 +441,7 @@ def _order_preview_text(data: dict[str, Any]) -> str:
         f"*Персонал*\n{details or '—'}\n\n"
         "_Сумма ориентировочная: один день с указанным графиком смены. Итог по проекту и договорённостям — у менеджера._\n"
         f"*ИТОГО (ориентир): {total:,} RUB*".replace(",", " ")
+        + "\n\n👇"
     )
 
 
@@ -450,7 +454,8 @@ def _supervisor_offer_text(total: int, rec: int) -> str:
             "Ориентировочно *900* ₽/ч в дневное окно 10:00–22:00; ночные часы смены — "
             "*+15%* к часу (как у остальных ролей в расчёте).\n\n"
             "Можно включить *1* супервайзера в предварительную оценку или оставить только исполнителей — "
-            "итоговую схему уточнит менеджер."
+            "итоговую схему уточнит менеджер.\n\n"
+            "👇"
         )
     return (
         "*Супервайзер / тимлидер*\n\n"
@@ -459,7 +464,8 @@ def _supervisor_offer_text(total: int, rec: int) -> str:
         "Ориентировочно *900* ₽/ч в дневное окно 10:00–22:00; ночные часы смены — "
         "*+15%* к часу (как у остальных ролей).\n\n"
         "Включите супервайзеров в предварительный расчёт или оставьте только исполнителей — "
-        "точный состав уточнит менеджер."
+        "точный состав уточнит менеджер.\n\n"
+        "👇"
     )
 
 
@@ -498,7 +504,8 @@ async def process_callback(
             "text": (
                 "*Заказ расчёта стоимости*\n\n"
                 "Выберите быстрый сценарий или введите тип проекта вручную.\n\n"
-                "Быстрый сценарий ускорит заполнение формы."
+                "Быстрый сценарий ускорит заполнение формы.\n\n"
+                "👇"
             ),
             "format": "markdown",
             "attachments": visit_card.order_quickstart_keyboard(),
@@ -521,7 +528,8 @@ async def process_callback(
             "text": (
                 "*Заказ расчёта стоимости*\n\n"
                 "Выберите быстрый сценарий или введите тип проекта вручную.\n\n"
-                "Быстрый сценарий ускорит заполнение формы."
+                "Быстрый сценарий ускорит заполнение формы.\n\n"
+                "👇"
             ),
             "format": "markdown",
             "attachments": visit_card.order_quickstart_keyboard(),
@@ -534,7 +542,8 @@ async def process_callback(
             "notification": "Согласие принято ✅",
             "text": (
                 "*Сообщение менеджеру*\n\n"
-                "Напишите вопрос одним сообщением — мы ответим в рабочее время."
+                "Напишите вопрос одним сообщением — мы ответим в рабочее время.\n\n"
+                "👇"
             ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
@@ -549,7 +558,8 @@ async def process_callback(
                 "text": (
                     f"Должность: *{data.get('position')}*\n\n"
                     "Введите полное ФИО.\n\n"
-                    "_Образец:_ `Иванов Иван Иванович`"
+                    "_Образец:_ `Иванов Иван Иванович`\n\n"
+                    "👇"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
@@ -557,7 +567,7 @@ async def process_callback(
         s["step"] = "profile_pick"
         return {
             "notification": "Согласие принято ✅",
-            "text": "Выберите ваш формат занятости, чтобы мы быстрее подобрали подходящую роль:",
+            "text": "Выберите ваш формат занятости, чтобы мы быстрее подобрали подходящую роль:\n\n👇",
             "format": "markdown",
             "attachments": visit_card.join_profile_keyboard(),
         }
@@ -573,7 +583,8 @@ async def process_callback(
             "notification": f"{pos}: {n} чел.",
             "text": (
                 "Выберите категории персонала и количество (нажимайте для увеличения).\n\n"
-                "_После выбора нажмите «Готово»._"
+                "_После выбора нажмите «Готово»._\n\n"
+                "👇"
             ),
             "format": "markdown",
             "attachments": visit_card.order_staff_keyboard(temp),
@@ -590,7 +601,8 @@ async def process_callback(
                 "notification": "Введите свой тип проекта",
                 "text": (
                     "Укажите тип мероприятия (выставка, концерт, корпоратив и т.д.).\n\n"
-                    "_Образец:_ `Корпоратив, 200 гостей`"
+                    "_Образец:_ `Корпоратив, 200 гостей`\n\n"
+                    "👇"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
@@ -602,7 +614,7 @@ async def process_callback(
         s["step"] = "city"
         return {
             "notification": "Сценарий применён ✅",
-            "text": "Укажите город проведения мероприятия.\n\n_Образец:_ `Москва`",
+            "text": "Укажите город проведения мероприятия.\n\n_Образец:_ `Москва`\n\n👇",
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
         }
@@ -626,7 +638,8 @@ async def process_callback(
                 "notification": "📞 Дальше — контакт для связи.",
                 "text": (
                     "Отправьте контакт телефона кнопкой ниже или введите вручную.\n\n"
-                    "_Образец:_ `+79001234567`"
+                    "_Образец:_ `+79001234567`\n\n"
+                    "👇"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
@@ -653,7 +666,8 @@ async def process_callback(
             "text": (
                 f"В предварительный расчёт добавлено: *{rec}* {sv_word}.\n\n"
                 "Отправьте контакт телефона кнопкой ниже или введите вручную.\n\n"
-                "_Образец:_ `+79001234567`"
+                "_Образец:_ `+79001234567`\n\n"
+                "👇"
             ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
@@ -667,7 +681,8 @@ async def process_callback(
             "text": (
                 "Супервайзер в расчёт не включён — при необходимости менеджер предложит варианты.\n\n"
                 "Отправьте контакт телефона кнопкой ниже или введите вручную.\n\n"
-                "_Образец:_ `+79001234567`"
+                "_Образец:_ `+79001234567`\n\n"
+                "👇"
             ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
@@ -679,7 +694,8 @@ async def process_callback(
                 "notification": "Подтвердите согласие на обработку персональных данных перед отправкой заявки.",
                 "text": (
                     "Перед отправкой заявки подтвердите согласие кнопкой ниже.\n\n"
-                    f"Политика: {PRIVACY_POLICY_URL}"
+                    f"Политика: {PRIVACY_POLICY_URL}\n\n"
+                    "👇"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.order_confirm_keyboard(),
@@ -709,7 +725,8 @@ async def process_callback(
             "notification": "✅ Заявка у команды. Менеджер свяжется для уточнения деталей и точной сметы.",
             "text": (
                 f"*Заявка #{oid} принята.*\n\n"
-                "Спасибо! Менеджер свяжется с вами в ближайшее время."
+                "Спасибо! Менеджер свяжется с вами в ближайшее время.\n\n"
+                "👇"
             ),
             "format": "markdown",
             "attachments": visit_card.main_menu_keyboard(),
@@ -729,7 +746,8 @@ async def process_callback(
             "notification": f"Стаж: {exp}",
             "text": (
                 "Кратко опишите опыт: где работали, какие задачи.\n\n"
-                "_Образец:_ `Промо в торговых центрах 2 года, выкладка, коммуникация с гостями`"
+                "_Образец:_ `Промо в торговых центрах 2 года, выкладка, коммуникация с гостями`\n\n"
+                "👇"
             ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
@@ -767,7 +785,7 @@ async def process_callback(
         s["step"] = "experience_years"
         return {
             "notification": f"Документы: {label}",
-            "text": "Выберите стаж кнопкой.",
+            "text": "Выберите стаж кнопкой.\n\n👇",
             "format": "markdown",
             "attachments": visit_card.experience_keyboard(),
         }
@@ -777,7 +795,7 @@ async def process_callback(
         if not refs:
             return {
                 "notification": "Нужно минимум 1 фото/видео.",
-                "text": "Сначала отправьте минимум 1 файл портфолио.",
+                "text": "Сначала отправьте минимум 1 файл портфолио.\n\n👇",
                 "format": "markdown",
                 "attachments": visit_card.join_portfolio_keyboard(),
             }
@@ -786,7 +804,8 @@ async def process_callback(
             "notification": "Портфолио сохранено ✅",
             "text": (
                 "Хотите попасть в приоритетный пул исполнителей?\n\n"
-                "В приоритетном пуле чаще предлагаем проекты первыми."
+                "В приоритетном пуле чаще предлагаем проекты первыми.\n\n"
+                "👇"
             ),
             "format": "markdown",
             "attachments": visit_card.join_priority_keyboard(),
@@ -818,7 +837,8 @@ async def process_callback(
             f"Теги специализации: {data.get('specialization_tags') or '—'}\n"
             f"Тег опыта: {data.get('experience_tag') or '—'}\n"
             "Селфи: получено\n\n"
-            "Нажмите *«Отправить анкету»*."
+            "Нажмите *«Отправить анкету»*.\n\n"
+            "👇"
         )
         return {
             "notification": "Отметили ✅",
@@ -842,7 +862,8 @@ async def process_callback(
             "notification": "✅ Анкета у команды. Ответим после рассмотрения.",
             "text": (
                 f"*Заявка #{rid} принята.*\n\n"
-                f"Спасибо за интерес к {COMPANY_NAME}!"
+                f"Спасибо за интерес к {COMPANY_NAME}!\n\n"
+                "👇"
             ),
             "format": "markdown",
             "attachments": visit_card.main_menu_keyboard(),
@@ -853,7 +874,7 @@ async def process_callback(
             s["step"] = "position_text"
             return {
                 "notification": "Введите должность текстом.",
-                "text": "Введите желаемую должность одной строкой:",
+                "text": "Введите желаемую должность одной строкой:\n\n👇",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
@@ -870,7 +891,8 @@ async def process_callback(
                 "notification": f"Должность: {APPLICANT_POSITIONS[idx]}",
                 "text": (
                     "Введите полное ФИО.\n\n"
-                    "_Образец:_ `Иванов Иван Иванович`"
+                    "_Образец:_ `Иванов Иван Иванович`\n\n"
+                    "👇"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
@@ -890,7 +912,7 @@ async def process_callback(
         s["step"] = "position_pick"
         return {
             "notification": "Отлично, идём дальше.",
-            "text": "Выберите желаемую должность:",
+            "text": "Выберите желаемую должность:\n\n👇",
             "format": "markdown",
             "attachments": visit_card.join_applicant_pick_keyboard(),
         }
@@ -915,7 +937,7 @@ async def process_text(
     if step == "consent":
         if flow == "client_visit":
             return {
-                "text": "Нажмите кнопку согласия ниже или вернитесь в меню.",
+                "text": "Нажмите кнопку согласия ниже или вернитесь в меню.\n\n👇",
                 "format": "markdown",
                 "attachments": visit_card.consent_gate_keyboard("client_visit"),
             }
@@ -989,7 +1011,7 @@ async def process_text(
             data["position_in_org"] = t
             s["step"] = "phone"
             return {
-                "text": "Шаг 5/6: отправьте номер телефона кнопкой или введите вручную в формате +7…",
+                "text": "Шаг 5/6: отправьте номер телефона кнопкой или введите вручную в формате +7…\n\n👇",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
@@ -1012,7 +1034,8 @@ async def process_text(
                 f"👤 Контактное лицо: {data.get('contact_name', '')}\n"
                 f"💼 Должность: {data.get('position_in_org', '')}\n"
                 f"📞 Телефон: {data.get('phone', '')}\n\n"
-                "Всё верно?"
+                "Всё верно?\n\n"
+                "👇"
             )
             return {
                 "text": preview,
@@ -1021,7 +1044,7 @@ async def process_text(
             }
         if step == "confirm":
             return {
-                "text": "Используйте кнопки под сообщением: подтвердить или заполнить заново.",
+                "text": "Используйте кнопки под сообщением: подтвердить или заполнить заново.\n\n👇",
                 "format": "markdown",
                 "attachments": visit_card.client_reg_confirm_keyboard(),
             }
@@ -1043,7 +1066,7 @@ async def process_text(
             logger.exception("save_visit_question")
         clear_session(max_uid)
         return {
-            "text": "*Сообщение отправлено.* Спасибо!",
+            "text": "*Сообщение отправлено.* Спасибо!\n\n👇",
             "format": "markdown",
             "attachments": visit_card.main_menu_keyboard(),
         }
@@ -1053,7 +1076,7 @@ async def process_text(
             data["event_type"] = text.strip()
             s["step"] = "city"
             return {
-                "text": "Укажите город проведения мероприятия.\n\n_Образец:_ `Москва`",
+                "text": "Укажите город проведения мероприятия.\n\n_Образец:_ `Москва`\n\n👇",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
@@ -1063,7 +1086,8 @@ async def process_text(
             return {
                 "text": (
                     "Укажите дату мероприятия или период (можно несколько дней).\n\n"
-                    "_Образец:_ `15.06.2026` или `12–14 июня 2026`"
+                    "_Образец:_ `15.06.2026` или `12–14 июня 2026`\n\n"
+                    "👇"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
@@ -1093,7 +1117,8 @@ async def process_text(
             return {
                 "text": (
                     "Выберите категории персонала и количество (нажимайте для увеличения).\n\n"
-                    "_После выбора нажмите «Готово»._"
+                    "_После выбора нажмите «Готово»._\n\n"
+                    "👇"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.order_staff_keyboard({}),
@@ -1195,7 +1220,7 @@ async def process_text(
             }
         if step == "confirm":
             return {
-                "text": "Используйте кнопки под сообщением: отправить заявку или изменить данные.",
+                "text": "Используйте кнопки под сообщением: отправить заявку или изменить данные.\n\n👇",
                 "format": "markdown",
                 "attachments": visit_card.order_confirm_keyboard(),
             }
@@ -1220,7 +1245,8 @@ async def process_text(
             return {
                 "text": (
                     "Введите полное ФИО.\n\n"
-                    "_Образец:_ `Иванов Иван Иванович`"
+                    "_Образец:_ `Иванов Иван Иванович`\n\n"
+                    "👇"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
@@ -1243,7 +1269,8 @@ async def process_text(
             return {
                 "text": (
                     "Отправьте телефон кнопкой или введите вручную.\n\n"
-                    "_Образец:_ `+79001234567`"
+                    "_Образец:_ `+79001234567`\n\n"
+                    "👇"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
@@ -1284,7 +1311,7 @@ async def process_text(
             data["metro"] = text.strip()
             s["step"] = "preferred_shift"
             return {
-                "text": "Какие смены вам удобнее?\n\nВыберите один вариант.",
+                "text": "Какие смены вам удобнее?\n\nВыберите один вариант.\n\n👇",
                 "format": "markdown",
                 "attachments": visit_card.join_shift_pref_keyboard(),
             }
@@ -1299,7 +1326,7 @@ async def process_text(
             data["travel_radius_km"] = str(km)
             s["step"] = "docs_ready"
             return {
-                "text": "Какие документы уже готовы?",
+                "text": "Какие документы уже готовы?\n\n👇",
                 "format": "markdown",
                 "attachments": visit_card.join_docs_keyboard(),
             }
@@ -1349,7 +1376,8 @@ async def process_text(
             return {
                 "text": (
                     "Добавьте мини-портфолио: 1–2 фото/видео с проектов.\n\n"
-                    "Отправьте минимум 1 файл, затем нажмите *«Продолжить»*."
+                    "Отправьте минимум 1 файл, затем нажмите *«Продолжить»*.\n\n"
+                    "👇"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.join_portfolio_keyboard(),
@@ -1358,14 +1386,14 @@ async def process_text(
             ref = _media_ref_from_body(message_body)
             if not ref:
                 return {
-                    "text": "Отправьте фото или видео. После этого нажмите «Продолжить».",
+                    "text": "Отправьте фото или видео. После этого нажмите «Продолжить».\n\n👇",
                     "format": "markdown",
                     "attachments": visit_card.join_portfolio_keyboard(),
                 }
             refs = list(data.get("portfolio_refs") or [])
             if len(refs) >= 2:
                 return {
-                    "text": "Достаточно, уже получено 2 файла. Нажмите «Продолжить».",
+                    "text": "Достаточно, уже получено 2 файла. Нажмите «Продолжить».\n\n👇",
                     "format": "markdown",
                     "attachments": visit_card.join_portfolio_keyboard(),
                 }
@@ -1373,9 +1401,9 @@ async def process_text(
             data["portfolio_refs"] = refs
             left = 2 - len(refs)
             if left > 0:
-                txt = f"Файл получен ✅ Можно добавить ещё {left} или нажать «Продолжить»."
+                txt = f"Файл получен ✅ Можно добавить ещё {left} или нажать «Продолжить».\n\n👇"
             else:
-                txt = "Получено 2 файла ✅ Нажмите «Продолжить»."
+                txt = "Получено 2 файла ✅ Нажмите «Продолжить».\n\n👇"
             return {
                 "text": txt,
                 "format": "markdown",
@@ -1383,31 +1411,31 @@ async def process_text(
             }
         if step == "review_submit":
             return {
-                "text": "Нажмите кнопку «Отправить анкету» ниже.",
+                "text": "Нажмите кнопку «Отправить анкету» ниже.\n\n👇",
                 "format": "markdown",
                 "attachments": visit_card.submit_join_keyboard(),
             }
         if step == "experience_years":
             return {
-                "text": "Выберите стаж.",
+                "text": "Выберите стаж.\n\n👇",
                 "format": "markdown",
                 "attachments": visit_card.experience_keyboard(),
             }
         if step == "preferred_shift":
             return {
-                "text": "Какие смены вам удобнее?\n\nВыберите один вариант.",
+                "text": "Какие смены вам удобнее?\n\nВыберите один вариант.\n\n👇",
                 "format": "markdown",
                 "attachments": visit_card.join_shift_pref_keyboard(),
             }
         if step == "docs_ready":
             return {
-                "text": "Какие документы уже готовы?",
+                "text": "Какие документы уже готовы?\n\n👇",
                 "format": "markdown",
                 "attachments": visit_card.join_docs_keyboard(),
             }
         if step == "priority_pool":
             return {
-                "text": "Выберите вариант кнопкой.",
+                "text": "Выберите вариант кнопкой.\n\n👇",
                 "format": "markdown",
                 "attachments": visit_card.join_priority_keyboard(),
             }
