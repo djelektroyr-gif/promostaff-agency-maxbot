@@ -427,9 +427,9 @@ async def admin_ui(
 
         <div class="box">
           <h3>Funnel breakdown</h3>
-          <p class="muted">Незавершённые сценарии по последнему шагу.</p>
+          <p class="muted">Незавершённые сценарии по последнему состоянию.</p>
           <table>
-            <thead><tr><th>Шаг</th><th>Кол-во</th></tr></thead>
+            <thead><tr><th>Состояние</th><th>Кол-во</th></tr></thead>
             <tbody>{rows}</tbody>
           </table>
           {db_note}
@@ -439,7 +439,7 @@ async def admin_ui(
           <h3>Последние незавершённые пользователи</h3>
           <p class="muted">Последние MAX users с незавершённой воронкой.</p>
           <table>
-            <thead><tr><th>MAX user ID</th><th>Шаг</th><th>Последняя активность</th></tr></thead>
+            <thead><tr><th>MAX user ID</th><th>Состояние</th><th>Последняя активность</th></tr></thead>
             <tbody>{users_rows}</tbody>
           </table>
         </div>

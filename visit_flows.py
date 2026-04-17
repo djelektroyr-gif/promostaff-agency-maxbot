@@ -329,12 +329,12 @@ def _brief_file_from_body(message_body: dict[str, Any] | None) -> dict[str, str]
         if not isinstance(a, dict):
             continue
         t = (a.get("type") or "").lower()
-        if t not in ("image", "photo", "picture", "video", "file"):
+        if t not in ("image", "photo", "picture", "file"):
             continue
         p = a.get("payload")
         url = ""
         if isinstance(p, dict):
-            for key in ("url", "photo_url", "video_url", "small_url", "medium_url", "token"):
+            for key in ("url", "photo_url", "small_url", "medium_url", "token"):
                 v = p.get(key)
                 if v:
                     url = str(v)
@@ -352,7 +352,22 @@ def _brief_file_from_body(message_body: dict[str, Any] | None) -> dict[str, str]
     return None
 
 
-def _media_ref_from_body(message_body: dict[str, Any] | None) -> str | None:
+def _message_body_has_video(message_body: dict[str, Any] | None) -> bool:
+    if not message_body:
+        return False
+    raw = message_body.get("attachments")
+    if raw is None and isinstance(message_body.get("attachment"), dict):
+        raw = [message_body["attachment"]]
+    if not isinstance(raw, list):
+        return False
+    for a in raw:
+        if isinstance(a, dict) and (a.get("type") or "").lower() == "video":
+            return True
+    return False
+
+
+def _portfolio_photo_ref_from_body(message_body: dict[str, Any] | None) -> str | None:
+    """Ссылка на изображение для портфолио (без видео и произвольных файлов)."""
     if not message_body:
         return None
     raw = message_body.get("attachments")
@@ -364,11 +379,11 @@ def _media_ref_from_body(message_body: dict[str, Any] | None) -> str | None:
         if not isinstance(a, dict):
             continue
         t = (a.get("type") or "").lower()
-        if t not in ("image", "photo", "picture", "video", "file"):
+        if t not in ("image", "photo", "picture"):
             continue
         p = a.get("payload")
         if isinstance(p, dict):
-            for key in ("url", "photo_url", "video_url", "small_url", "medium_url", "token"):
+            for key in ("url", "photo_url", "small_url", "medium_url", "token"):
                 v = p.get(key)
                 if v:
                     return str(v)
@@ -519,7 +534,7 @@ def _format_join_plain(data: dict[str, Any], rid: int, who: str) -> str:
         f"Стаж: {data.get('experience_years', '—')}\n"
         f"Опыт: {data.get('experience_desc', '—')}\n"
         f"Навыки: {(data.get('skills') or '').strip() or '—'}\n"
-        f"Портфолио: {p_count} файл(ов)\n"
+        f"Портфолио: {p_count} фото\n"
         f"Приоритетный пул: {priority}\n"
         f"Теги специализации: {spec_tags}\n"
         f"Тег опыта: {exp_tag}\n"
@@ -679,7 +694,7 @@ async def process_callback(
             "notification": "Согласие принято ✅",
             "text": (
                 "🏢 *Регистрация заказчика*\n\n"
-                "Шаг 1/7: введите *полное* юридическое название организации (как в учредительных документах):"
+                "Введите *полное* юридическое название организации (как в учредительных документах):"
             ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
@@ -740,6 +755,115 @@ async def process_callback(
             "attachments": visit_card.order_mode_keyboard(),
         }
 
+    if flow == "order" and payload == "cp_flow_back":
+        step = s.get("step")
+        if step == "cp_event_type":
+            s["step"] = "order_mode"
+            return {
+                "notification": "Сценарий",
+                "text": "*Заказ расчёта стоимости*\n\nВыберите вариант:",
+                "format": "markdown",
+                "attachments": visit_card.order_mode_keyboard(),
+            }
+        if step == "cp_city":
+            s["step"] = "cp_event_type"
+            return {
+                "notification": "Назад",
+                "text": (
+                    "*Запрос коммерческого предложения*\n\n"
+                    "Опишите *тип мероприятия* (выставка, промо, корпоратив и т.д.).\n\n"
+                    "_Образец:_ `Корпоратив, 200 гостей, Москва-Сити`\n\n"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.cp_flow_back_keyboard(),
+            }
+        if step == "cp_dates":
+            s["step"] = "cp_city"
+            return {
+                "notification": "Назад",
+                "text": "Укажите город проведения мероприятия.\n\n_Образец:_ `Москва`",
+                "format": "markdown",
+                "attachments": visit_card.cp_flow_back_keyboard(),
+            }
+        if step == "cp_brief_wait":
+            s["step"] = "cp_dates"
+            return {
+                "notification": "Назад",
+                "text": (
+                    "Укажите даты мероприятия или период.\n\n"
+                    "_Образец:_ `15.06.2026` или `12–14 июня 2026`\n\n"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.cp_flow_back_keyboard(),
+            }
+        if step == "cp_brief_text":
+            s["step"] = "cp_brief_wait"
+            return {
+                "notification": "Назад",
+                "text": "У вас есть готовый бриф или техническое задание?",
+                "format": "markdown",
+                "attachments": visit_card.cp_brief_keyboard(),
+            }
+        if step == "cp_channel_pick":
+            s["step"] = "cp_brief_wait"
+            return {
+                "notification": "Назад",
+                "text": "У вас есть готовый бриф или техническое задание?",
+                "format": "markdown",
+                "attachments": visit_card.cp_brief_keyboard(),
+            }
+        if step == "cp_call_time":
+            s["step"] = "cp_channel_pick"
+            return {
+                "notification": "Назад",
+                "text": "Как удобнее связаться по КП?",
+                "format": "markdown",
+                "attachments": visit_card.cp_channel_keyboard(),
+            }
+        return None
+
+    if flow == "order" and payload == "order_flow_back":
+        step = s.get("step")
+        if step == "event_type":
+            s["step"] = "order_mode"
+            return {
+                "notification": "Назад",
+                "text": "*Заказ расчёта стоимости*\n\nВыберите вариант:",
+                "format": "markdown",
+                "attachments": visit_card.order_mode_keyboard(),
+            }
+        if step == "city":
+            s["step"] = "event_type"
+            return {
+                "notification": "Назад",
+                "text": (
+                    "*Срочный расчёт*\n\n"
+                    "Выберите быстрый сценарий или введите тип проекта вручную.\n\n"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.order_quickstart_keyboard(),
+            }
+        if step == "event_date":
+            s["step"] = "city"
+            return {
+                "notification": "Назад",
+                "text": "Укажите город проведения мероприятия.\n\n_Образец:_ `Москва`",
+                "format": "markdown",
+                "attachments": visit_card.order_flow_back_keyboard(),
+            }
+        if step == "shift_time":
+            s["step"] = "event_date"
+            return {
+                "notification": "Назад",
+                "text": (
+                    "Укажите дату мероприятия или период (можно несколько дней).\n\n"
+                    "_Образец:_ `15.06.2026` или `12–14 июня 2026`\n\n"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.order_flow_back_keyboard(),
+            }
+        return None
+
     if flow == "order" and step == "order_mode" and payload == "order_mode_quick":
         data.pop("order_kind", None)
         for k in (
@@ -788,7 +912,7 @@ async def process_callback(
                 "_Образец:_ `Корпоратив, 200 гостей, Москва-Сити`\n\n"
             ),
             "format": "markdown",
-            "attachments": visit_card.back_to_main_keyboard(),
+            "attachments": visit_card.cp_flow_back_keyboard(),
         }
 
     if flow == "question" and step == "consent" and payload == "consent_question_accept":
@@ -857,7 +981,7 @@ async def process_callback(
                     "_Образец:_ `Корпоратив, 200 гостей`\n\n"
                 ),
                 "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
+                "attachments": visit_card.order_flow_back_keyboard(),
             }
         preset = presets.get(payload)
         if not preset:
@@ -868,7 +992,7 @@ async def process_callback(
             "notification": "Сценарий применён ✅",
             "text": "Укажите город проведения мероприятия.\n\n_Образец:_ `Москва`",
             "format": "markdown",
-            "attachments": visit_card.back_to_main_keyboard(),
+            "attachments": visit_card.order_flow_back_keyboard(),
         }
 
     if flow == "order" and step == "staff_pick" and payload == "positions_done":
@@ -933,16 +1057,19 @@ async def process_callback(
             "notification": "Опишите бриф",
             "text": (
                 "*Бриф / ТЗ*\n\n"
-                "Кратко опишите задачу или ключевые требования текстом.\n"
-                "Загрузка файлов в MAX будет добавлена отдельно.\n\n"
+                "Кратко опишите задачу или ключевые требования *текстом* "
+                "и/или пришлите *фото* или *документ* (Word, Excel, PDF и др.) — "
+                "подпись к вложению необязательна.\n\n"
             ),
             "format": "markdown",
-            "attachments": visit_card.back_to_main_keyboard(),
+            "attachments": visit_card.cp_flow_back_keyboard(),
         }
 
     if flow == "order" and step == "cp_brief_wait" and payload == "cp_brief_no":
         data["cp_brief_has"] = False
         data["cp_brief_note"] = ""
+        data.pop("cp_brief_max_url", None)
+        data.pop("cp_brief_file_name", None)
         s["step"] = "cp_channel_pick"
         return {
             "notification": "Дальше — способ связи",
@@ -958,7 +1085,7 @@ async def process_callback(
             "notification": "Звонок",
             "text": "Когда удобно принять звонок менеджера?\n\n_Образец:_ `будни 10:00–18:00`",
             "format": "markdown",
-            "attachments": visit_card.back_to_main_keyboard(),
+            "attachments": visit_card.cp_flow_back_keyboard(),
         }
 
     if flow == "order" and step == "cp_channel_pick" and payload == "cp_ch_msg":
@@ -1139,8 +1266,8 @@ async def process_callback(
         refs = list(data.get("portfolio_refs") or [])
         if not refs:
             return {
-                "notification": "Нужно минимум 1 фото/видео.",
-                "text": "Сначала отправьте минимум 1 файл портфолио.",
+                "notification": "Нужно минимум 1 фото.",
+                "text": "Сначала отправьте минимум 1 фото для портфолио.",
                 "format": "markdown",
                 "attachments": visit_card.join_portfolio_keyboard(),
             }
@@ -1176,7 +1303,7 @@ async def process_callback(
             f"Стаж: {data.get('experience_years')}\n"
             f"Опыт: {data.get('experience_desc')}\n"
             f"Навыки: {data.get('skills') or '—'}\n"
-            f"Портфолио: {p_count} файл(ов)\n"
+            f"Портфолио: {p_count} фото\n"
             f"Приоритетный пул: {priority_text}\n"
             f"Теги специализации: {data.get('specialization_tags') or '—'}\n"
             f"Тег опыта: {data.get('experience_tag') or '—'}\n"
@@ -1306,7 +1433,7 @@ async def process_text(
             s["step"] = "inn"
             return {
                 "text": (
-                    "Шаг 2/7: введите *ИНН* организации (10 цифр для юрлица или 12 для ИП) — сразу после названия, "
+                    "Введите *ИНН* организации (10 цифр для юрлица или 12 для ИП) — сразу после названия, "
                     "чтобы мы могли сверить компанию."
                 ),
                 "format": "markdown",
@@ -1323,7 +1450,7 @@ async def process_text(
             data["inn"] = re.sub(r"\D", "", raw)
             s["step"] = "contact_name"
             return {
-                "text": "Шаг 3/7: введите *полное ФИО* контактного лица:",
+                "text": "Введите *полное ФИО* контактного лица:",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
@@ -1337,7 +1464,7 @@ async def process_text(
             data["contact_name"] = text.strip()
             s["step"] = "position_in_org"
             return {
-                "text": "Шаг 4/7: укажите *вашу должность* в организации:",
+                "text": "Укажите *вашу должность* в организации:",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
@@ -1352,7 +1479,7 @@ async def process_text(
             data["position_in_org"] = t
             s["step"] = "phone"
             return {
-                "text": "Шаг 5/7: отправьте номер телефона кнопкой или введите вручную в формате +7…",
+                "text": "Отправьте номер телефона кнопкой или введите вручную в формате +7…",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
@@ -1367,7 +1494,7 @@ async def process_text(
             s["step"] = "confirm"
             inn = (data.get("inn") or "").strip()
             preview = (
-                "📋 *Шаг 7/7: проверка данных*\n\n"
+                "📋 *Проверка данных*\n\n"
                 f"🏢 Организация: {data.get('company_name', '')}\n"
                 f"🧾 ИНН: {inn}\n"
                 f"👤 Контактное лицо: {data.get('contact_name', '')}\n"
@@ -1394,7 +1521,7 @@ async def process_text(
             return {
                 "text": (
                     "Номер сохранён.\n\n"
-                    "Шаг 6/7: введите *email* для связи по проекту (коммерческие письма, КП).\n\n"
+                    "Введите *email* для связи по проекту (коммерческие письма, КП).\n\n"
                     "_Образец:_ `client@company.ru`"
                 ),
                 "format": "markdown",
@@ -1442,7 +1569,7 @@ async def process_text(
             return {
                 "text": "Укажите город проведения мероприятия.\n\n_Образец:_ `Москва`",
                 "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
+                "attachments": visit_card.cp_flow_back_keyboard(),
             }
         if step == "cp_city":
             data["city"] = text.strip()
@@ -1453,7 +1580,7 @@ async def process_text(
                     "_Образец:_ `15.06.2026` или `12–14 июня 2026`\n\n"
                 ),
                 "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
+                "attachments": visit_card.cp_flow_back_keyboard(),
             }
         if step == "cp_dates":
             data["event_date"] = text.strip()
@@ -1464,8 +1591,35 @@ async def process_text(
                 "attachments": visit_card.cp_brief_keyboard(),
             }
         if step == "cp_brief_text":
+            if _message_body_has_video(message_body):
+                return {
+                    "text": (
+                        "Видео для брифа не принимаем. Пришлите *фото* или *документ* "
+                        "(Word, Excel, PDF и др.) либо опишите задачу текстом."
+                    ),
+                    "format": "markdown",
+                    "attachments": visit_card.cp_flow_back_keyboard(),
+                }
+            bf = _brief_file_from_body(message_body)
+            note = (text or "").strip()
+            if not bf and not note:
+                return {
+                    "text": (
+                        "Пришлите текст брифа и/или вложение: *фото* или *файл* "
+                        "(Word, Excel, PDF и др.). Подпись к файлу необязательна."
+                    ),
+                    "format": "markdown",
+                    "attachments": visit_card.cp_flow_back_keyboard(),
+                }
             data["cp_brief_has"] = True
-            data["cp_brief_note"] = text.strip()
+            data.pop("cp_brief_max_url", None)
+            data.pop("cp_brief_file_name", None)
+            if bf:
+                data["cp_brief_max_url"] = bf["url"]
+                data["cp_brief_file_name"] = bf["name"]
+                data["cp_brief_note"] = note or f"Вложение: {bf['name']}"
+            else:
+                data["cp_brief_note"] = note
             s["step"] = "cp_channel_pick"
             return {
                 "text": "Как удобнее связаться по КП?",
@@ -1505,7 +1659,7 @@ async def process_text(
             return {
                 "text": "Укажите город проведения мероприятия.\n\n_Образец:_ `Москва`",
                 "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
+                "attachments": visit_card.order_flow_back_keyboard(),
             }
         if step == "city":
             data["city"] = text.strip()
@@ -1516,7 +1670,7 @@ async def process_text(
                     "_Образец:_ `15.06.2026` или `12–14 июня 2026`\n\n"
                 ),
                 "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
+                "attachments": visit_card.order_flow_back_keyboard(),
             }
         if step == "event_date":
             data["event_date"] = text.strip()
@@ -1524,7 +1678,7 @@ async def process_text(
             return {
                 "text": "*Время смены*\n\n" + SHIFT_STEP_TEXT,
                 "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
+                "attachments": visit_card.order_flow_back_keyboard(),
             }
         if step == "shift_time":
             raw = text.strip()
@@ -1535,7 +1689,7 @@ async def process_text(
                         "например `10:00-22:00`."
                     ),
                     "format": "markdown",
-                    "attachments": visit_card.back_to_main_keyboard(),
+                    "attachments": visit_card.order_flow_back_keyboard(),
                 }
             data["shift_time"] = raw
             s["step"] = "staff_pick"
@@ -1623,7 +1777,7 @@ async def process_text(
             }
         if step in ("staff_pick", "supervisor_offer"):
             return {
-                "text": "На этом шаге выберите варианты кнопками выше.",
+                "text": "Выберите варианты кнопками в сообщении выше.",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
@@ -1770,24 +1924,33 @@ async def process_text(
             s["step"] = "portfolio"
             return {
                 "text": (
-                    "Добавьте мини-портфолио: 1–2 фото/видео с проектов.\n\n"
-                    "Отправьте минимум 1 файл, затем нажмите *«Продолжить»*.\n\n"
+                    "Добавьте мини-портфолио: 1–2 *фото* с проектов.\n\n"
+                    "Отправьте минимум 1 фото, затем нажмите *«Продолжить»*.\n\n"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.join_portfolio_keyboard(),
             }
         if step == "portfolio":
-            ref = _media_ref_from_body(message_body)
+            if _message_body_has_video(message_body):
+                return {
+                    "text": (
+                        "Видео в портфолио не принимаем — только *фото*. "
+                        "Пришлите 1–2 изображения с проектов."
+                    ),
+                    "format": "markdown",
+                    "attachments": visit_card.join_portfolio_keyboard(),
+                }
+            ref = _portfolio_photo_ref_from_body(message_body)
             if not ref:
                 return {
-                    "text": "Отправьте фото или видео. После этого нажмите «Продолжить».",
+                    "text": "Отправьте *фото*. После этого нажмите «Продолжить».",
                     "format": "markdown",
                     "attachments": visit_card.join_portfolio_keyboard(),
                 }
             refs = list(data.get("portfolio_refs") or [])
             if len(refs) >= 2:
                 return {
-                    "text": "Достаточно, уже получено 2 файла. Нажмите «Продолжить».",
+                    "text": "Достаточно, уже получено 2 фото. Нажмите «Продолжить».",
                     "format": "markdown",
                     "attachments": visit_card.join_portfolio_keyboard(),
                 }
@@ -1795,9 +1958,9 @@ async def process_text(
             data["portfolio_refs"] = refs
             left = 2 - len(refs)
             if left > 0:
-                txt = f"Файл получен ✅ Можно добавить ещё {left} или нажать «Продолжить»."
+                txt = f"Фото получено ✅ Можно добавить ещё {left} или нажать «Продолжить»."
             else:
-                txt = "Получено 2 файла ✅ Нажмите «Продолжить»."
+                txt = "Получено 2 фото ✅ Нажмите «Продолжить»."
             return {
                 "text": txt,
                 "format": "markdown",

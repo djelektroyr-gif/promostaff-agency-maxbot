@@ -49,7 +49,7 @@ MAX_TOKEN = _env("MAX_TOKEN")
 DATABASE_URL = _env("DATABASE_URL")
 # Версия согласия ПДн для регистрации в визитках.
 PD_CONSENT_VERSION = _env("PD_CONSENT_VERSION") or "2026-04-10-v1"
-# Кнопка Т-Банка в шагах самозанятости; только через env.
+# Кнопка Т-Банка в сценарии самозанятости; только через env.
 TBANK_LK_URL = _env("TBANK_LK_URL") or _env("PROMOSTAFF_TBANK_PORTAL_URL")
 FUNNEL_REMINDERS_ENABLED = _env_bool("FUNNEL_REMINDERS_ENABLED", False)
 FUNNEL_REMINDERS_INTERVAL_SEC = _env_int("FUNNEL_REMINDERS_INTERVAL_SEC", 600)

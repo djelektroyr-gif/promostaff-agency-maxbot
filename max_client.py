@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 BASE = "https://platform-api.max.ru"
 
 # Один клиент с keep-alive: новый AsyncClient на каждый вызов даёт новое TCP/TLS к platform-api
-# и заметные задержки между шагами визитки.
+# и заметные задержки между запросами визитки.
 _http: httpx.AsyncClient | None = None
 
 

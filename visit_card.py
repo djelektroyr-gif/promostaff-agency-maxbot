@@ -61,6 +61,8 @@ def is_visit_flow_payload(p: str) -> bool:
         "cp_ch_mail",
         "confirm_cp_order",
         "edit_cp_order",
+        "cp_flow_back",
+        "order_flow_back",
         "client_cabinet",
         "submit_join",
         "submit_join_anketa",
@@ -73,8 +75,9 @@ def is_visit_flow_payload(p: str) -> bool:
     return False
 
 
-def main_menu_keyboard(*, show_client_cabinet: bool = False) -> list[dict]:
+def main_menu_keyboard() -> list[dict]:
     # Главное меню: тот же порядок, что в Telegram; эмодзи — нативное «богатство» интерфейса MAX.
+    # ЛК заказчика («заявки» и т.д.) — в отдельном меню после регистрации, не в корневой визитке.
     rows: list[list[dict]] = [
         [cb_btn("📋 О нас", "about")],
         [cb_btn("⭐ Преимущества", "advantages")],
@@ -87,8 +90,6 @@ def main_menu_keyboard(*, show_client_cabinet: bool = False) -> list[dict]:
         [cb_btn("❓ FAQ", "faq")],
         [cb_btn("📞 Связаться с менеджером", "contact_manager")],
     ]
-    if show_client_cabinet:
-        rows.insert(4, [cb_btn("📂 Мои заявки", "client_cabinet")])
     return inline_keyboard(rows)
 
 
@@ -99,6 +100,16 @@ def back_to_main_keyboard() -> list[dict]:
             [cb_btn("⬅️ Назад", "back")],
         ]
     )
+
+
+def cp_flow_back_keyboard() -> list[dict]:
+    """Назад по сценарию КП без главного меню."""
+    return inline_keyboard([[cb_btn("⬅️ Назад", "cp_flow_back")]])
+
+
+def order_flow_back_keyboard() -> list[dict]:
+    """Назад по срочному расчёту (в т.ч. с ввода даты)."""
+    return inline_keyboard([[cb_btn("⬅️ Назад", "order_flow_back")]])
 
 
 def advantages_keyboard() -> list[dict]:
@@ -281,7 +292,7 @@ def cp_brief_keyboard() -> list[dict]:
         [
             [cb_btn("Да, есть бриф / ТЗ", "cp_brief_yes")],
             [cb_btn("Нет", "cp_brief_no")],
-            [cb_btn("⬅️ Назад", "back_to_main")],
+            [cb_btn("⬅️ Назад", "cp_flow_back")],
         ]
     )
 
@@ -292,7 +303,7 @@ def cp_channel_keyboard() -> list[dict]:
             [cb_btn("📞 Звонок", "cp_ch_call")],
             [cb_btn("💬 Сообщение в мессенджере", "cp_ch_msg")],
             [cb_btn("✉️ Email", "cp_ch_mail")],
-            [cb_btn("⬅️ Назад", "back_to_main")],
+            [cb_btn("⬅️ Назад", "cp_flow_back")],
         ]
     )
 
@@ -641,14 +652,11 @@ def text_case_retail() -> str:
     )
 
 
-def message_main_menu(max_user_id: int | None = None) -> dict[str, Any]:
-    from funnel_db import is_max_visit_client_verified
-
-    cab = bool(max_user_id is not None and is_max_visit_client_verified(int(max_user_id)))
+def message_main_menu() -> dict[str, Any]:
     return {
         "text": text_welcome(),
         "format": "markdown",
-        "attachments": main_menu_keyboard(show_client_cabinet=cab),
+        "attachments": main_menu_keyboard(),
     }
 
 

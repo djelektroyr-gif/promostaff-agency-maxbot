@@ -36,7 +36,7 @@ def _session_has_phone(s: dict[str, Any]) -> bool:
 
 
 def funnel_sync_session(max_user_id: int, session: dict[str, Any] | None) -> None:
-    """Актуальный шаг воронки в БД; session=None — сброс незавершённой воронки (меню / старт)."""
+    """Текущее состояние воронки в БД; session=None — сброс незавершённой воронки (меню / старт)."""
     if not DATABASE_URL:
         return
     try:
