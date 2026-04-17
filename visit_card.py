@@ -61,6 +61,7 @@ def is_visit_flow_payload(p: str) -> bool:
         "cp_ch_mail",
         "confirm_cp_order",
         "edit_cp_order",
+        "client_cabinet",
         "submit_join",
         "submit_join_anketa",
         "portfolio_done",
@@ -72,7 +73,7 @@ def is_visit_flow_payload(p: str) -> bool:
     return False
 
 
-def main_menu_keyboard() -> list[dict]:
+def main_menu_keyboard(*, show_client_cabinet: bool = False) -> list[dict]:
     # Главное меню: тот же порядок, что в Telegram; эмодзи — нативное «богатство» интерфейса MAX.
     rows: list[list[dict]] = [
         [cb_btn("📋 О нас", "about")],
@@ -86,6 +87,8 @@ def main_menu_keyboard() -> list[dict]:
         [cb_btn("❓ FAQ", "faq")],
         [cb_btn("📞 Связаться с менеджером", "contact_manager")],
     ]
+    if show_client_cabinet:
+        rows.insert(4, [cb_btn("📂 Мои заявки", "client_cabinet")])
     return inline_keyboard(rows)
 
 
@@ -638,8 +641,15 @@ def text_case_retail() -> str:
     )
 
 
-def message_main_menu() -> dict[str, Any]:
-    return {"text": text_welcome(), "format": "markdown", "attachments": main_menu_keyboard()}
+def message_main_menu(max_user_id: int | None = None) -> dict[str, Any]:
+    from funnel_db import is_max_visit_client_verified
+
+    cab = bool(max_user_id is not None and is_max_visit_client_verified(int(max_user_id)))
+    return {
+        "text": text_welcome(),
+        "format": "markdown",
+        "attachments": main_menu_keyboard(show_client_cabinet=cab),
+    }
 
 
 def message_for_static_payload(payload: str) -> dict[str, Any] | None:

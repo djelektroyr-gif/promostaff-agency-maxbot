@@ -320,6 +320,79 @@ def save_visit_order(max_user_id: int, username: str, payload_json: str) -> int 
             return int(row[0]) if row else None
 
 
+def save_visit_order_payload(max_user_id: int, username: str, data: dict[str, Any]) -> tuple[int | None, str]:
+    """INSERT в CRM + public_ref PSA-{id} в payload. Возвращает (pg_id, public_ref)."""
+    if not DATABASE_URL:
+        return None, "OFFLINE"
+    import json as _json
+
+    base = dict(data)
+    payload_s = _json.dumps(base, ensure_ascii=False)
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO agency_visit_orders (source, user_id, username, payload)
+                VALUES ('max', %s, %s, %s::jsonb)
+                RETURNING id
+                """,
+                (int(max_user_id), username, payload_s),
+            )
+            row = cur.fetchone()
+            pg_id = int(row[0]) if row else None
+    ref = f"PSA-{pg_id}" if pg_id else "—"
+    base["public_ref"] = ref
+    if pg_id:
+        base["crm_id"] = pg_id
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE agency_visit_orders SET payload = %s::jsonb WHERE id = %s",
+                    (_json.dumps(base, ensure_ascii=False), pg_id),
+                )
+    return pg_id, ref
+
+
+def list_agency_visit_orders_for_user(max_user_id: int, limit: int = 20) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    lim = max(1, min(int(limit), 50))
+    uid = int(max_user_id)
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, payload, created_at
+                FROM agency_visit_orders
+                WHERE user_id = %s AND source = 'max'
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (uid, lim),
+            )
+            rows = cur.fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        p = r[1]
+        if not isinstance(p, dict):
+            try:
+                import json as _json
+
+                p = _json.loads(p) if isinstance(p, str) else {}
+            except Exception:
+                p = {}
+        out.append(
+            {
+                "crm_id": int(r[0]),
+                "created_at": r[2],
+                "payload": p,
+                "public_ref": (p.get("public_ref") or f"PSA-{int(r[0])}"),
+                "order_kind": p.get("order_kind") or "",
+            }
+        )
+    return out
+
+
 def save_visit_join(max_user_id: int, username: str, payload_json: str) -> int | None:
     if not DATABASE_URL:
         return None

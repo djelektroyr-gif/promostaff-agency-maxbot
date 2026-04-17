@@ -32,7 +32,8 @@ from funnel_db import (
     save_max_visit_client_verified,
     get_max_visit_client,
     save_visit_join,
-    save_visit_order,
+    save_visit_order_payload,
+    list_agency_visit_orders_for_user,
     save_visit_question,
 )
 from notify import notify_agency_admins
@@ -315,6 +316,42 @@ def _image_ref_from_body(message_body: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _brief_file_from_body(message_body: dict[str, Any] | None) -> dict[str, str] | None:
+    """Первое файловое вложение в сообщении MAX (url + имя)."""
+    if not message_body:
+        return None
+    raw = message_body.get("attachments")
+    if raw is None and isinstance(message_body.get("attachment"), dict):
+        raw = [message_body["attachment"]]
+    if not isinstance(raw, list):
+        return None
+    for a in raw:
+        if not isinstance(a, dict):
+            continue
+        t = (a.get("type") or "").lower()
+        if t not in ("image", "photo", "picture", "video", "file"):
+            continue
+        p = a.get("payload")
+        url = ""
+        if isinstance(p, dict):
+            for key in ("url", "photo_url", "video_url", "small_url", "medium_url", "token"):
+                v = p.get(key)
+                if v:
+                    url = str(v)
+                    break
+        elif isinstance(p, str) and p:
+            url = p
+        if not url:
+            continue
+        name = ""
+        if isinstance(p, dict):
+            name = str(p.get("filename") or p.get("name") or p.get("title") or "")
+        if not name:
+            name = f"attachment.{t}" if t in ("image", "photo", "picture") else "file"
+        return {"url": url, "name": name, "kind": t}
+    return None
+
+
 def _media_ref_from_body(message_body: dict[str, Any] | None) -> str | None:
     if not message_body:
         return None
@@ -542,6 +579,12 @@ def _cp_preview_text(data: dict[str, Any]) -> str:
     brief = (data.get("cp_brief_note") or "").strip() or "—"
     if data.get("cp_brief_has") is False:
         brief = "нет"
+    elif data.get("cp_brief_max_url"):
+        fn = (data.get("cp_brief_file_name") or "").strip() or "вложение"
+        if not (data.get("cp_brief_note") or "").strip():
+            brief = f"файл: {fn}"
+        else:
+            brief = f"{brief}; файл: {fn}"
     ch = _cp_channel_label(str(data.get("cp_contact_channel") or ""))
     call_extra = ""
     if data.get("cp_contact_channel") == "call":
@@ -566,10 +609,14 @@ def _cp_preview_text(data: dict[str, Any]) -> str:
     )
 
 
-def _format_cp_plain(data: dict[str, Any], req_id: int, who: str) -> str:
+def _format_cp_plain(data: dict[str, Any], who: str) -> str:
+    ref = (data.get("public_ref") or "").strip() or "—"
     brief = (data.get("cp_brief_note") or "").strip() or "—"
     if data.get("cp_brief_has") is False:
         brief = "нет"
+    file_line = ""
+    if data.get("cp_brief_max_url"):
+        file_line = f"Вложение: {data.get('cp_brief_file_name') or 'файл'}\n{data.get('cp_brief_max_url')}\n"
     ch = _cp_channel_label(str(data.get("cp_contact_channel") or ""))
     call_line = ""
     if data.get("cp_contact_channel") == "call":
@@ -695,6 +742,18 @@ async def process_callback(
 
     if flow == "order" and step == "order_mode" and payload == "order_mode_quick":
         data.pop("order_kind", None)
+        for k in (
+            "event_type",
+            "city",
+            "event_date",
+            "cp_brief_has",
+            "cp_brief_note",
+            "cp_brief_file_name",
+            "cp_brief_max_url",
+            "cp_contact_channel",
+            "cp_call_time",
+        ):
+            data.pop(k, None)
         s["step"] = "event_type"
         return {
             "notification": "Срочный расчёт",
@@ -714,6 +773,8 @@ async def process_callback(
             "event_date",
             "cp_brief_has",
             "cp_brief_note",
+            "cp_brief_file_name",
+            "cp_brief_max_url",
             "cp_contact_channel",
             "cp_call_time",
         ):
