@@ -40,9 +40,14 @@ def _smtp_send_sync(subject: str, body: str, recipients: Iterable[str]) -> None:
     msg["To"] = ", ".join(recipients)
     msg.set_content(body)
 
+    # Таймаут на соединение: иначе при недоступной сети сокет может висеть очень долго.
+    _smtp_timeout = 30.0
+
     if SMTP_PORT == 465:
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
+        with smtplib.SMTP_SSL(
+            SMTP_HOST, SMTP_PORT, context=context, timeout=_smtp_timeout
+        ) as server:
             if SMTP_USER and SMTP_PASSWORD:
                 server.login(SMTP_USER, SMTP_PASSWORD)
             server.send_message(msg)
