@@ -9,19 +9,46 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+BASE = "https://platform-api.max.ru"
+
+# Один клиент с keep-alive: новый AsyncClient на каждый вызов даёт новое TCP/TLS к platform-api
+# и заметные задержки между шагами визитки.
+_http: httpx.AsyncClient | None = None
+
+
+async def get_http_client() -> httpx.AsyncClient:
+    global _http
+    if _http is None:
+        _http = httpx.AsyncClient(
+            timeout=httpx.Timeout(25.0, connect=15.0),
+            limits=httpx.Limits(max_keepalive_connections=32, max_connections=64),
+            trust_env=False,
+        )
+    return _http
+
+
+async def close_http_client() -> None:
+    """Закрыть соединения (lifespan приложения)."""
+    global _http
+    if _http is not None:
+        await _http.aclose()
+        _http = None
+
 
 async def post_message(token: str, user_id: int, body: dict[str, Any]) -> bool:
     """POST /messages?user_id=…"""
     if not token or not user_id:
         return False
-    url = f"https://platform-api.max.ru/messages?user_id={int(user_id)}"
+    url = f"{BASE}/messages"
+    params = {"user_id": int(user_id)}
     headers = {"Authorization": token, "Content-Type": "application/json"}
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     try:
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            r = await client.post(url, headers=headers, content=json.dumps(body, ensure_ascii=False).encode("utf-8"))
-            if r.status_code >= 400:
-                logger.warning("MAX post_message failed: %s %s", r.status_code, r.text[:500])
-                return False
+        client = await get_http_client()
+        r = await client.post(url, params=params, headers=headers, content=data)
+        if r.status_code >= 400:
+            logger.warning("MAX post_message failed: %s %s", r.status_code, r.text[:500])
+            return False
     except Exception:
         logger.exception("MAX post_message error")
         return False
@@ -32,14 +59,16 @@ async def post_answer(token: str, callback_id: str, payload: dict[str, Any]) -> 
     """POST /answers?callback_id=…"""
     if not token or not callback_id:
         return False
-    url = f"https://platform-api.max.ru/answers?callback_id={callback_id}"
+    url = f"{BASE}/answers"
+    params = {"callback_id": callback_id}
     headers = {"Authorization": token, "Content-Type": "application/json"}
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     try:
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            r = await client.post(url, headers=headers, content=json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-            if r.status_code >= 400:
-                logger.warning("MAX post_answer failed: %s %s", r.status_code, r.text[:500])
-                return False
+        client = await get_http_client()
+        r = await client.post(url, params=params, headers=headers, content=data)
+        if r.status_code >= 400:
+            logger.warning("MAX post_answer failed: %s %s", r.status_code, r.text[:500])
+            return False
     except Exception:
         logger.exception("MAX post_answer error")
         return False

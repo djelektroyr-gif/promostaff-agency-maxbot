@@ -82,7 +82,7 @@ async def _answer_message(callback_id: str, max_uid: int, msg: dict[str, Any]) -
 async def process_update(body: dict[str, Any]) -> None:
     update_type = body.get("update_type") or ""
     max_uid = _max_uid_from_update(update_type, body)
-    logger.info("MAX update: type=%r max_uid=%r", update_type, max_uid)
+    logger.debug("MAX update: type=%r max_uid=%r", update_type, max_uid)
 
     if update_type in ("bot_started", "user_added") and max_uid is not None:
         visit_flows.clear_session(max_uid)

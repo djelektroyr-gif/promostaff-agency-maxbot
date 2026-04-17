@@ -2,6 +2,8 @@
 
 Лёгкий webhook-сервис для мессенджера [MAX](https://dev.max.ru/docs-api): меню, тексты, инлайн-кнопки (по мере наполнения).
 
+**Связка репозиториев:** визитка MAX — этот репозиторий; визитка Telegram — `promostaff-agency-bot`; веб-панель PRO — `promostaff-bot`. Подробнее: [`docs/WORKSPACE_SCOPE.md`](docs/WORKSPACE_SCOPE.md).
+
 ## Локально
 
 ```bash

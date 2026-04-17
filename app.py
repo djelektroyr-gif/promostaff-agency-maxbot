@@ -10,7 +10,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Query, Request, Form
+from fastapi import BackgroundTasks, FastAPI, Query, Request, Form
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from config import (
@@ -22,9 +22,10 @@ from config import (
 )
 from notify import smtp_configured
 from handlers import process_update
-from max_client import post_message
+from max_client import close_http_client, post_message
 
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -210,6 +211,7 @@ async def lifespan(app: FastAPI):
             await reminder_task
         except asyncio.CancelledError:
             pass
+    await close_http_client()
 
 
 app = FastAPI(title="PROMOSTAFF Agency MAX", version="0.1.0", lifespan=lifespan)
@@ -569,8 +571,15 @@ async def admin_broadcast(
     )
 
 
+async def _process_update_safe(body: dict) -> None:
+    try:
+        await process_update(body)
+    except Exception:
+        logger.exception("webhook handler error (background)")
+
+
 @app.post("/webhook")
-async def webhook(request: Request):
+async def webhook(request: Request, background_tasks: BackgroundTasks):
     if not MAX_TOKEN:
         logger.error("MAX_TOKEN не задан")
         return JSONResponse({"ok": False, "error": "MAX_TOKEN missing"}, status_code=503)
@@ -580,8 +589,5 @@ async def webhook(request: Request):
         return JSONResponse({"ok": True})
 
     if isinstance(body, dict):
-        try:
-            await process_update(body)
-        except Exception:
-            logger.exception("webhook handler error")
+        background_tasks.add_task(_process_update_safe, body)
     return JSONResponse({"ok": True})
