@@ -34,6 +34,12 @@ def _ensure_local_client_db() -> None:
             )
             """
         )
+        cur = conn.execute("PRAGMA table_info(max_visit_clients)")
+        lcols = {r[1] for r in cur.fetchall()}
+        if "contact_email" not in lcols:
+            conn.execute(
+                "ALTER TABLE max_visit_clients ADD COLUMN contact_email TEXT NOT NULL DEFAULT ''"
+            )
         conn.commit()
     finally:
         conn.close()
@@ -131,7 +137,81 @@ def init_schema() -> None:
                 )
                 """
             )
+            cur.execute(
+                """
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = 'agency_max_visit_clients'
+                          AND column_name = 'contact_email'
+                    ) THEN
+                        ALTER TABLE agency_max_visit_clients
+                        ADD COLUMN contact_email TEXT DEFAULT '';
+                    END IF;
+                END $$;
+                """
+            )
     logger.info("agency_max_funnel schema ensured")
+
+
+def get_max_visit_client(max_user_id: int) -> dict[str, Any] | None:
+    """Данные проверенного заказчика MAX (для подстановки в форму заказа)."""
+    uid = int(max_user_id)
+    if DATABASE_URL:
+        try:
+            with connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT company_name, contact_name, position_in_org, phone, inn, contact_email
+                        FROM agency_max_visit_clients
+                        WHERE max_user_id = %s
+                        """,
+                        (uid,),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        return None
+                    return {
+                        "company_name": row[0] or "",
+                        "contact_name": row[1] or "",
+                        "position_in_org": row[2] or "",
+                        "phone": row[3] or "",
+                        "inn": row[4] or "",
+                        "contact_email": row[5] or "",
+                    }
+        except Exception:
+            logger.exception("get_max_visit_client pg")
+    try:
+        _ensure_local_client_db()
+        conn = sqlite3.connect(_LOCAL_CLIENT_DB)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT company_name, contact_name, position_in_org, phone, inn, contact_email
+                FROM max_visit_clients
+                WHERE max_user_id = ?
+                """,
+                (uid,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "company_name": row[0] or "",
+                "contact_name": row[1] or "",
+                "position_in_org": row[2] or "",
+                "phone": row[3] or "",
+                "inn": row[4] or "",
+                "contact_email": (row[5] if len(row) > 5 else "") or "",
+            }
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("get_max_visit_client local")
+    return None
 
 
 def is_max_visit_client_verified(max_user_id: int) -> bool:
@@ -170,6 +250,7 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
     pos = (data.get("position_in_org") or "").strip()
     phone = (data.get("phone") or "").strip()
     inn = (data.get("inn") or "").strip()
+    cemail = (data.get("contact_email") or "").strip()
     if DATABASE_URL:
         try:
             with connection() as conn:
@@ -177,8 +258,8 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                     cur.execute(
                         """
                         INSERT INTO agency_max_visit_clients (
-                            max_user_id, username, company_name, contact_name, position_in_org, phone, inn
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            max_user_id, username, company_name, contact_name, position_in_org, phone, inn, contact_email
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (max_user_id) DO UPDATE SET
                             username = EXCLUDED.username,
                             company_name = EXCLUDED.company_name,
@@ -186,9 +267,10 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                             position_in_org = EXCLUDED.position_in_org,
                             phone = EXCLUDED.phone,
                             inn = EXCLUDED.inn,
+                            contact_email = EXCLUDED.contact_email,
                             verified_at = NOW()
                         """,
-                        (uid, un, cn, contact, pos, phone, inn),
+                        (uid, un, cn, contact, pos, phone, inn, cemail),
                     )
             return
         except Exception:
@@ -200,8 +282,8 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
             conn.execute(
                 """
                 INSERT INTO max_visit_clients (
-                    max_user_id, username, company_name, contact_name, position_in_org, phone, inn
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    max_user_id, username, company_name, contact_name, position_in_org, phone, inn, contact_email
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(max_user_id) DO UPDATE SET
                     username = excluded.username,
                     company_name = excluded.company_name,
@@ -209,9 +291,10 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                     position_in_org = excluded.position_in_org,
                     phone = excluded.phone,
                     inn = excluded.inn,
+                    contact_email = excluded.contact_email,
                     verified_at = datetime('now')
                 """,
-                (uid, un, cn, contact, pos, phone, inn),
+                (uid, un, cn, contact, pos, phone, inn, cemail),
             )
             conn.commit()
         finally:

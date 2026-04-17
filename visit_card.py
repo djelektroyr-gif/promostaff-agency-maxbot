@@ -52,6 +52,15 @@ def is_visit_flow_payload(p: str) -> bool:
         "sv_skip",
         "confirm_order",
         "edit_order",
+        "order_mode_quick",
+        "order_mode_cp",
+        "cp_brief_yes",
+        "cp_brief_no",
+        "cp_ch_call",
+        "cp_ch_msg",
+        "cp_ch_mail",
+        "confirm_cp_order",
+        "edit_cp_order",
         "submit_join",
         "submit_join_anketa",
         "portfolio_done",
@@ -242,6 +251,16 @@ def order_staff_keyboard(selected: dict[str, int] | None) -> list[dict]:
     return inline_keyboard(rows)
 
 
+def order_mode_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("⚡ Срочный расчёт в боте", "order_mode_quick")],
+            [cb_btn("📄 Запросить коммерческое предложение", "order_mode_cp")],
+            [cb_btn("В главное меню", "main_menu")],
+        ]
+    )
+
+
 def order_quickstart_keyboard() -> list[dict]:
     return inline_keyboard(
         [
@@ -250,6 +269,37 @@ def order_quickstart_keyboard() -> list[dict]:
             [cb_btn("🎤 Корпоратив", "quick_corp")],
             [cb_btn("✍️ Ввести свой вариант", "quick_custom")],
             [cb_btn("В главное меню", "main_menu")],
+        ]
+    )
+
+
+def cp_brief_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("Да, есть бриф / ТЗ", "cp_brief_yes")],
+            [cb_btn("Нет", "cp_brief_no")],
+            [cb_btn("⬅️ Назад", "back_to_main")],
+        ]
+    )
+
+
+def cp_channel_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("📞 Звонок", "cp_ch_call")],
+            [cb_btn("💬 Сообщение в мессенджере", "cp_ch_msg")],
+            [cb_btn("✉️ Email", "cp_ch_mail")],
+            [cb_btn("⬅️ Назад", "back_to_main")],
+        ]
+    )
+
+
+def cp_confirm_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("Отправить заявку на КП", "confirm_cp_order")],
+            [cb_btn("Изменить данные", "edit_cp_order")],
+            [cb_btn("Отменить", "main_menu")],
         ]
     )
 

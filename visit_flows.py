@@ -30,6 +30,7 @@ from funnel_store import funnel_touch_complete
 from funnel_db import (
     is_max_visit_client_verified,
     save_max_visit_client_verified,
+    get_max_visit_client,
     save_visit_join,
     save_visit_order,
     save_visit_question,
@@ -133,6 +134,90 @@ def validate_phone(phone: str) -> str | None:
 def validate_inn(text: str) -> bool:
     d = re.sub(r"\D", "", (text or "").strip())
     return len(d) in (10, 12)
+
+
+def _order_contact_ready(data: dict) -> bool:
+    return bool(
+        (data.get("contact_phone") or "").strip()
+        and (data.get("contact_name") or "").strip()
+        and (data.get("contact_email") or "").strip()
+        and (data.get("company_name") or "").strip()
+        and (data.get("company_inn") or "").strip()
+    )
+
+
+def _hydrate_order_contact_from_visit(max_uid: int, data: dict) -> None:
+    row = get_max_visit_client(max_uid)
+    if not row:
+        return
+    if not (data.get("contact_phone") or "").strip() and row.get("phone"):
+        v = validate_phone(row["phone"])
+        if v:
+            data["contact_phone"] = v
+    if not (data.get("contact_name") or "").strip() and row.get("contact_name"):
+        data["contact_name"] = row["contact_name"].strip()
+    if not (data.get("company_name") or "").strip() and row.get("company_name"):
+        data["company_name"] = row["company_name"].strip()
+    inn = (row.get("inn") or "").strip()
+    if inn and not (data.get("company_inn") or "").strip():
+        data["company_inn"] = re.sub(r"\D", "", inn)
+    if not (data.get("contact_email") or "").strip() and row.get("contact_email"):
+        data["contact_email"] = row["contact_email"].strip()
+
+
+def _advance_order_contact_step(
+    max_uid: int, s: dict, *, notification: str | None = None
+) -> dict[str, Any]:
+    data = s.setdefault("data", {})
+    _hydrate_order_contact_from_visit(max_uid, data)
+    out: dict[str, Any] = {
+        "format": "markdown",
+        "attachments": visit_card.back_to_main_keyboard(),
+    }
+    if notification:
+        out["notification"] = notification
+    if _order_contact_ready(data):
+        s["step"] = "call_time"
+        out["text"] = (
+            "Когда удобно принять звонок менеджера?\n\n"
+            "_Образец:_ `будни 10:00–18:00`"
+        )
+        return out
+    if not (data.get("contact_phone") or "").strip():
+        s["step"] = "contact_phone"
+        out["text"] = (
+            "Отправьте контакт телефона кнопкой ниже или введите вручную.\n\n"
+            "_Образец:_ `+79001234567`\n\n"
+        )
+        return out
+    if not (data.get("contact_name") or "").strip():
+        s["step"] = "contact_name"
+        out["text"] = "Введите полное ФИО.\n\n_Образец:_ `Иванов Иван Иванович`"
+        return out
+    if not (data.get("contact_email") or "").strip():
+        s["step"] = "contact_email"
+        out["text"] = "Введите email для связи.\n\n_Образец:_ `client@company.ru`"
+        return out
+    if not (data.get("company_name") or "").strip():
+        s["step"] = "company_name"
+        out["text"] = (
+            "Укажите название компании (или `—` если нет).\n\n"
+            "_Образец:_ `ООО «Ромашка»`"
+        )
+        return out
+    if not (data.get("company_inn") or "").strip():
+        s["step"] = "company_inn"
+        out["text"] = (
+            "Укажите ИНН компании (10 или 12 цифр).\n\n"
+            "_Образец:_ `7707083893`"
+        )
+        return out
+    s["step"] = "call_time"
+    out["text"] = (
+        "Когда удобно принять звонок менеджера?\n\n"
+        "_Образец:_ `будни 10:00–18:00`"
+    )
+    return out
 
 
 def validate_metro(text: str) -> bool:
@@ -443,6 +528,71 @@ def _order_preview_text(data: dict[str, Any]) -> str:
     )
 
 
+def _cp_channel_label(ch: str) -> str:
+    return {
+        "call": "Звонок",
+        "max_chat": "Сообщение в мессенджере (MAX)",
+        "email": "Email",
+    }.get(ch or "", ch or "—")
+
+
+def _cp_preview_text(data: dict[str, Any]) -> str:
+    co = (data.get("company_name") or "").strip() or "—"
+    inn = (data.get("company_inn") or "").strip() or "—"
+    brief = (data.get("cp_brief_note") or "").strip() or "—"
+    if data.get("cp_brief_has") is False:
+        brief = "нет"
+    ch = _cp_channel_label(str(data.get("cp_contact_channel") or ""))
+    call_extra = ""
+    if data.get("cp_contact_channel") == "call":
+        call_extra = f"\n• Удобное время звонка: {data.get('cp_call_time') or '—'}"
+    return (
+        "*Проверьте заявку на коммерческое предложение*\n\n"
+        "*Клиент*\n"
+        f"• ФИО: {data.get('contact_name')}\n"
+        f"• Компания: {co}\n"
+        f"• ИНН: {inn}\n"
+        f"• Телефон: {data.get('contact_phone')}\n"
+        f"• Email: {data.get('contact_email')}\n\n"
+        "*Проект*\n"
+        f"• Тип мероприятия: {data.get('event_type')}\n"
+        f"• Город: {data.get('city')}\n"
+        f"• Даты: {data.get('event_date')}\n"
+        f"• Бриф / ТЗ: {brief}\n\n"
+        "*Связь*\n"
+        f"• Предпочтительно: {ch}"
+        f"{call_extra}\n\n"
+        "После отправки менеджер подготовит КП."
+    )
+
+
+def _format_cp_plain(data: dict[str, Any], req_id: int, who: str) -> str:
+    brief = (data.get("cp_brief_note") or "").strip() or "—"
+    if data.get("cp_brief_has") is False:
+        brief = "нет"
+    ch = _cp_channel_label(str(data.get("cp_contact_channel") or ""))
+    call_line = ""
+    if data.get("cp_contact_channel") == "call":
+        call_line = f"Удобное время звонка: {data.get('cp_call_time') or '—'}\n"
+    return (
+        f"НОВАЯ ЗАЯВКА НА КП #{req_id}\n"
+        f"================================\n\n"
+        f"От: {who}\n\n"
+        f"Тип: {data.get('event_type', '—')}\n"
+        f"Город: {data.get('city', '—')}\n"
+        f"Даты: {data.get('event_date', '—')}\n"
+        f"Бриф: {brief}\n"
+        f"Связь: {ch}\n"
+        f"{call_line}\n"
+        f"КЛИЕНТ\n"
+        f"ФИО: {data.get('contact_name', '—')}\n"
+        f"Компания: {data.get('company_name', '—')}\n"
+        f"ИНН: {data.get('company_inn', '—')}\n"
+        f"Телефон: {data.get('contact_phone', '—')}\n"
+        f"Email: {data.get('contact_email', '—')}\n"
+    )
+
+
 def _supervisor_offer_text(total: int, rec: int) -> str:
     if total < 5:
         return (
@@ -482,7 +632,7 @@ async def process_callback(
             "notification": "Согласие принято ✅",
             "text": (
                 "🏢 *Регистрация заказчика*\n\n"
-                "Шаг 1/6: введите *полное* юридическое название организации (как в учредительных документах):"
+                "Шаг 1/7: введите *полное* юридическое название организации (как в учредительных документах):"
             ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
@@ -494,16 +644,29 @@ async def process_callback(
             save_max_visit_client_verified(max_uid, str(username or ""), data)
         except Exception:
             logger.exception("save_max_visit_client_verified")
-        SESSIONS[max_uid] = {"flow": "order", "step": "event_type", "data": {"order_consent_accepted": True}}
+        raw_phone = (data.get("phone") or "").strip()
+        cp = validate_phone(raw_phone) or raw_phone
+        inn_digits = re.sub(r"\D", "", str(data.get("inn") or ""))
+        new_data = {
+            "order_consent_accepted": True,
+            "contact_phone": cp,
+            "contact_name": (data.get("contact_name") or "").strip(),
+            "company_name": (data.get("company_name") or "").strip(),
+            "company_inn": inn_digits,
+            "contact_email": (data.get("contact_email") or "").strip(),
+        }
+        SESSIONS[max_uid] = {"flow": "order", "step": "order_mode", "data": new_data}
         return {
             "notification": "Отлично!",
             "text": (
                 "*Заказ расчёта стоимости*\n\n"
-                "Выберите быстрый сценарий или введите тип проекта вручную.\n\n"
-                "Быстрый сценарий ускорит заполнение формы.\n\n"
+                "*Срочный расчёт* — оценка по одной типичной смене прямо в боте.\n"
+                "*Коммерческое предложение* — менеджер подготовит КП по вашим вводным "
+                "(вложения файлами — в следующей версии; сейчас можно описать текстом).\n\n"
+                "Выберите вариант:"
             ),
             "format": "markdown",
-            "attachments": visit_card.order_quickstart_keyboard(),
+            "attachments": visit_card.order_mode_keyboard(),
         }
 
     if flow == "client_visit" and step == "confirm" and payload == "confirm_client_visit_edit":
@@ -517,16 +680,54 @@ async def process_callback(
 
     if flow == "order" and step == "consent" and payload == "consent_order_accept":
         data["order_consent_accepted"] = True
-        s["step"] = "event_type"
+        s["step"] = "order_mode"
         return {
             "notification": "Согласие принято ✅",
             "text": (
                 "*Заказ расчёта стоимости*\n\n"
+                "*Срочный расчёт* — оценка по одной типичной смене прямо в боте.\n"
+                "*Коммерческое предложение* — менеджер подготовит КП по вашим вводным.\n\n"
+                "Выберите вариант:"
+            ),
+            "format": "markdown",
+            "attachments": visit_card.order_mode_keyboard(),
+        }
+
+    if flow == "order" and step == "order_mode" and payload == "order_mode_quick":
+        data.pop("order_kind", None)
+        s["step"] = "event_type"
+        return {
+            "notification": "Срочный расчёт",
+            "text": (
+                "*Срочный расчёт*\n\n"
                 "Выберите быстрый сценарий или введите тип проекта вручную.\n\n"
-                "Быстрый сценарий ускорит заполнение формы.\n\n"
             ),
             "format": "markdown",
             "attachments": visit_card.order_quickstart_keyboard(),
+        }
+
+    if flow == "order" and step == "order_mode" and payload == "order_mode_cp":
+        data["order_kind"] = "cp_request"
+        for k in (
+            "event_type",
+            "city",
+            "event_date",
+            "cp_brief_has",
+            "cp_brief_note",
+            "cp_contact_channel",
+            "cp_call_time",
+        ):
+            data.pop(k, None)
+        s["step"] = "cp_event_type"
+        return {
+            "notification": "Запрос КП",
+            "text": (
+                "*Запрос коммерческого предложения*\n\n"
+                "Опишите *тип мероприятия* (выставка, промо, корпоратив и т.д.).\n\n"
+                "_Образец:_ `Корпоратив, 200 гостей, Москва-Сити`\n\n"
+            ),
+            "format": "markdown",
+            "attachments": visit_card.back_to_main_keyboard(),
         }
 
     if flow == "question" and step == "consent" and payload == "consent_question_accept":
@@ -623,16 +824,9 @@ async def process_callback(
         total = total_staff_in_shift(data["staff_counts"])
         data["supervisor_count"] = 0
         if total < 2:
-            s["step"] = "contact_phone"
-            return {
-                "notification": "📞 Дальше — контакт для связи.",
-                "text": (
-                    "Отправьте контакт телефона кнопкой ниже или введите вручную.\n\n"
-                    "_Образец:_ `+79001234567`\n\n"
-                ),
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            return _advance_order_contact_step(
+                max_uid, s, notification="📞 Дальше — контакт для связи."
+            )
         rec = recommended_supervisor_count(total)
         data["supervisor_recommend"] = rec
         s["step"] = "supervisor_offer"
@@ -649,30 +843,136 @@ async def process_callback(
             rec = 1
         data["supervisor_count"] = rec
         sv_word = "супервайзер" if rec == 1 else "супервайзеров"
-        s["step"] = "contact_phone"
+        out = _advance_order_contact_step(
+            max_uid,
+            s,
+            notification="✅ Супервайзер в оценке (900 ₽/ч днём, ночь +15%). Дальше — контакты.",
+        )
+        prev = out.get("text") or ""
+        out["text"] = f"В предварительный расчёт добавлено: *{rec}* {sv_word}.\n\n{prev}"
+        return out
+
+    if flow == "order" and step == "supervisor_offer" and payload == "sv_skip":
+        data["supervisor_count"] = 0
+        out = _advance_order_contact_step(
+            max_uid,
+            s,
+            notification="Ок. По супервайзеру и составу можно обсудить с менеджером после заявки.",
+        )
+        prev = out.get("text") or ""
+        out["text"] = (
+            "Супервайзер в расчёт не включён — при необходимости менеджер предложит варианты.\n\n"
+            f"{prev}"
+        )
+        return out
+
+    if flow == "order" and step == "cp_brief_wait" and payload == "cp_brief_yes":
+        s["step"] = "cp_brief_text"
         return {
-            "notification": "✅ Супервайзер в оценке (900 ₽/ч днём, ночь +15%). Дальше — телефон.",
+            "notification": "Опишите бриф",
             "text": (
-                f"В предварительный расчёт добавлено: *{rec}* {sv_word}.\n\n"
-                "Отправьте контакт телефона кнопкой ниже или введите вручную.\n\n"
-                "_Образец:_ `+79001234567`\n\n"
+                "*Бриф / ТЗ*\n\n"
+                "Кратко опишите задачу или ключевые требования текстом.\n"
+                "Загрузка файлов в MAX будет добавлена отдельно.\n\n"
             ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
         }
 
-    if flow == "order" and step == "supervisor_offer" and payload == "sv_skip":
-        data["supervisor_count"] = 0
-        s["step"] = "contact_phone"
+    if flow == "order" and step == "cp_brief_wait" and payload == "cp_brief_no":
+        data["cp_brief_has"] = False
+        data["cp_brief_note"] = ""
+        s["step"] = "cp_channel_pick"
         return {
-            "notification": "Ок. По супервайзеру и составу можно обсудить с менеджером после заявки.",
-            "text": (
-                "Супервайзер в расчёт не включён — при необходимости менеджер предложит варианты.\n\n"
-                "Отправьте контакт телефона кнопкой ниже или введите вручную.\n\n"
-                "_Образец:_ `+79001234567`\n\n"
-            ),
+            "notification": "Дальше — способ связи",
+            "text": "Как удобнее связаться по КП?",
+            "format": "markdown",
+            "attachments": visit_card.cp_channel_keyboard(),
+        }
+
+    if flow == "order" and step == "cp_channel_pick" and payload == "cp_ch_call":
+        data["cp_contact_channel"] = "call"
+        s["step"] = "cp_call_time"
+        return {
+            "notification": "Звонок",
+            "text": "Когда удобно принять звонок менеджера?\n\n_Образец:_ `будни 10:00–18:00`",
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
+        }
+
+    if flow == "order" and step == "cp_channel_pick" and payload == "cp_ch_msg":
+        data["cp_contact_channel"] = "max_chat"
+        _hydrate_order_contact_from_visit(max_uid, data)
+        s["step"] = "cp_confirm"
+        return {
+            "notification": "Связь в MAX",
+            "text": _cp_preview_text(data),
+            "format": "markdown",
+            "attachments": visit_card.cp_confirm_keyboard(),
+        }
+
+    if flow == "order" and step == "cp_channel_pick" and payload == "cp_ch_mail":
+        data["cp_contact_channel"] = "email"
+        _hydrate_order_contact_from_visit(max_uid, data)
+        s["step"] = "cp_confirm"
+        return {
+            "notification": "Email",
+            "text": _cp_preview_text(data),
+            "format": "markdown",
+            "attachments": visit_card.cp_confirm_keyboard(),
+        }
+
+    if flow == "order" and step == "cp_confirm" and payload == "confirm_cp_order":
+        if not data.get("order_consent_accepted"):
+            return {
+                "notification": "Сначала подтвердите согласие на обработку ПДн.",
+                "text": _consent_gate_text("заказ расчёта"),
+                "format": "markdown",
+                "attachments": visit_card.consent_gate_keyboard("order"),
+            }
+        oid = _new_id()
+        to_save = dict(data)
+        to_save["order_kind"] = "cp_request"
+        plain = _format_cp_plain(to_save, oid, who)
+        await _notify_plain(f"Новая заявка на КП #{oid}", plain)
+        username = (sender or {}).get("username") if isinstance(sender, dict) else ""
+        try:
+            save_visit_order(max_uid, str(username or ""), json.dumps(to_save, ensure_ascii=False))
+        except Exception:
+            logger.exception("save_visit_order cp")
+        funnel_touch_complete(max_uid)
+        clear_session(max_uid)
+        return {
+            "notification": "✅ Заявка на КП у команды.",
+            "text": (
+                f"*Заявка на КП #{oid} принята.*\n\n"
+                "Менеджер подготовит предложение и свяжется с вами.\n\n"
+            ),
+            "format": "markdown",
+            "attachments": visit_card.main_menu_keyboard(),
+        }
+
+    if flow == "order" and step == "cp_confirm" and payload == "edit_cp_order":
+        data.pop("order_kind", None)
+        for k in (
+            "event_type",
+            "city",
+            "event_date",
+            "cp_brief_has",
+            "cp_brief_note",
+            "cp_contact_channel",
+            "cp_call_time",
+        ):
+            data.pop(k, None)
+        s["step"] = "order_mode"
+        return {
+            "notification": "Заполняем заново",
+            "text": (
+                "*Заказ расчёта стоимости*\n\n"
+                "Выберите вариант:"
+            ),
+            "format": "markdown",
+            "attachments": visit_card.order_mode_keyboard(),
         }
 
     if flow == "order" and step == "confirm" and payload == "confirm_order":
@@ -945,7 +1245,7 @@ async def process_text(
             s["step"] = "inn"
             return {
                 "text": (
-                    "Шаг 2/6: введите *ИНН* организации (10 цифр для юрлица или 12 для ИП) — сразу после названия, "
+                    "Шаг 2/7: введите *ИНН* организации (10 цифр для юрлица или 12 для ИП) — сразу после названия, "
                     "чтобы мы могли сверить компанию."
                 ),
                 "format": "markdown",
@@ -962,7 +1262,7 @@ async def process_text(
             data["inn"] = re.sub(r"\D", "", raw)
             s["step"] = "contact_name"
             return {
-                "text": "Шаг 3/6: введите *полное ФИО* контактного лица (как в договоре):",
+                "text": "Шаг 3/7: введите *полное ФИО* контактного лица:",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
@@ -976,7 +1276,7 @@ async def process_text(
             data["contact_name"] = text.strip()
             s["step"] = "position_in_org"
             return {
-                "text": "Шаг 4/6: укажите *вашу должность* в организации:",
+                "text": "Шаг 4/7: укажите *вашу должность* в организации:",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
@@ -991,9 +1291,34 @@ async def process_text(
             data["position_in_org"] = t
             s["step"] = "phone"
             return {
-                "text": "Шаг 5/6: отправьте номер телефона кнопкой или введите вручную в формате +7…",
+                "text": "Шаг 5/7: отправьте номер телефона кнопкой или введите вручную в формате +7…",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if step == "email":
+            if not validate_email(text.strip()):
+                return {
+                    "text": "❌ Введите корректный email. Пример: client@company.ru",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["contact_email"] = text.strip()
+            s["step"] = "confirm"
+            inn = (data.get("inn") or "").strip()
+            preview = (
+                "📋 *Шаг 7/7: проверка данных*\n\n"
+                f"🏢 Организация: {data.get('company_name', '')}\n"
+                f"🧾 ИНН: {inn}\n"
+                f"👤 Контактное лицо: {data.get('contact_name', '')}\n"
+                f"💼 Должность: {data.get('position_in_org', '')}\n"
+                f"📞 Телефон: {data.get('phone', '')}\n"
+                f"✉️ Email: {data.get('contact_email', '')}\n\n"
+                "Всё верно?\n\n"
+            )
+            return {
+                "text": preview,
+                "format": "markdown",
+                "attachments": visit_card.client_reg_confirm_keyboard(),
             }
         if step == "phone":
             v = validate_phone(text)
@@ -1004,22 +1329,15 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["phone"] = v
-            s["step"] = "confirm"
-            inn = (data.get("inn") or "").strip()
-            preview = (
-                "Номер сохранён.\n\n"
-                "📋 *Шаг 6/6: проверка данных*\n\n"
-                f"🏢 Организация: {data.get('company_name', '')}\n"
-                f"🧾 ИНН: {inn}\n"
-                f"👤 Контактное лицо: {data.get('contact_name', '')}\n"
-                f"💼 Должность: {data.get('position_in_org', '')}\n"
-                f"📞 Телефон: {data.get('phone', '')}\n\n"
-                "Всё верно?\n\n"
-            )
+            s["step"] = "email"
             return {
-                "text": preview,
+                "text": (
+                    "Номер сохранён.\n\n"
+                    "Шаг 6/7: введите *email* для связи по проекту (коммерческие письма, КП).\n\n"
+                    "_Образец:_ `client@company.ru`"
+                ),
                 "format": "markdown",
-                "attachments": visit_card.client_reg_confirm_keyboard(),
+                "attachments": visit_card.back_to_main_keyboard(),
             }
         if step == "confirm":
             return {
@@ -1051,6 +1369,75 @@ async def process_text(
         }
 
     if flow == "order":
+        if step == "order_mode":
+            return {
+                "text": "Выберите вариант кнопками ниже.",
+                "format": "markdown",
+                "attachments": visit_card.order_mode_keyboard(),
+            }
+        if step == "cp_event_type":
+            data["event_type"] = text.strip()
+            s["step"] = "cp_city"
+            return {
+                "text": "Укажите город проведения мероприятия.\n\n_Образец:_ `Москва`",
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if step == "cp_city":
+            data["city"] = text.strip()
+            s["step"] = "cp_dates"
+            return {
+                "text": (
+                    "Укажите даты мероприятия или период.\n\n"
+                    "_Образец:_ `15.06.2026` или `12–14 июня 2026`\n\n"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if step == "cp_dates":
+            data["event_date"] = text.strip()
+            s["step"] = "cp_brief_wait"
+            return {
+                "text": "У вас есть готовый бриф или техническое задание?",
+                "format": "markdown",
+                "attachments": visit_card.cp_brief_keyboard(),
+            }
+        if step == "cp_brief_text":
+            data["cp_brief_has"] = True
+            data["cp_brief_note"] = text.strip()
+            s["step"] = "cp_channel_pick"
+            return {
+                "text": "Как удобнее связаться по КП?",
+                "format": "markdown",
+                "attachments": visit_card.cp_channel_keyboard(),
+            }
+        if step == "cp_call_time":
+            data["cp_call_time"] = text.strip()
+            _hydrate_order_contact_from_visit(max_uid, data)
+            s["step"] = "cp_confirm"
+            return {
+                "text": _cp_preview_text(data),
+                "format": "markdown",
+                "attachments": visit_card.cp_confirm_keyboard(),
+            }
+        if step == "cp_confirm":
+            return {
+                "text": "Используйте кнопки под сообщением.",
+                "format": "markdown",
+                "attachments": visit_card.cp_confirm_keyboard(),
+            }
+        if step == "cp_brief_wait":
+            return {
+                "text": "Выберите «Да» или «Нет» кнопками ниже.",
+                "format": "markdown",
+                "attachments": visit_card.cp_brief_keyboard(),
+            }
+        if step == "cp_channel_pick":
+            return {
+                "text": "Выберите способ связи кнопками ниже.",
+                "format": "markdown",
+                "attachments": visit_card.cp_channel_keyboard(),
+            }
         if step == "event_type":
             data["event_type"] = text.strip()
             s["step"] = "city"
@@ -1115,12 +1502,7 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["contact_phone"] = v
-            s["step"] = "contact_name"
-            return {
-                "text": "Введите полное ФИО.\n\n_Образец:_ `Иванов Иван Иванович`",
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            return _advance_order_contact_step(max_uid, s)
         if step == "contact_name":
             if not validate_full_name(text):
                 return {
@@ -1129,12 +1511,7 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["contact_name"] = text.strip()
-            s["step"] = "contact_email"
-            return {
-                "text": "Введите email для связи.\n\n_Образец:_ `client@company.ru`",
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            return _advance_order_contact_step(max_uid, s)
         if step == "contact_email":
             if not validate_email(text.strip()):
                 return {
@@ -1143,12 +1520,7 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["contact_email"] = text.strip()
-            s["step"] = "company_name"
-            return {
-                "text": "Укажите название компании (или `—` если нет).\n\n_Образец:_ `ООО «Ромашка»`",
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            return _advance_order_contact_step(max_uid, s)
         if step == "company_name":
             company = text.strip()
             if not company or company == "—":
@@ -1158,15 +1530,7 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["company_name"] = company
-            s["step"] = "company_inn"
-            return {
-                "text": (
-                    "Укажите ИНН компании (10 или 12 цифр).\n\n"
-                    "_Образец:_ `7707083893`"
-                ),
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            return _advance_order_contact_step(max_uid, s)
         if step == "company_inn":
             raw = text.strip()
             if not validate_inn(raw):
@@ -1176,12 +1540,7 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["company_inn"] = re.sub(r"\D", "", raw)
-            s["step"] = "call_time"
-            return {
-                "text": "Когда удобно принять звонок менеджера?\n\n_Образец:_ `будни 10:00–18:00`",
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            return _advance_order_contact_step(max_uid, s)
         if step == "call_time":
             data["call_time"] = text.strip()
             s["step"] = "confirm"
