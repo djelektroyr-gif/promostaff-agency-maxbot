@@ -2,13 +2,41 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
 
 import psycopg2
 
 from config import DATABASE_URL
 
 logger = logging.getLogger(__name__)
+
+_LOCAL_CLIENT_DB = Path(__file__).resolve().parent / "data" / "max_visit_clients.sqlite"
+
+
+def _ensure_local_client_db() -> None:
+    _LOCAL_CLIENT_DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(_LOCAL_CLIENT_DB)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS max_visit_clients (
+                max_user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                company_name TEXT,
+                contact_name TEXT,
+                position_in_org TEXT,
+                phone TEXT,
+                inn TEXT,
+                verified_at TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @contextmanager
@@ -89,7 +117,107 @@ def init_schema() -> None:
                 )
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agency_max_visit_clients (
+                    max_user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    company_name TEXT,
+                    contact_name TEXT,
+                    position_in_org TEXT,
+                    phone TEXT,
+                    inn TEXT,
+                    verified_at TIMESTAMP DEFAULT NOW()
+                )
+                """
+            )
     logger.info("agency_max_funnel schema ensured")
+
+
+def is_max_visit_client_verified(max_user_id: int) -> bool:
+    """Заказчик прошёл предапроверку (как visit_clients в Telegram-визитке)."""
+    uid = int(max_user_id)
+    if DATABASE_URL:
+        try:
+            with connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM agency_max_visit_clients WHERE max_user_id = %s",
+                        (uid,),
+                    )
+                    return bool(cur.fetchone())
+        except Exception:
+            logger.exception("is_max_visit_client_verified pg")
+    try:
+        _ensure_local_client_db()
+        conn = sqlite3.connect(_LOCAL_CLIENT_DB)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM max_visit_clients WHERE max_user_id = ?", (uid,))
+            return bool(cur.fetchone())
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("is_max_visit_client_verified local")
+    return False
+
+
+def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[str, Any]) -> None:
+    uid = int(max_user_id)
+    un = (username or "").strip()
+    cn = (data.get("company_name") or "").strip()
+    contact = (data.get("contact_name") or "").strip()
+    pos = (data.get("position_in_org") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    inn = (data.get("inn") or "").strip()
+    if DATABASE_URL:
+        try:
+            with connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO agency_max_visit_clients (
+                            max_user_id, username, company_name, contact_name, position_in_org, phone, inn
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (max_user_id) DO UPDATE SET
+                            username = EXCLUDED.username,
+                            company_name = EXCLUDED.company_name,
+                            contact_name = EXCLUDED.contact_name,
+                            position_in_org = EXCLUDED.position_in_org,
+                            phone = EXCLUDED.phone,
+                            inn = EXCLUDED.inn,
+                            verified_at = NOW()
+                        """,
+                        (uid, un, cn, contact, pos, phone, inn),
+                    )
+            return
+        except Exception:
+            logger.exception("save_max_visit_client_verified pg")
+    try:
+        _ensure_local_client_db()
+        conn = sqlite3.connect(_LOCAL_CLIENT_DB)
+        try:
+            conn.execute(
+                """
+                INSERT INTO max_visit_clients (
+                    max_user_id, username, company_name, contact_name, position_in_org, phone, inn
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(max_user_id) DO UPDATE SET
+                    username = excluded.username,
+                    company_name = excluded.company_name,
+                    contact_name = excluded.contact_name,
+                    position_in_org = excluded.position_in_org,
+                    phone = excluded.phone,
+                    inn = excluded.inn,
+                    verified_at = datetime('now')
+                """,
+                (uid, un, cn, contact, pos, phone, inn),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("save_max_visit_client_verified local")
 
 
 def save_visit_order(max_user_id: int, username: str, payload_json: str) -> int | None:

@@ -27,7 +27,13 @@ from config import (
 
 import visit_card
 from funnel_store import funnel_touch_complete
-from funnel_db import save_visit_order, save_visit_join, save_visit_question
+from funnel_db import (
+    is_max_visit_client_verified,
+    save_max_visit_client_verified,
+    save_visit_join,
+    save_visit_order,
+    save_visit_question,
+)
 from notify import notify_agency_admins
 from shift_pricing import calculate_order_cost, parse_shift_interval
 
@@ -64,6 +70,33 @@ def _consent_gate_text(scope: str) -> str:
         "обработки заявки и предоставления сервиса.\n\n"
         "Нажимая «Согласен с обработкой данных», вы подтверждаете ознакомление с Политикой "
         "и даёте согласие на обработку персональных данных для указанной цели."
+    )
+
+
+def _consent_pd_tail() -> str:
+    return (
+        "Перед продолжением ознакомьтесь с Политикой и подтвердите согласие на обработку "
+        "персональных данных в соответствии с 152-ФЗ.\n\n"
+        "Оператор данных: ООО «ПРОМОСТАФФ» (ИНН 5003172663, КПП 500301001, "
+        "ОГРН 1265000003025)."
+    )
+
+
+def _client_visit_entry_text() -> str:
+    return (
+        "*Регистрация заказчика (юрлицо)*\n\n"
+        "Перед расчётом нужно указать реквизиты организации и пройти подтверждение данных.\n\n"
+        + _consent_pd_tail()
+    )
+
+
+def _worker_pro_entry_text() -> str:
+    return (
+        "*Регистрация исполнителя (PROMOSTAFF PRO)*\n\n"
+        "Дальше — полная анкета, как в основном боте: налоговый статус, подтверждение самозанятости, "
+        "регистрация в личном кабинете Т-Банка, реквизиты при необходимости, селфи и документы — "
+        "все обязательные шаги по правилам сервиса.\n\n"
+        + _consent_pd_tail()
     )
 
 
@@ -243,11 +276,30 @@ VAC_FROM_KEY = {
 
 def start_order(max_uid: int) -> dict[str, Any]:
     clear_session(max_uid)
+    if not is_max_visit_client_verified(max_uid):
+        SESSIONS[max_uid] = {"flow": "client_visit", "step": "consent", "data": {}}
+        return {
+            "notification": "Сначала регистрация заказчика.",
+            "text": _client_visit_entry_text(),
+            "format": "markdown",
+            "attachments": visit_card.consent_gate_keyboard("client_visit"),
+        }
     SESSIONS[max_uid] = {"flow": "order", "step": "consent", "data": {}}
     return {
         "text": _consent_gate_text("заказ расчёта"),
         "format": "markdown",
         "attachments": visit_card.consent_gate_keyboard("order"),
+    }
+
+
+def start_fill_anketa(max_uid: int) -> dict[str, Any]:
+    """Как в Telegram: до полной анкеты PRO — отдельный экран согласия; в MAX дальше — ссылка в Telegram."""
+    clear_session(max_uid)
+    SESSIONS[max_uid] = {"flow": "worker_pro", "step": "consent", "data": {}}
+    return {
+        "text": _worker_pro_entry_text(),
+        "format": "markdown",
+        "attachments": visit_card.consent_gate_keyboard("worker_pro"),
     }
 
 
@@ -434,6 +486,65 @@ async def process_callback(
     flow = s.get("flow")
     step = s.get("step")
     data = s.setdefault("data", {})
+
+    if flow == "client_visit" and step == "consent" and payload == "consent_client_visit_accept":
+        s["step"] = "company_name"
+        return {
+            "notification": "Согласие принято ✅",
+            "text": (
+                "🏢 *Регистрация заказчика*\n\n"
+                "Шаг 1/6: введите *полное* юридическое название организации (как в учредительных документах):"
+            ),
+            "format": "markdown",
+            "attachments": visit_card.back_to_main_keyboard(),
+        }
+
+    if flow == "client_visit" and step == "confirm" and payload == "confirm_client_visit_yes":
+        username = (sender or {}).get("username") if isinstance(sender, dict) else ""
+        try:
+            save_max_visit_client_verified(max_uid, str(username or ""), data)
+        except Exception:
+            logger.exception("save_max_visit_client_verified")
+        SESSIONS[max_uid] = {"flow": "order", "step": "event_type", "data": {"order_consent_accepted": True}}
+        return {
+            "notification": "Отлично!",
+            "text": (
+                "*Заказ расчёта стоимости*\n\n"
+                "Выберите быстрый сценарий или введите тип проекта вручную.\n\n"
+                "Быстрый сценарий ускорит заполнение формы."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.order_quickstart_keyboard(),
+        }
+
+    if flow == "client_visit" and step == "confirm" and payload == "confirm_client_visit_edit":
+        data.clear()
+        s["step"] = "consent"
+        return {
+            "notification": "Заполним заново",
+            "text": _client_visit_entry_text(),
+            "format": "markdown",
+            "attachments": visit_card.consent_gate_keyboard("client_visit"),
+        }
+
+    if flow == "worker_pro" and step == "consent" and payload == "consent_worker_pro_accept":
+        clear_session(max_uid)
+        from agency_pro_vendor import vendor_help_message
+        from pro_max_integration import bootstrap_visit_worker_pro_max
+
+        try:
+            await bootstrap_visit_worker_pro_max(max_uid)
+            return {"_answer_only": True, "notification": "Согласие принято ✅"}
+        except Exception:
+            logger.exception("bootstrap_visit_worker_pro_max")
+            return {
+                "text": (
+                    "Не удалось запустить регистрацию (сценарий как в PROMOSTAFF PRO).\n\n"
+                    f"{vendor_help_message()}"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
 
     if flow == "order" and step == "consent" and payload == "consent_order_accept":
         data["order_consent_accepted"] = True
@@ -839,6 +950,18 @@ async def process_text(
     data = s.setdefault("data", {})
 
     if step == "consent":
+        if flow == "client_visit":
+            return {
+                "text": _client_visit_entry_text(),
+                "format": "markdown",
+                "attachments": visit_card.consent_gate_keyboard("client_visit"),
+            }
+        if flow == "worker_pro":
+            return {
+                "text": _worker_pro_entry_text(),
+                "format": "markdown",
+                "attachments": visit_card.consent_gate_keyboard("worker_pro"),
+            }
         scope = {
             "order": "заказ расчёта",
             "join": "отклик в команду",
@@ -849,6 +972,101 @@ async def process_text(
             "format": "markdown",
             "attachments": visit_card.consent_gate_keyboard(str(flow)),
         }
+
+    if flow == "client_visit":
+        if step == "company_name":
+            t = text.strip()
+            if len(t) < 2:
+                return {
+                    "text": "❌ Введите название организации (минимум 2 символа).",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["company_name"] = t
+            s["step"] = "inn"
+            return {
+                "text": (
+                    "Шаг 2/6: введите *ИНН* организации (10 цифр для юрлица или 12 для ИП) — сразу после названия, "
+                    "чтобы мы могли сверить компанию."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if step == "inn":
+            raw = text.strip()
+            if not validate_inn(raw):
+                return {
+                    "text": "❌ ИНН должен содержать 10 или 12 цифр.",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["inn"] = re.sub(r"\D", "", raw)
+            s["step"] = "contact_name"
+            return {
+                "text": "Шаг 3/6: введите *полное ФИО* контактного лица (как в договоре):",
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if step == "contact_name":
+            if not validate_full_name(text):
+                return {
+                    "text": "❌ Введите полное ФИО (минимум 2 слова, кириллица или латиница).",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["contact_name"] = text.strip()
+            s["step"] = "position_in_org"
+            return {
+                "text": "Шаг 4/6: укажите *вашу должность* в организации:",
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if step == "position_in_org":
+            t = text.strip()
+            if len(t) < 2:
+                return {
+                    "text": "❌ Укажите должность (минимум 2 символа).",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["position_in_org"] = t
+            s["step"] = "phone"
+            return {
+                "text": "Шаг 5/6: введите номер телефона в формате +7…",
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if step == "phone":
+            v = validate_phone(text)
+            if not v:
+                return {
+                    "text": "❌ Не удалось распознать номер. Введите +7XXXXXXXXXX.",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["phone"] = v
+            s["step"] = "confirm"
+            inn = (data.get("inn") or "").strip()
+            preview = (
+                "📋 *Шаг 6/6: проверка данных*\n\n"
+                f"🏢 Организация: {data.get('company_name', '')}\n"
+                f"🧾 ИНН: {inn}\n"
+                f"👤 Контактное лицо: {data.get('contact_name', '')}\n"
+                f"💼 Должность: {data.get('position_in_org', '')}\n"
+                f"📞 Телефон: {data.get('phone', '')}\n\n"
+                "Всё верно?"
+            )
+            return {
+                "text": preview,
+                "format": "markdown",
+                "attachments": visit_card.client_reg_confirm_keyboard(),
+            }
+        if step == "confirm":
+            return {
+                "text": "Используйте кнопки под сообщением: подтвердить или заполнить заново.",
+                "format": "markdown",
+                "attachments": visit_card.client_reg_confirm_keyboard(),
+            }
 
     if flow == "question" and step == "text":
         if not data.get("question_consent_accepted"):

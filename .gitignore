@@ -6,3 +6,5 @@ __pycache__/
 *.log
 .idea/
 .vscode/
+# локальная регистрация заказчика MAX без Postgres
+data/

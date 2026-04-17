@@ -33,6 +33,10 @@ FLOW_PAYLOADS = frozenset(
         "back_to_main",
         "back",
         "none",
+        "consent_client_visit_accept",
+        "consent_worker_pro_accept",
+        "confirm_client_visit_yes",
+        "confirm_client_visit_edit",
     }
 )
 VAC_PREFIX = "vac_apply_"
@@ -273,11 +277,23 @@ def order_confirm_keyboard() -> list[dict]:
     )
 
 
+def client_reg_confirm_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("✅ Данные верны, завершить регистрацию", "confirm_client_visit_yes")],
+            [cb_btn("✏️ Заполнить заново", "confirm_client_visit_edit")],
+            [cb_btn("🏠 В главное меню", "main_menu")],
+        ]
+    )
+
+
 def consent_gate_keyboard(flow: str) -> list[dict]:
     callbacks = {
         "order": "consent_order_accept",
         "join": "consent_join_accept",
         "question": "consent_question_accept",
+        "worker_pro": "consent_worker_pro_accept",
+        "client_visit": "consent_client_visit_accept",
     }
     cb = callbacks.get(flow, "main_menu")
     return inline_keyboard(

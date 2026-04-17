@@ -12,6 +12,7 @@ from typing import Any
 from config import MAX_TOKEN
 from funnel_store import funnel_sync_session
 from max_client import post_answer, post_message
+import pro_max_integration
 
 import visit_card
 import visit_flows
@@ -65,6 +66,11 @@ async def _send_message(max_uid: int, body: dict[str, Any]) -> None:
 
 async def _answer_message(callback_id: str, max_uid: int, msg: dict[str, Any]) -> None:
     msg = dict(msg)
+    if msg.pop("_answer_only", None):
+        raw = msg.get("notification", None)
+        notif = ((raw if isinstance(raw, str) else None) or " ").strip() or " "
+        await post_answer(MAX_TOKEN, callback_id, {"notification": notif[:200]})
+        return
     raw = msg.pop("notification", None)
     notif = (raw if isinstance(raw, str) else None) or " "
     notif = notif.strip() or " "
@@ -111,6 +117,10 @@ async def process_update(body: dict[str, Any]) -> None:
         await _sync_funnel(max_uid)
         if reply is not None:
             await _send_message(max_uid, reply)
+            return
+        if pro_max_integration.should_delegate_pro_max(max_uid):
+            await pro_max_integration.process_promostaff_max_update(body)
+            await _sync_funnel(max_uid)
         return
 
     if update_type == "message_callback" and max_uid is not None:
@@ -127,6 +137,21 @@ async def process_update(body: dict[str, Any]) -> None:
         if payload in ("main_menu", "back", "back_to_main"):
             visit_flows.clear_session(max_uid)
             await _answer_message(callback_id, max_uid, visit_card.message_main_menu())
+            await _sync_funnel(max_uid)
+            return
+
+        sender_cb = cb.get("user") if isinstance(cb.get("user"), dict) else None
+        if visit_flows.SESSIONS.get(max_uid):
+            flow_reply = await visit_flows.process_callback(max_uid, payload, sender_cb)
+            if flow_reply is not None:
+                await _answer_message(callback_id, max_uid, flow_reply)
+                await _sync_funnel(max_uid)
+                return
+
+        if pro_max_integration.should_delegate_pro_max(
+            max_uid
+        ) and pro_max_integration.is_pro_registration_payload(payload):
+            await pro_max_integration.process_promostaff_max_update(body)
             await _sync_funnel(max_uid)
             return
 
@@ -163,15 +188,16 @@ async def process_update(body: dict[str, Any]) -> None:
             return
 
         if payload == "fill_anketa":
-            msg = visit_flows.start_join(max_uid)
+            if pro_max_integration.should_delegate_pro_max(max_uid):
+                await post_answer(
+                    MAX_TOKEN,
+                    callback_id,
+                    {"notification": "Продолжите регистрацию по сообщениям выше."},
+                )
+                await _sync_funnel(max_uid)
+                return
+            msg = visit_flows.start_fill_anketa(max_uid)
             await _answer_message(callback_id, max_uid, msg)
-            await _sync_funnel(max_uid)
-            return
-
-        sender_cb = cb.get("user") if isinstance(cb.get("user"), dict) else None
-        flow_reply = await visit_flows.process_callback(max_uid, payload, sender_cb)
-        if flow_reply is not None:
-            await _answer_message(callback_id, max_uid, flow_reply)
             await _sync_funnel(max_uid)
             return
 
