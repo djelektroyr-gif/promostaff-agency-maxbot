@@ -32,6 +32,7 @@ FLOW_PAYLOADS = frozenset(
         "ask_manager",
         "fill_anketa",
         "main_menu",
+        "visit_public_menu",
         "back_to_main",
         "back",
         "none",
@@ -141,7 +142,7 @@ def client_registered_main_menu_keyboard() -> list[dict]:
         [cb_btn("⚙️ Настройки", "client_reg_settings")],
         [cb_btn("🌐 Открыть веб-панель", "client_reg_web")],
         [cb_btn("💰 Заказать расчёт", "calculate")],
-        [cb_btn("🏠 Меню визитки", "main_menu")],
+        [cb_btn("🏠 Меню визитки", "visit_public_menu")],
     ]
     return inline_keyboard(rows)
 
@@ -153,7 +154,7 @@ def worker_registered_main_menu_keyboard() -> list[dict]:
         [cb_btn("📅 Мои смены", "worker_reg_shifts")],
         [cb_btn("💳 Мои выплаты", "worker_reg_payments")],
         [cb_btn("📍 Маяк", "worker_reg_beacon")],
-        [cb_btn("🏠 Меню визитки", "main_menu")],
+        [cb_btn("🏠 Меню визитки", "visit_public_menu")],
     ]
     return inline_keyboard(rows)
 
@@ -950,6 +951,42 @@ def message_main_menu() -> dict[str, Any]:
         "format": "markdown",
         "attachments": main_menu_keyboard(),
     }
+
+
+def message_role_home(max_uid: int | None) -> dict[str, Any]:
+    """Главный экран при старте и «домой»: кабинет заказчика/исполнителя по БД или публичная визитка."""
+    from funnel_db import is_max_visit_client_verified, is_max_visit_worker_verified
+
+    if not max_uid:
+        return message_main_menu()
+    uid = int(max_uid)
+    if is_max_visit_client_verified(uid):
+        cap = (
+            f"*Главное меню заказчика*\n\n"
+            f"Вы вошли как зарегистрированный заказчик *{COMPANY_NAME}*.\n\n"
+            "Разделы кабинета и заказ расчёта — в меню ниже."
+        )
+        if is_max_visit_worker_verified(uid):
+            cap += (
+                "\n\n_У вас также есть профиль исполнителя — показано меню заказчика; "
+                "публичная визитка — кнопка «Меню визитки»._"
+            )
+        return {
+            "text": cap,
+            "format": "markdown",
+            "attachments": client_registered_main_menu_keyboard(),
+        }
+    if is_max_visit_worker_verified(uid):
+        return {
+            "text": (
+                "*Главное меню исполнителя*\n\n"
+                "Вы вошли как верифицированный исполнитель. "
+                "Ниже — разделы профиля; публичное меню визитки — кнопка «Меню визитки»."
+            ),
+            "format": "markdown",
+            "attachments": worker_registered_main_menu_keyboard(),
+        }
+    return message_main_menu()
 
 
 def message_for_static_payload(payload: str) -> dict[str, Any] | None:

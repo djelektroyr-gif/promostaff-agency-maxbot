@@ -897,7 +897,11 @@ def _supervisor_offer_text(total: int, rec: int) -> str:
 
 def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] | None:
     """Меню заказчика/исполнителя без активной SESSION (после clear_session)."""
-    from funnel_db import is_max_visit_client_verified, list_agency_visit_orders_for_user
+    from funnel_db import (
+        is_max_visit_client_verified,
+        is_max_visit_worker_verified,
+        list_agency_visit_orders_for_user,
+    )
 
     if payload == "client_reg_projects":
         if not is_max_visit_client_verified(max_uid):
@@ -990,6 +994,15 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
         "worker_reg_beacon": "*Маяк*\n\nСрочный поиск: окно активности и уведомления — в разработке.",
     }
     if payload in worker_texts:
+        if not is_max_visit_worker_verified(max_uid):
+            return {
+                "notification": "Сначала регистрация и верификация",
+                "text": (
+                    "Сначала пройдите регистрацию исполнителя и дождитесь подтверждения заявки администратором."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
         return {
             "notification": " ",
             "text": worker_texts[payload],
@@ -1579,6 +1592,8 @@ async def process_callback(
         return msg
 
     if flow == "join" and step == "profession_category":
+        if payload in ("main_menu", "back", "back_to_main"):
+            return None
         if payload == "prof_back":
             return {
                 "notification": " ",
@@ -1630,6 +1645,12 @@ async def process_callback(
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
+        return {
+            "notification": " ",
+            "text": "*ВЫБОР ПРОФЕССИИ*\n\nВыберите категорию или профессию кнопками ниже.",
+            "format": "markdown",
+            "attachments": visit_card.profession_categories_keyboard(),
+        }
 
     if flow == "join" and step == "experience_pick" and payload in ("exp_lt1", "exp_1_3", "exp_gt3"):
         label, stars = visit_join_validators.experience_stars_from_choice(payload)

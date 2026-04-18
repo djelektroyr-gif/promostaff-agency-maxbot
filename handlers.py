@@ -86,7 +86,7 @@ async def process_update(body: dict[str, Any]) -> None:
 
     if update_type in ("bot_started", "user_added") and max_uid is not None:
         visit_flows.clear_session(max_uid)
-        await _send_message(max_uid, visit_card.message_main_menu())
+        await _send_message(max_uid, visit_card.message_role_home(max_uid))
         await _sync_funnel(max_uid)
         return
 
@@ -98,12 +98,12 @@ async def process_update(body: dict[str, Any]) -> None:
 
         if re.match(r"^/(start|старт)\b", text, re.I):
             visit_flows.clear_session(max_uid)
-            await _send_message(max_uid, visit_card.message_main_menu())
+            await _send_message(max_uid, visit_card.message_role_home(max_uid))
             await _sync_funnel(max_uid)
             return
         if re.match(r"^(меню|menu)\b", text, re.I):
             visit_flows.clear_session(max_uid)
-            await _send_message(max_uid, visit_card.message_main_menu())
+            await _send_message(max_uid, visit_card.message_role_home(max_uid))
             await _sync_funnel(max_uid)
             return
 
@@ -124,7 +124,7 @@ async def process_update(body: dict[str, Any]) -> None:
             await post_answer(MAX_TOKEN, callback_id, {"notification": " "})
             return
 
-        if payload in ("main_menu", "back", "back_to_main"):
+        if payload == "visit_public_menu":
             visit_flows.clear_session(max_uid)
             await _answer_message(callback_id, max_uid, visit_card.message_main_menu())
             await _sync_funnel(max_uid)
@@ -134,6 +134,12 @@ async def process_update(body: dict[str, Any]) -> None:
         flow_reply = await visit_flows.process_callback(max_uid, payload, sender_cb)
         if flow_reply is not None:
             await _answer_message(callback_id, max_uid, flow_reply)
+            await _sync_funnel(max_uid)
+            return
+
+        if payload in ("main_menu", "back", "back_to_main"):
+            visit_flows.clear_session(max_uid)
+            await _answer_message(callback_id, max_uid, visit_card.message_role_home(max_uid))
             await _sync_funnel(max_uid)
             return
 
@@ -180,7 +186,23 @@ async def process_update(body: dict[str, Any]) -> None:
             visit_flows.clear_session(max_uid)
             await _answer_message(callback_id, max_uid, static_msg)
         elif visit_card.is_visit_flow_payload(payload):
-            await post_answer(MAX_TOKEN, callback_id, {"notification": " "})
+            if payload.startswith(("prof_cat:", "prof_pick:", "prof_custom:")) or payload == "prof_back":
+                await _answer_message(
+                    callback_id,
+                    max_uid,
+                    {
+                        "notification": "Сессия сброшена",
+                        "text": (
+                            "*Сессия анкеты устарела или была сброшена.*\n\n"
+                            "Откройте *«Хочу в команду»* в меню и пройдите шаги снова "
+                            "(один инстанс бота без перезапуска между шагами)."
+                        ),
+                        "format": "markdown",
+                        "attachments": visit_card.main_menu_keyboard(),
+                    },
+                )
+            else:
+                await post_answer(MAX_TOKEN, callback_id, {"notification": " "})
         else:
             visit_flows.clear_session(max_uid)
             await post_answer(MAX_TOKEN, callback_id, {"notification": " "})

@@ -242,6 +242,12 @@ def is_max_visit_client_verified(max_user_id: int) -> bool:
     return False
 
 
+def is_max_visit_worker_verified(max_user_id: int) -> bool:
+    """Исполнитель верифицирован в MAX (аналог visit_workers в Telegram). Пока нет учёта — False."""
+    _ = int(max_user_id)
+    return False
+
+
 def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[str, Any]) -> None:
     uid = int(max_user_id)
     un = (username or "").strip()
