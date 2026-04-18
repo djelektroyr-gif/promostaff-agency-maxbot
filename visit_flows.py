@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import re
@@ -777,6 +778,11 @@ async def _notify_plain(subject: str, plain: str) -> None:
         logger.exception("notify_agency_admins failed")
 
 
+def _schedule_notify(subject: str, plain: str) -> None:
+    """Не блокировать ответ пользователю в MAX: SMTP/Telegram к админам — в фоне."""
+    asyncio.create_task(_notify_plain(subject, plain))
+
+
 def _order_preview_text(data: dict[str, Any]) -> str:
     staff = merged_staff_for_pricing(data)
     parsed = parse_shift_interval(data.get("shift_time", ""))
@@ -1069,21 +1075,15 @@ async def process_callback(
         except Exception:
             logger.exception("save_max_visit_client_verified")
         clear_session(max_uid)
-        SESSIONS[max_uid] = {
-            "flow": "order",
-            "step": "order_mode",
-            "data": {"order_consent_accepted": True},
-        }
         return {
             "notification": "Отлично!",
             "text": (
-                "*Регистрация завершена.* Выберите тип расчёта:\n\n"
-                "*Срочный расчёт* — оценка по одной типичной смене прямо в боте.\n"
-                "*Коммерческое предложение* — менеджер подготовит КП по вашим вводным.\n\n"
-                "Выберите вариант:"
+                "✅ *Регистрация завершена.*\n\n"
+                "*Меню заказчика:* проекты, история, новый расчёт — ниже. "
+                "Чтобы заказать расчёт или запросить КП, нажмите «Заказать расчёт»."
             ),
             "format": "markdown",
-            "attachments": visit_card.order_mode_keyboard(),
+            "attachments": visit_card.client_registered_main_menu_keyboard(),
         }
 
     if flow == "client_visit" and step == "confirm" and payload == "confirm_client_visit_edit":
@@ -1517,13 +1517,13 @@ async def process_callback(
         to_save = dict(data)
         to_save["order_kind"] = "cp_request"
         plain = _format_cp_plain(to_save, oid, who)
-        await _notify_plain(f"Новая заявка на КП #{oid}", plain)
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
         public_ref = "—"
         try:
             _, public_ref = save_visit_order_payload(max_uid, str(username or ""), to_save)
         except Exception:
             logger.exception("save_visit_order_payload cp")
+        _schedule_notify(f"Новая заявка на КП #{oid}", plain)
         ref_show = (
             public_ref if public_ref not in (None, "OFFLINE", "—") else f"внутр. #{oid}"
         )
@@ -1587,12 +1587,12 @@ async def process_callback(
         to_save["total_cost"] = total
         to_save["cost_meta"] = meta
         plain = _format_order_plain(to_save, oid, who)
-        await _notify_plain(f"Новая заявка на расчёт #{oid}", plain)
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
         try:
             save_visit_order(max_uid, str(username or ""), json.dumps(to_save, ensure_ascii=False))
         except Exception:
             logger.exception("save_visit_order")
+        _schedule_notify(f"Новая заявка на расчёт #{oid}", plain)
         funnel_touch_complete(max_uid)
         clear_session(max_uid)
         return {
@@ -1807,12 +1807,12 @@ async def process_callback(
         aligned = _align_join_payload_for_pg(data)
         aligned["specialization_tags"] = _build_join_tags(aligned)
         plain = _format_join_plain(aligned, rid, who)
-        await _notify_plain(f"Новая заявка в команду #{rid}", plain)
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
         try:
             save_visit_join(max_uid, str(username or ""), json.dumps(aligned, ensure_ascii=False))
         except Exception:
             logger.exception("save_visit_join")
+        _schedule_notify(f"Новая заявка в команду #{rid}", plain)
         funnel_touch_complete(max_uid)
         clear_session(max_uid)
         return {
@@ -1984,12 +1984,12 @@ async def process_text(
             }
         qid = _new_id()
         plain = _format_question_plain(text, qid, who)
-        await _notify_plain(f"Новый вопрос #{qid}", plain)
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
         try:
             save_visit_question(max_uid, str(username or ""), text)
         except Exception:
             logger.exception("save_visit_question")
+        _schedule_notify(f"Новый вопрос #{qid}", plain)
         clear_session(max_uid)
         return {
             "text": "*Сообщение отправлено.* Спасибо!",
