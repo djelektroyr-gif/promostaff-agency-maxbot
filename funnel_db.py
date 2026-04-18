@@ -146,7 +146,12 @@ def _sync_cp_request_from_max_visit_order(
                     """
                     INSERT INTO agency_crm_cards (pipeline, stage, source_kind, source_id, client_tg_id, title, created_at, updated_at)
                     VALUES ('kp', 'new', 'cp_request', %s, %s, %s, NOW(), NOW())
-                    ON CONFLICT (source_kind, source_id) DO NOTHING
+                    ON CONFLICT (source_kind, source_id) DO UPDATE SET
+                        pipeline = EXCLUDED.pipeline,
+                        stage = EXCLUDED.stage,
+                        client_tg_id = COALESCE(EXCLUDED.client_tg_id, agency_crm_cards.client_tg_id),
+                        title = EXCLUDED.title,
+                        updated_at = NOW()
                     """,
                     (rid, int(client_tg_id), card_title[:500]),
                 )
