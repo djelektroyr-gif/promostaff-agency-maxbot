@@ -677,11 +677,130 @@ def _supervisor_offer_text(total: int, rec: int) -> str:
     )
 
 
+def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] | None:
+    """Меню заказчика/исполнителя без активной SESSION (после clear_session)."""
+    from funnel_db import is_max_visit_client_verified, list_agency_visit_orders_for_user
+
+    if payload == "client_reg_projects":
+        if not is_max_visit_client_verified(max_uid):
+            return {
+                "notification": "Нужна регистрация",
+                "text": "Сначала пройдите регистрацию заказчика (юрлицо).",
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
+        return {
+            "notification": " ",
+            "text": (
+                "*Мои проекты*\n\n"
+                "Раздел подключается к учёту в панели (promostaff-bot). "
+                "Скоро здесь будет список проектов."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.client_registered_main_menu_keyboard(),
+        }
+
+    if payload == "client_reg_orders":
+        if not is_max_visit_client_verified(max_uid):
+            return {
+                "notification": "Нужна регистрация",
+                "text": "Сначала пройдите регистрацию заказчика (юрлицо).",
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
+        rows = list_agency_visit_orders_for_user(max_uid, limit=25)
+        if not rows:
+            body = (
+                "*История заказов*\n\n"
+                "Пока нет заявок. Оформите расчёт через «Заказать расчёт»."
+            )
+        else:
+            lines = ["*История заказов*\n"]
+            kind_labels = {"cp_request": "КП", "quick_estimate": "Срочный расчёт"}
+            for r in rows:
+                p = r.get("payload") or {}
+                kind = kind_labels.get((r.get("order_kind") or "").strip(), "Заявка")
+                ref = (r.get("public_ref") or "").strip() or f"MX-{r.get('crm_id', '—')}"
+                et = (p.get("event_type") or "").strip() or "—"
+                city = (p.get("city") or "").strip() or "—"
+                lines.append(f"• *{ref}* — {kind}\n  _{et}, {city}_\n")
+            body = "\n".join(lines)
+        return {
+            "notification": " ",
+            "text": body,
+            "format": "markdown",
+            "attachments": visit_card.client_registered_main_menu_keyboard(),
+        }
+
+    if payload == "client_reg_settings":
+        if not is_max_visit_client_verified(max_uid):
+            return {
+                "notification": "Нужна регистрация",
+                "text": "Сначала пройдите регистрацию заказчика.",
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
+        return {
+            "notification": " ",
+            "text": "*Настройки*\n\nЗаглушка: уведомления и профиль — в следующих версиях.",
+            "format": "markdown",
+            "attachments": visit_card.client_registered_main_menu_keyboard(),
+        }
+
+    if payload == "client_reg_web":
+        if not is_max_visit_client_verified(max_uid):
+            return {
+                "notification": "Нужна регистрация",
+                "text": "Сначала пройдите регистрацию заказчика.",
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
+        return {
+            "notification": " ",
+            "text": (
+                "*Веб-панель*\n\n"
+                "Вход будет доступен по ссылке из настроек (SSO / T-Банк — по готовности)."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.client_registered_main_menu_keyboard(),
+        }
+
+    worker_texts = {
+        "worker_reg_profile": "*Мои данные*\n\nРедактирование анкеты — в следующей итерации (ТЗ Pro).",
+        "worker_reg_shifts": "*Мои смены*\n\nСписок смен — после связи с учётом в панели.",
+        "worker_reg_payments": "*Мои выплаты*\n\nВыплаты и T-Банк — по готовности данных.",
+        "worker_reg_beacon": "*Маяк*\n\nСрочный поиск: окно активности и уведомления — в разработке.",
+    }
+    if payload in worker_texts:
+        return {
+            "notification": " ",
+            "text": worker_texts[payload],
+            "format": "markdown",
+            "attachments": visit_card.worker_registered_main_menu_keyboard(),
+        }
+
+    return None
+
+
 async def process_callback(
     max_uid: int, payload: str, sender: dict[str, Any] | None
 ) -> dict[str, Any] | None:
     who = _sender_label(sender)
     s = SESSIONS.get(max_uid)
+    _reg_payloads = frozenset(
+        {
+            "client_reg_projects",
+            "client_reg_orders",
+            "client_reg_settings",
+            "client_reg_web",
+            "worker_reg_profile",
+            "worker_reg_shifts",
+            "worker_reg_payments",
+            "worker_reg_beacon",
+        }
+    )
+    if payload in _reg_payloads:
+        return registered_menu_static_reply(max_uid, payload)
     if not s:
         return None
     flow = s.get("flow")
@@ -706,29 +825,16 @@ async def process_callback(
             save_max_visit_client_verified(max_uid, str(username or ""), data)
         except Exception:
             logger.exception("save_max_visit_client_verified")
-        raw_phone = (data.get("phone") or "").strip()
-        cp = validate_phone(raw_phone) or raw_phone
-        inn_digits = re.sub(r"\D", "", str(data.get("inn") or ""))
-        new_data = {
-            "order_consent_accepted": True,
-            "contact_phone": cp,
-            "contact_name": (data.get("contact_name") or "").strip(),
-            "company_name": (data.get("company_name") or "").strip(),
-            "company_inn": inn_digits,
-            "contact_email": (data.get("contact_email") or "").strip(),
-        }
-        SESSIONS[max_uid] = {"flow": "order", "step": "order_mode", "data": new_data}
+        clear_session(max_uid)
         return {
             "notification": "Отлично!",
             "text": (
-                "*Заказ расчёта стоимости*\n\n"
-                "*Срочный расчёт* — оценка по одной типичной смене прямо в боте.\n"
-                "*Коммерческое предложение* — менеджер подготовит КП по вашим вводным "
-                "(вложения файлами — в следующей версии; сейчас можно описать текстом).\n\n"
-                "Выберите вариант:"
+                "*Меню заказчика*\n\n"
+                "Проекты, история заявок и веб-панель — по мере подключения учёта. "
+                "Новый расчёт — кнопкой ниже."
             ),
             "format": "markdown",
-            "attachments": visit_card.order_mode_keyboard(),
+            "attachments": visit_card.client_registered_main_menu_keyboard(),
         }
 
     if flow == "client_visit" and step == "confirm" and payload == "confirm_client_visit_edit":
@@ -926,6 +1032,29 @@ async def process_callback(
             ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
+        }
+
+    if flow == "join" and step == "terms_accept" and payload == "join_terms_agree":
+        s["step"] = "selfie"
+        return {
+            "notification": "Принято ✅",
+            "text": (
+                "Пришлите *селфи* для подтверждения анкеты (только фото).\n\n"
+                "Лицо должно быть хорошо видно."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.back_to_main_keyboard(),
+        }
+
+    if flow == "join" and step == "terms_accept" and payload == "join_terms_decline":
+        clear_session(max_uid)
+        return {
+            "notification": "Регистрация не завершена",
+            "text": (
+                "Без согласия с условиями регистрацию завершить нельзя. Вы в меню визитки."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.main_menu_keyboard(),
         }
 
     if flow == "join" and step == "consent" and payload == "consent_join_accept":
@@ -1333,9 +1462,10 @@ async def process_callback(
             "text": (
                 f"*Заявка #{rid} принята.*\n\n"
                 f"Спасибо за интерес к {COMPANY_NAME}!\n\n"
+                "*Меню исполнителя* — ниже."
             ),
             "format": "markdown",
-            "attachments": visit_card.main_menu_keyboard(),
+            "attachments": visit_card.worker_registered_main_menu_keyboard(),
         }
 
     if flow == "join" and step == "position_pick":
@@ -1902,14 +2032,20 @@ async def process_text(
             if skills == "—":
                 skills = ""
             data["skills"] = skills
-            s["step"] = "selfie"
+            s["step"] = "terms_accept"
             return {
                 "text": (
-                    "Пришлите *селфи* для подтверждения анкеты (только фото, без текста).\n\n"
-                    "Лицо должно быть хорошо видно."
+                    "⚖️ Перед загрузкой селфи ознакомьтесь с документами.\n\n"
+                    "Нажимая «Согласен», вы подтверждаете, что ознакомлены и согласны с условиями."
                 ),
                 "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
+                "attachments": visit_card.join_terms_keyboard(),
+            }
+        if step == "terms_accept":
+            return {
+                "text": "Используйте кнопки «Согласен» или «Не согласен».",
+                "format": "markdown",
+                "attachments": visit_card.join_terms_keyboard(),
             }
         if step == "selfie":
             ref = _image_ref_from_body(message_body)

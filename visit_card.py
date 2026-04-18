@@ -16,6 +16,7 @@ from config import (
     CONTACT_TELEGRAM,
     EXPERIENCE_OPTIONS,
     PRIVACY_POLICY_URL,
+    TERMS_OF_SERVICE_URL,
     WEBSITE_URL,
     contact_telegram_url,
     contact_whatsapp_url,
@@ -70,9 +71,56 @@ def is_visit_flow_payload(p: str) -> bool:
         "consent_order_accept",
         "consent_join_accept",
         "consent_question_accept",
+        "join_terms_agree",
+        "join_terms_decline",
+        "client_reg_projects",
+        "client_reg_orders",
+        "client_reg_settings",
+        "client_reg_web",
+        "worker_reg_profile",
+        "worker_reg_shifts",
+        "worker_reg_payments",
+        "worker_reg_beacon",
     ):
         return True
     return False
+
+
+def client_registered_main_menu_keyboard() -> list[dict]:
+    """Меню заказчика после регистрации — REGISTRATION_AND_POST_MENU_SPEC.md §5."""
+    rows: list[list[dict]] = [
+        [cb_btn("📂 Мои проекты", "client_reg_projects")],
+        [cb_btn("📜 История заказов", "client_reg_orders")],
+        [cb_btn("⚙️ Настройки", "client_reg_settings")],
+        [cb_btn("🌐 Открыть веб-панель", "client_reg_web")],
+        [cb_btn("💰 Заказать расчёт", "calculate")],
+        [cb_btn("🏠 Меню визитки", "main_menu")],
+    ]
+    return inline_keyboard(rows)
+
+
+def worker_registered_main_menu_keyboard() -> list[dict]:
+    """Меню исполнителя после регистрации — REGISTRATION_AND_POST_MENU_SPEC.md §6."""
+    rows: list[list[dict]] = [
+        [cb_btn("👤 Мои данные", "worker_reg_profile")],
+        [cb_btn("📅 Мои смены", "worker_reg_shifts")],
+        [cb_btn("💳 Мои выплаты", "worker_reg_payments")],
+        [cb_btn("📍 Маяк", "worker_reg_beacon")],
+        [cb_btn("🏠 Меню визитки", "main_menu")],
+    ]
+    return inline_keyboard(rows)
+
+
+def join_terms_keyboard() -> list[dict]:
+    """Перед селфи — §4.3 REGISTRATION_AND_POST_MENU_SPEC."""
+    return inline_keyboard(
+        [
+            [link_btn("📄 Политика конфиденциальности", PRIVACY_POLICY_URL)],
+            [link_btn("📄 Пользовательское соглашение", TERMS_OF_SERVICE_URL)],
+            [cb_btn("✅ Согласен", "join_terms_agree")],
+            [cb_btn("❌ Не согласен", "join_terms_decline")],
+        ]
+    )
 
 
 def main_menu_keyboard() -> list[dict]:

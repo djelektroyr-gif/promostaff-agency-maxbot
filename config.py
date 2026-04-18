@@ -63,6 +63,7 @@ LOGO_PNG_PATH = _BASE_DIR / "assets" / "logo.png"
 BRAND_LOGO_URL = _env("BRAND_LOGO_URL")
 # Политика ПДн — та же страница, что на promostaff.pro (лендинг PRO).
 PRIVACY_POLICY_URL = _env("PRIVACY_POLICY_URL") or "https://promostaff.pro/privacy"
+TERMS_OF_SERVICE_URL = _env("TERMS_OF_SERVICE_URL") or "https://promostaff.pro/terms"
 ANKETA_URL = _env("ANKETA_URL") or "https://promostaff-agency.ru/#contact"
 PORTFOLIO_URL = _env("PORTFOLIO_URL") or "https://promostaff-agency.ru/#reviews"
 CONTACT_PHONE = _env("CONTACT_PHONE") or "+7 (929) 556-56-96"
