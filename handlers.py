@@ -116,7 +116,16 @@ async def process_update(body: dict[str, Any]) -> None:
     if update_type == "message_callback" and max_uid is not None:
         cb = body.get("callback") or {}
         callback_id = (cb.get("callback_id") or "").strip()
-        payload = (cb.get("payload") or "").strip()
+        raw_pl = cb.get("payload")
+        if isinstance(raw_pl, dict):
+            payload = str(
+                raw_pl.get("payload")
+                or raw_pl.get("callback_payload")
+                or raw_pl.get("data")
+                or ""
+            ).strip()
+        else:
+            payload = (raw_pl or "").strip() if raw_pl is not None else ""
         if not callback_id:
             return
 

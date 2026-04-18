@@ -47,6 +47,21 @@ from shift_pricing import calculate_order_cost, parse_shift_interval
 
 logger = logging.getLogger(__name__)
 
+
+def _norm_cb_payload(payload: Any) -> str:
+    """MAX может отдавать payload строкой или вложенным объектом; префиксы сравниваем без учёта регистра."""
+    if payload is None:
+        return ""
+    if isinstance(payload, dict):
+        return str(
+            payload.get("payload")
+            or payload.get("callback_payload")
+            or payload.get("data")
+            or ""
+        ).strip()
+    return str(payload).strip()
+
+
 SESSIONS: dict[int, dict[str, Any]] = {}
 
 
@@ -1031,6 +1046,7 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
 async def process_callback(
     max_uid: int, payload: str, sender: dict[str, Any] | None
 ) -> dict[str, Any] | None:
+    payload = _norm_cb_payload(payload)
     who = _sender_label(sender)
     s = SESSIONS.get(max_uid)
     _reg_payloads = frozenset(
@@ -1612,21 +1628,33 @@ async def process_callback(
         return msg
 
     if flow == "join" and step == "profession_category":
-        if payload in ("main_menu", "back", "back_to_main"):
+        low = payload.lower()
+        if low in ("main_menu", "back", "back_to_main"):
             return None
-        if payload == "prof_back":
+        if low == "prof_back":
             return {
                 "notification": " ",
                 "text": "*ВЫБОР ПРОФЕССИИ*\n\nВыберите категорию 👇",
                 "format": "markdown",
                 "attachments": visit_card.profession_categories_keyboard(),
             }
-        if payload.startswith("prof_cat:"):
-            cat_s = payload.split(":", 1)[-1]
+        if low.startswith("prof_cat:"):
+            cat_s = payload.split(":", 1)[-1].strip().lower()
             try:
                 cat = ProfessionCategory(cat_s)
             except ValueError:
-                return None
+                logger.warning(
+                    "join prof_cat invalid max_uid=%s payload=%r cat_s=%r",
+                    max_uid,
+                    payload,
+                    cat_s,
+                )
+                return {
+                    "notification": "Выберите категорию кнопкой",
+                    "text": "*ВЫБОР ПРОФЕССИИ*\n\nВыберите категорию 👇",
+                    "format": "markdown",
+                    "attachments": visit_card.profession_categories_keyboard(),
+                }
             data["profession_category"] = cat.value
             return {
                 "notification": " ",
@@ -1638,11 +1666,17 @@ async def process_callback(
                 "format": "markdown",
                 "attachments": visit_card.profession_list_keyboard(cat),
             }
-        if payload.startswith("prof_pick:"):
-            slug = payload.split(":", 1)[-1]
+        if low.startswith("prof_pick:"):
+            slug = payload.split(":", 1)[-1].strip().lower()
             title = PROFESSION_SLUG_TO_TITLE.get(slug)
             if not title:
-                return None
+                logger.warning("join prof_pick unknown slug max_uid=%s payload=%r", max_uid, payload)
+                return {
+                    "notification": "Выберите профессию из списка",
+                    "text": "*ВЫБОР ПРОФЕССИИ*\n\nВыберите профессию кнопкой ниже.",
+                    "format": "markdown",
+                    "attachments": visit_card.profession_categories_keyboard(),
+                }
             data["position"] = title
             s["step"] = "full_name"
             return {
@@ -1651,12 +1685,20 @@ async def process_callback(
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
-        if payload.startswith("prof_custom:"):
-            cat_s = payload.split(":", 1)[-1]
+        if low.startswith("prof_custom:"):
+            cat_s = payload.split(":", 1)[-1].strip().lower()
             try:
                 ProfessionCategory(cat_s)
             except ValueError:
-                return None
+                logger.warning(
+                    "join prof_custom bad category max_uid=%s payload=%r", max_uid, payload
+                )
+                return {
+                    "notification": "Выберите категорию",
+                    "text": "*ВЫБОР ПРОФЕССИИ*\n\nВыберите категорию 👇",
+                    "format": "markdown",
+                    "attachments": visit_card.profession_categories_keyboard(),
+                }
             data["profession_category"] = cat_s
             s["step"] = "profession_custom"
             return {
@@ -1665,6 +1707,12 @@ async def process_callback(
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
+        logger.warning(
+            "join profession_category unhandled max_uid=%s payload=%r keys_session=%s",
+            max_uid,
+            payload,
+            list(s.keys()) if s else None,
+        )
         return {
             "notification": " ",
             "text": "*ВЫБОР ПРОФЕССИИ*\n\nВыберите категорию или профессию кнопками ниже.",
