@@ -15,17 +15,22 @@ import json
 from typing import Any
 
 from config import (
-    APPLICANT_POSITIONS,
     CLIENT_POSITIONS,
     COMPANY_NAME,
-    EXPERIENCE_OPTIONS,
     SUPERVISOR_TM_LEAD,
     PRIVACY_POLICY_URL,
+    TERMS_OF_SERVICE_URL,
     WEBSITE_URL,
     order_hourly_rates,
 )
 
 import visit_card
+import visit_join_validators
+from visit_join_anketa_catalog import (
+    EXPERIENCE_RATING_TABLE,
+    PROFESSION_SLUG_TO_TITLE,
+    ProfessionCategory,
+)
 from funnel_store import funnel_touch_complete
 from funnel_db import (
     is_max_visit_client_verified,
@@ -221,54 +226,6 @@ def _advance_order_contact_step(
     return out
 
 
-def validate_metro(text: str) -> bool:
-    t = (text or "").strip()
-    if not t:
-        return False
-    if t == "0":
-        return True
-    return len(t) >= 2
-
-
-def validate_radius_km(text: str) -> int | None:
-    t = re.sub(r"[^\d]", "", (text or "").strip())
-    if not t:
-        return None
-    v = int(t)
-    if v < 0 or v > 200:
-        return None
-    return v
-
-
-def _experience_tag(value: str) -> str:
-    v = (value or "").strip().lower()
-    if "менее" in v:
-        return "junior"
-    if "1-3" in v or "1–3" in v:
-        return "middle"
-    if "более" in v:
-        return "senior"
-    return "unknown"
-
-
-def _build_specialization_tags(data: dict[str, Any]) -> str:
-    tags: list[str] = []
-    pos = (data.get("position") or "").strip()
-    track = (data.get("profile_track") or "").strip()
-    shift = (data.get("preferred_shift") or "").strip()
-    if pos:
-        tags.append(pos)
-    if track:
-        tags.append(track)
-    if shift:
-        tags.append(f"смены:{shift}")
-    uniq: list[str] = []
-    for t in tags:
-        if t not in uniq:
-            uniq.append(t)
-    return ", ".join(uniq)
-
-
 def total_staff_in_shift(staff_counts: dict | None) -> int:
     if not staff_counts:
         return 0
@@ -393,13 +350,28 @@ def _portfolio_photo_ref_from_body(message_body: dict[str, Any] | None) -> str |
 
 
 VAC_FROM_KEY = {
-    "vac_apply_helper": "Хелпер",
-    "vac_apply_loader": "Грузчик",
-    "vac_apply_promoter": "Промоутер",
-    "vac_apply_cloakroom": "Гардеробщик",
-    "vac_apply_parking": "Парковщик",
-    "vac_apply_hostess": "Хостес",
-    "vac_apply_supervisor": "Супервайзер",
+    f"vac_apply_{slug}": title
+    for slug, title in (
+        ("helper", "Хелпер"),
+        ("loader", "Грузчик"),
+        ("promoter", "Промоутер"),
+        ("hostess", "Хостес"),
+        ("animator", "Аниматор"),
+        ("barista", "Бариста"),
+        ("bartender", "Бармен"),
+        ("waiter", "Официант"),
+        ("cashier", "Кассир"),
+        ("chef_head", "Шеф-повар"),
+        ("cook", "Повар"),
+        ("dishwasher", "Мойщик посуды"),
+        ("cleaner", "Уборщик"),
+        ("cloakroom", "Гардеробщик"),
+        ("security", "Охранник"),
+        ("parking", "Парковщик"),
+        ("driver", "Водитель"),
+        ("shuttle_driver", "Шаттл-водитель"),
+        ("supervisor", "Супервайзер"),
+    )
 }
 
 
@@ -444,7 +416,7 @@ def start_join(max_uid: int) -> dict[str, Any]:
     SESSIONS[max_uid] = {
         "flow": "join",
         "step": "consent",
-        "data": {"profile_track": "", "join_entry": "profile"},
+        "data": {"join_entry": "profile"},
     }
     return {
         "text": _consent_gate_text("отклик в команду"),
@@ -510,37 +482,283 @@ def _format_question_plain(q: str, qid: int, who: str) -> str:
     )
 
 
-def _format_join_plain(data: dict[str, Any], rid: int, who: str) -> str:
-    selfie = (data.get("selfie_ref") or "").strip() or "—"
-    track = (data.get("profile_track") or "").strip() or "—"
-    portfolio = data.get("portfolio_refs") or []
-    p_count = len(portfolio) if isinstance(portfolio, list) else 0
-    priority = "Да" if data.get("priority_pool") else "Нет"
-    spec_tags = (data.get("specialization_tags") or "").strip() or "—"
-    exp_tag = (data.get("experience_tag") or "").strip() or "—"
+def _basic_info_intro() -> str:
     return (
-        f"Новая заявка в команду #{rid}\n"
-        f"================================\n\n"
-        f"От: {who}\n\n"
-        f"ФИО: {data.get('full_name', '—')}\n"
-        f"Телефон: {data.get('phone', '—')}\n"
-        f"Трек: {track}\n"
-        f"Должность: {data.get('position', '—')}\n"
-        f"Город: {data.get('city', '—')}\n"
-        f"Метро: {data.get('metro', '—')}\n"
-        f"Предпочтительные смены: {data.get('preferred_shift', '—')}\n"
-        f"Радиус выезда: {data.get('travel_radius_km', '—')} км\n"
-        f"Документы: {data.get('docs_ready', '—')}\n"
-        f"Стаж: {data.get('experience_years', '—')}\n"
-        f"Опыт: {data.get('experience_desc', '—')}\n"
-        f"Навыки: {(data.get('skills') or '').strip() or '—'}\n"
-        f"Портфолио: {p_count} фото\n"
-        f"Приоритетный пул: {priority}\n"
-        f"Теги специализации: {spec_tags}\n"
-        f"Тег опыта: {exp_tag}\n"
-        f"Селфи (ссылка/токен): {selfie}\n\n"
-        f"---\n{COMPANY_NAME}\nСайт: {WEBSITE_URL}\n"
+        "*ОСНОВНАЯ ИНФОРМАЦИЯ*\n\n"
+        "Для получения предложений о сменах заполните анкету.\n\n"
+        "Чем подробнее вы заполните профиль, тем точнее будут предложения.\n\n"
+        "Давайте знакомиться — введите ваше *ФИО*.\n\n"
+        "_Пример: Иванов Иван Иванович_"
     )
+
+
+def _join_prompt_experience() -> dict[str, Any]:
+    return {
+        "text": (
+            "*ОПЫТ РАБОТЫ*\n"
+            "*Общий опыт работы в выбранной сфере:*"
+            f"{EXPERIENCE_RATING_TABLE}"
+        ),
+        "format": "markdown",
+        "attachments": visit_card.experience_level_keyboard(),
+    }
+
+
+def _build_join_tags(data: dict[str, Any]) -> str:
+    parts = [
+        (data.get("position") or "").strip(),
+        (data.get("profession_category") or "").strip(),
+        (data.get("tax_status_label") or "").strip(),
+    ]
+    return "; ".join(p for p in parts if p)
+
+
+def _build_join_review_text(data: dict[str, Any]) -> str:
+    m = "—"
+    bonus = int(data.get("anketa_bonus_star") or 0)
+    base = int(data.get("experience_base_stars") or 0)
+    max_stars = base + bonus
+    return (
+        "*Завершение регистрации*\n\n"
+        "Проверьте данные перед отправкой:\n\n"
+        f"*ФИО:* {data.get('full_name') or m}\n"
+        f"*Телефон:* {data.get('phone') or m}\n"
+        f"*Дата рождения:* {data.get('birth_date') or m}\n"
+        f"*Профессия:* {data.get('position') or m}\n"
+        f"*Категория:* {data.get('profession_category') or m}\n"
+        f"*Налоговый статус:* {data.get('tax_status_label') or m}\n"
+        f"*ИНН:* {data.get('tax_inn') or m}\n"
+        f"*Опыт:* {data.get('experience_years') or m} (база {base}⭐, с анкетой до {max_stars}⭐)\n"
+        f"*Описание опыта:* {data.get('experience_desc') or m}\n"
+        f"*Рост / вес:* {data.get('height_cm') or m} / {data.get('weight_kg') or m}\n"
+        f"*Пол / одежда / обувь:* {data.get('gender') or m} / {data.get('clothing_size') or m} / "
+        f"{data.get('shoe_size') or m}\n"
+        f"*Форма:* {data.get('uniform_choice_label') or m}\n"
+        f"*Медкнижка:* {data.get('medbook_label') or m}\n"
+        f"*Командировки:* {data.get('trips_label') or m}\n"
+        f"*Навыки:* {data.get('skills') or m}\n"
+        f"*Паспорт:* {data.get('passport_sn') or m}\n\n"
+        "Нажмите кнопку ниже."
+    )
+
+
+def _align_join_payload_for_pg(data: dict[str, Any]) -> dict[str, Any]:
+    out = dict(data)
+    if out.get("selfie_ref") and not out.get("selfie_url"):
+        out["selfie_url"] = out["selfie_ref"]
+    if out.get("tax_cert_ref") and not out.get("tax_cert_file_id"):
+        out["tax_cert_file_id"] = out["tax_cert_ref"]
+    if out.get("tax_ip_doc_ref") and not out.get("tax_ip_doc_file_id"):
+        out["tax_ip_doc_file_id"] = out["tax_ip_doc_ref"]
+    if out.get("passport_main_ref") and not out.get("passport_main_file_id"):
+        out["passport_main_file_id"] = out["passport_main_ref"]
+    if out.get("passport_reg_ref") and not out.get("passport_reg_file_id"):
+        out["passport_reg_file_id"] = out["passport_reg_ref"]
+    return out
+
+
+def _join_tax_callbacks(s: dict[str, Any], payload: str) -> dict[str, Any] | None:
+    flow = s.get("flow")
+    step = s.get("step")
+    if flow != "join":
+        return None
+    data = s.setdefault("data", {})
+
+    if payload == "tax_back_bd" and step == "tax_menu":
+        s["step"] = "birth_date"
+        return {
+            "notification": "Шаг назад",
+            "text": "🎂 *Дата рождения:*\n\n_Пример: 15.05.1990_",
+            "format": "markdown",
+            "attachments": visit_card.back_to_main_keyboard(),
+        }
+
+    if payload == "tax_fl" and step == "tax_menu":
+        data["tax_status"] = "fl"
+        data["tax_status_label"] = "Физическое лицо"
+        s["step"] = "tax_fl_menu"
+        return {
+            "notification": "Физлицо",
+            "text": visit_card.text_tax_fl_disclaimer(),
+            "format": "markdown",
+            "attachments": visit_card.tax_fl_followup_keyboard(),
+        }
+
+    if payload == "tax_se" and step == "tax_menu":
+        data["tax_status"] = "se"
+        data["tax_status_label"] = "Самозанятый"
+        s["step"] = "tax_se_inn"
+        return {
+            "notification": "Самозанятый",
+            "text": (
+                "*Вы выбрали статус «Самозанятый».*\n\n"
+                "Введите ваш *ИНН* (10 или 12 цифр).\n\n"
+                "Затем пришлите *справку о постановке на учёт* из приложения «Мой налог».\n\n"
+                "_Это нужно для подтверждения статуса самозанятого в системе._"
+                + visit_card.tbank_self_employed_invite_md()
+            ),
+            "format": "markdown",
+            "attachments": visit_card.back_to_main_keyboard(),
+        }
+
+    if payload == "tax_ip" and step == "tax_menu":
+        data["tax_status"] = "ip"
+        data["tax_status_label"] = "ИП"
+        s["step"] = "tax_ip_inn"
+        return {
+            "notification": "ИП",
+            "text": (
+                "*Вы выбрали статус «Индивидуальный предприниматель».*\n\n"
+                "Введите ваш *ИНН*.\n\n"
+                "Затем пришлите *выписку из ЕГРИП* о постановке на учёт в качестве ИП.\n\n"
+                "_Это нужно для подтверждения статуса ИП в системе._"
+            ),
+            "format": "markdown",
+            "attachments": visit_card.back_to_main_keyboard(),
+        }
+
+    if payload == "tax_help" and step == "tax_fl_menu":
+        data["tax_status"] = "se"
+        data["tax_status_label"] = "Самозанятый (оформление)"
+        s["step"] = "tax_help_cert"
+        return {
+            "notification": "Помощь",
+            "text": visit_card.text_tax_self_help(),
+            "format": "markdown",
+            "attachments": visit_card.tax_se_actions_keyboard(),
+        }
+
+    if payload == "tax_help" and step == "tax_menu":
+        data["tax_status"] = "se_help"
+        data["tax_status_label"] = "Самозанятый (помощь)"
+        s["step"] = "tax_help_cert"
+        return {
+            "notification": "Помощь",
+            "text": visit_card.text_tax_self_help(),
+            "format": "markdown",
+            "attachments": visit_card.tax_se_actions_keyboard(),
+        }
+
+    if payload == "tax_fl_go" and step == "tax_fl_menu":
+        s["step"] = "experience_pick"
+        return {"notification": "Продолжаем", **_join_prompt_experience()}
+
+    if payload == "tax_back_status" and step == "tax_fl_menu":
+        s["step"] = "tax_menu"
+        return {
+            "notification": "Назад",
+            "text": visit_card.text_tax_status_intro(),
+            "format": "markdown",
+            "attachments": visit_card.join_tax_status_keyboard(),
+        }
+
+    if payload == "tax_back_status" and step in ("tax_se_cert", "tax_help_cert", "tax_ip_cert"):
+        data.pop("tax_cert_ref", None)
+        data.pop("tax_ip_doc_ref", None)
+        s["step"] = "tax_menu"
+        return {
+            "notification": "Назад",
+            "text": visit_card.text_tax_status_intro(),
+            "format": "markdown",
+            "attachments": visit_card.join_tax_status_keyboard(),
+        }
+
+    if payload == "tax_upload_cert" and step in ("tax_se_cert", "tax_help_cert", "tax_ip_cert"):
+        att = (
+            visit_card.tax_ip_actions_keyboard()
+            if step == "tax_ip_cert"
+            else visit_card.tax_se_actions_keyboard()
+        )
+        hint = (
+            "Пришлите *выписку* вложением (фото или файл). Затем нажмите «Отправить на проверку»."
+            if step == "tax_ip_cert"
+            else "Пришлите *справку* вложением (фото или файл). Затем нажмите «Отправить на проверку»."
+        )
+        return {
+            "notification": "Пришлите файл или фото в чат",
+            "text": hint,
+            "format": "markdown",
+            "attachments": att,
+        }
+
+    if payload == "tax_se_send" and step in ("tax_se_cert", "tax_help_cert"):
+        if not data.get("tax_cert_ref"):
+            return {
+                "notification": "Сначала загрузите справку",
+                "text": "Пришлите справку вложением, затем нажмите кнопку снова.",
+                "format": "markdown",
+                "attachments": visit_card.tax_se_actions_keyboard(),
+            }
+        if data.get("tax_status") == "se_help":
+            data["tax_status"] = "se"
+            data["tax_status_label"] = "Самозанятый"
+        s["step"] = "experience_pick"
+        return {"notification": "Принято ✅", **_join_prompt_experience()}
+
+    if payload == "tax_ip_send" and step == "tax_ip_cert":
+        if not data.get("tax_ip_doc_ref"):
+            return {
+                "notification": "Сначала загрузите выписку",
+                "text": "Пришлите выписку вложением, затем нажмите кнопку снова.",
+                "format": "markdown",
+                "attachments": visit_card.tax_ip_actions_keyboard(),
+            }
+        s["step"] = "experience_pick"
+        return {"notification": "Принято ✅", **_join_prompt_experience()}
+
+    return None
+
+
+def _format_join_plain(data: dict[str, Any], rid: int, who: str) -> str:
+    m = "—"
+    birth = (data.get("birth_date") or "").strip() or m
+    tax_lbl = (data.get("tax_status_label") or "").strip() or m
+    tax_inn = (data.get("tax_inn") or "").strip() or m
+    cert = (data.get("tax_cert_file_id") or data.get("tax_cert_ref") or "").strip() or m
+    ip_doc = (data.get("tax_ip_doc_file_id") or data.get("tax_ip_doc_ref") or "").strip() or m
+    selfie = (data.get("selfie_url") or data.get("selfie_ref") or "").strip() or m
+    passport_sn = (data.get("passport_sn") or "").strip() or m
+    pm = (data.get("passport_main_file_id") or data.get("passport_main_ref") or "").strip() or m
+    pr = (data.get("passport_reg_file_id") or data.get("passport_reg_ref") or "").strip() or m
+    bs = data.get("experience_base_stars")
+    rating_line = f"{bs}⭐" if isinstance(bs, int) else m
+    lines = [
+        f"Новая заявка в команду #{rid}",
+        "",
+        f"От: {who}",
+        "",
+        "СОИСКАТЕЛЬ",
+        f"- ФИО: {data.get('full_name') or m}",
+        f"- Телефон: {data.get('phone') or m}",
+        f"- Дата рождения: {birth}",
+        f"- Профессия: {data.get('position') or m}",
+        f"- Категория: {data.get('profession_category') or m}",
+        f"- Налоговый статус: {tax_lbl}",
+        f"- ИНН: {tax_inn}",
+        f"- Справка НПД (ссылка): {cert}",
+        f"- Выписка ИП (ссылка): {ip_doc}",
+        f"- Базовый рейтинг (опыт): {rating_line}",
+        f"- Уровень опыта: {data.get('experience_years') or m}",
+        f"- Описание опыта: {data.get('experience_desc') or m}",
+        f"- Рост/вес: {data.get('height_cm') or m}/{data.get('weight_kg') or m}",
+        f"- Пол: {data.get('gender') or m}",
+        f"- Размер одежды: {data.get('clothing_size') or m}",
+        f"- Размер обуви: {data.get('shoe_size') or m}",
+        f"- Форма: {data.get('uniform_choice_label') or m}",
+        f"- Медкнижка: {data.get('medbook_label') or m}",
+        f"- Командировки: {data.get('trips_label') or m}",
+        f"- Навыки: {(data.get('skills') or '').strip() or m}",
+        f"- Паспорт: {passport_sn}",
+        f"- Селфи (ссылка): {selfie}",
+        f"- Паспорт фото (гл.): {pm}",
+        f"- Паспорт фото (прописка): {pr}",
+        "",
+        f"Теги: {(data.get('specialization_tags') or '').strip() or m}",
+        f"Тег опыта: {(data.get('experience_tag') or '').strip() or m}",
+        "",
+        f"---\n{COMPANY_NAME}\nСайт: {WEBSITE_URL}\n",
+    ]
+    return "\n".join(lines)
 
 
 async def _notify_plain(subject: str, plain: str) -> None:
@@ -637,7 +855,7 @@ def _format_cp_plain(data: dict[str, Any], who: str) -> str:
     if data.get("cp_contact_channel") == "call":
         call_line = f"Удобное время звонка: {data.get('cp_call_time') or '—'}\n"
     return (
-        f"НОВАЯ ЗАЯВКА НА КП #{req_id}\n"
+        f"НОВАЯ ЗАЯВКА НА КП ({ref})\n"
         f"================================\n\n"
         f"От: {who}\n\n"
         f"Тип: {data.get('event_type', '—')}\n"
@@ -806,6 +1024,9 @@ async def process_callback(
     flow = s.get("flow")
     step = s.get("step")
     data = s.setdefault("data", {})
+    join_tax = _join_tax_callbacks(s, payload)
+    if join_tax is not None:
+        return join_tax
 
     if flow == "client_visit" and step == "consent" and payload == "consent_client_visit_accept":
         s["step"] = "company_name"
@@ -1039,8 +1260,10 @@ async def process_callback(
         return {
             "notification": "Принято ✅",
             "text": (
-                "Пришлите *селфи* для подтверждения анкеты (только фото).\n\n"
-                "Лицо должно быть хорошо видно."
+                "*📸 СЕЛФИ*\n\n"
+                "Для верификации личности отправьте своё актуальное селфи (фото лица).\n\n"
+                "_Нажмите на скрепку 📎 → Камера, чтобы сделать фото._\n\n"
+                "💡 _Фото должно быть чётким, лицо полностью видно, без солнцезащитных очков и масок._"
             ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
@@ -1063,20 +1286,35 @@ async def process_callback(
             s["step"] = "full_name"
             return {
                 "notification": "Согласие принято ✅",
-                "text": (
-                    f"Должность: *{data.get('position')}*\n\n"
-                    "Введите полное ФИО.\n\n"
-                    "_Образец:_ `Иванов Иван Иванович`\n\n"
-                ),
+                "text": f"Должность: *{data.get('position')}*\n\n{_basic_info_intro()}",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
-        s["step"] = "profile_pick"
+        s["step"] = "anketa_invite"
         return {
             "notification": "Согласие принято ✅",
-            "text": "Выберите ваш формат занятости, чтобы мы быстрее подобрали подходящую роль:",
+            "text": (
+                "Для получения предложений о работе заполните анкету.\n\n"
+                "Чем подробнее вы заполните профиль, тем точнее будут предложения."
+            ),
             "format": "markdown",
-            "attachments": visit_card.join_profile_keyboard(),
+            "attachments": visit_card.join_anketa_invite_keyboard(),
+        }
+
+    if flow == "join" and step == "anketa_invite" and payload == "join_proceed_anketa":
+        if not data.get("join_consent_accepted"):
+            return {
+                "notification": "Сначала подтвердите согласие.",
+                "text": _consent_gate_text("отклик в команду"),
+                "format": "markdown",
+                "attachments": visit_card.consent_gate_keyboard("join"),
+            }
+        s["step"] = "profession_category"
+        return {
+            "notification": "Заполняем анкету…",
+            "text": "*ВЫБОР ПРОФЕССИИ*\n\nВыберите категорию 👇",
+            "format": "markdown",
+            "attachments": visit_card.profession_categories_keyboard(),
         }
 
     if flow == "order" and step == "staff_pick" and payload.startswith("pos_"):
@@ -1340,179 +1578,211 @@ async def process_callback(
         msg["notification"] = "Заполняем заявку заново…"
         return msg
 
-    if flow == "join" and step == "experience_years" and payload.startswith("exp_"):
-        exp = payload.replace("exp_", "", 1)
-        data["experience_years"] = exp
+    if flow == "join" and step == "profession_category":
+        if payload == "prof_back":
+            return {
+                "notification": " ",
+                "text": "*ВЫБОР ПРОФЕССИИ*\n\nВыберите категорию 👇",
+                "format": "markdown",
+                "attachments": visit_card.profession_categories_keyboard(),
+            }
+        if payload.startswith("prof_cat:"):
+            cat_s = payload.split(":", 1)[-1]
+            try:
+                cat = ProfessionCategory(cat_s)
+            except ValueError:
+                return None
+            data["profession_category"] = cat.value
+            return {
+                "notification": " ",
+                "text": (
+                    "Выберите профессию из списка ниже 👇\n\n"
+                    "_Если вашей профессии нет в списке, нажмите кнопку «Добавить новую профессию» "
+                    "и введите её название._"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.profession_list_keyboard(cat),
+            }
+        if payload.startswith("prof_pick:"):
+            slug = payload.split(":", 1)[-1]
+            title = PROFESSION_SLUG_TO_TITLE.get(slug)
+            if not title:
+                return None
+            data["position"] = title
+            s["step"] = "full_name"
+            return {
+                "notification": f"Профессия: {title}",
+                "text": _basic_info_intro(),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if payload.startswith("prof_custom:"):
+            cat_s = payload.split(":", 1)[-1]
+            try:
+                ProfessionCategory(cat_s)
+            except ValueError:
+                return None
+            data["profession_category"] = cat_s
+            s["step"] = "profession_custom"
+            return {
+                "notification": " ",
+                "text": "Введите название профессии одним сообщением (например: *Бариста*).",
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+
+    if flow == "join" and step == "experience_pick" and payload in ("exp_lt1", "exp_1_3", "exp_gt3"):
+        label, stars = visit_join_validators.experience_stars_from_choice(payload)
+        if not label:
+            return None
+        data["experience_years"] = label
+        data["experience_base_stars"] = stars
+        data["experience_tag"] = visit_join_validators.experience_tag_from_stars(stars)
         s["step"] = "experience_desc"
         return {
-            "notification": f"Стаж: {exp}",
+            "notification": label,
             "text": (
-                "Кратко опишите опыт: где работали, какие задачи.\n\n"
-                "_Образец:_ `Промо в торговых центрах 2 года, выкладка, коммуникация с гостями`\n\n"
+                "*Кратко опишите ваш опыт:*\n\n"
+                "_Где работали? Какие задачи выполняли?_\n\n"
+                "💡 _Чем подробнее описание, тем выше шанс получить предложения._\n\n"
+                "_Пример: «Промо в ТРЦ 2 года, выкладка, общение с гостями, отчётность фото»._"
             ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
         }
 
-    if flow == "join" and step == "preferred_shift" and payload.startswith("shift_"):
-        mapping = {
-            "shift_day": "Дневные",
-            "shift_night": "Ночные",
-            "shift_both": "Оба варианта",
-        }
-        label = mapping.get(payload)
-        if not label:
-            return None
-        data["preferred_shift"] = label
-        s["step"] = "travel_radius"
+    if flow == "join" and step == "param_gender" and payload in ("gender_m", "gender_f"):
+        data["gender"] = "Мужской" if payload == "gender_m" else "Женский"
+        s["step"] = "param_clothing"
         return {
-            "notification": f"Смены: {label}",
-            "text": "Укажите радиус выезда от вашего города в км.\n\n_Образец:_ `15`",
+            "notification": data["gender"],
+            "text": "*Укажите ваш размер одежды:*\n\n_XS, S, M, L, XL, XXL_",
+            "format": "markdown",
+            "attachments": visit_card.clothing_size_keyboard(),
+        }
+
+    if flow == "join" and step == "param_clothing" and payload.startswith("size_"):
+        size = payload.replace("size_", "", 1)
+        data["clothing_size"] = size
+        s["step"] = "param_shoe"
+        return {
+            "notification": size,
+            "text": (
+                "👟 *Укажите ваш размер обуви:*\n\n"
+                "_Диапазон 35–48. 0 = пропустить._"
+            ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
         }
 
-    if flow == "join" and step == "docs_ready" and payload.startswith("docs_"):
-        mapping = {
-            "docs_med": "Медкнижка",
-            "docs_self": "Самозанятость",
-            "docs_ip": "ИП",
-            "docs_later": "Оформлю при необходимости",
-        }
-        label = mapping.get(payload)
-        if not label:
-            return None
-        data["docs_ready"] = label
-        s["step"] = "experience_years"
-        return {
-            "notification": f"Документы: {label}",
-            "text": "Выберите стаж кнопкой.",
-            "format": "markdown",
-            "attachments": visit_card.experience_keyboard(),
-        }
-
-    if flow == "join" and step == "portfolio" and payload == "portfolio_done":
-        refs = list(data.get("portfolio_refs") or [])
-        if not refs:
+    if flow == "join" and step == "uniform_choice":
+        if payload == "uniform_info":
             return {
-                "notification": "Нужно минимум 1 фото.",
-                "text": "Сначала отправьте минимум 1 фото для портфолио.",
+                "notification": " ",
+                "text": visit_card.text_uniform_requirements(),
                 "format": "markdown",
-                "attachments": visit_card.join_portfolio_keyboard(),
+                "attachments": visit_card.uniform_after_info_keyboard(),
             }
-        s["step"] = "priority_pool"
+        if payload in ("uniform_own_yes", "uniform_own_no"):
+            own = payload == "uniform_own_yes"
+            data["uniform_has_own"] = own
+            data["uniform_choice_label"] = "Своя форма" if own else "Нужна от работодателя"
+            s["step"] = "medbook_has"
+            return {
+                "notification": " ",
+                "text": (
+                    "*🏥 ДОКУМЕНТЫ*\n\n"
+                    "_Для работы с продуктами питания, детьми и в детских учреждениях может требоваться "
+                    "медицинская книжка._\n\n"
+                    "*Медицинская книжка:*"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.medbook_has_keyboard(),
+            }
+
+    if flow == "join" and step == "medbook_has":
+        if payload == "medbook_yes":
+            data["medbook_has"] = True
+            s["step"] = "medbook_number"
+            return {
+                "notification": " ",
+                "text": "Укажите *номер медицинской книжки* текстом.",
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if payload == "medbook_no":
+            data["medbook_has"] = False
+            data["medbook_label"] = "Нет"
+            s["step"] = "trips"
+            return {
+                "notification": " ",
+                "text": "*Готовы ли вы к командировкам?*",
+                "format": "markdown",
+                "attachments": visit_card.trips_keyboard(),
+            }
+
+    if flow == "join" and step == "trips" and payload in ("trips_yes", "trips_no"):
+        ok = payload == "trips_yes"
+        data["trips_ok"] = ok
+        data["trips_label"] = "Готов(а)" if ok else "Не готов(а)"
+        s["step"] = "skills"
         return {
-            "notification": "Портфолио сохранено ✅",
+            "notification": " ",
             "text": (
-                "Хотите попасть в приоритетный пул исполнителей?\n\n"
-                "В приоритетном пуле чаще предлагаем проекты первыми.\n\n"
+                "🔧 *Укажите ваши ключевые навыки одним сообщением.*\n\n"
+                "_Например: водительские права кат. B, английский B1, работа с грузами._\n\n"
+                "Чтобы пропустить, отправьте `0`."
             ),
             "format": "markdown",
-            "attachments": visit_card.join_priority_keyboard(),
+            "attachments": visit_card.back_to_main_keyboard(),
         }
 
-    if flow == "join" and step == "priority_pool" and payload in ("prio_yes", "prio_no"):
-        data["priority_pool"] = payload == "prio_yes"
-        data["specialization_tags"] = _build_specialization_tags(data)
-        data["experience_tag"] = _experience_tag(str(data.get("experience_years") or ""))
-        s["step"] = "review_submit"
-        priority_text = "Да" if data.get("priority_pool") else "Нет"
-        p_count = len(data.get("portfolio_refs") or [])
-        preview = (
-            "*Проверьте анкету*\n\n"
-            f"ФИО: {data.get('full_name')}\n"
-            f"Телефон: {data.get('phone')}\n"
-            f"Трек: {data.get('profile_track') or '—'}\n"
-            f"Должность: {data.get('position')}\n"
-            f"Город: {data.get('city')}\n"
-            f"Метро: {data.get('metro')}\n"
-            f"Предпочтительные смены: {data.get('preferred_shift')}\n"
-            f"Радиус выезда: {data.get('travel_radius_km')} км\n"
-            f"Документы: {data.get('docs_ready')}\n"
-            f"Стаж: {data.get('experience_years')}\n"
-            f"Опыт: {data.get('experience_desc')}\n"
-            f"Навыки: {data.get('skills') or '—'}\n"
-            f"Портфолио: {p_count} фото\n"
-            f"Приоритетный пул: {priority_text}\n"
-            f"Теги специализации: {data.get('specialization_tags') or '—'}\n"
-            f"Тег опыта: {data.get('experience_tag') or '—'}\n"
-            "Селфи: получено\n\n"
-            "Нажмите *«Отправить анкету»*.\n\n"
-        )
+    if flow == "join" and step == "review_submit" and payload == "join_review_edit":
+        jc = data.get("join_consent_accepted")
+        je = data.get("join_entry") or "profile"
+        pos = data.get("position") if je == "vacancy" else None
+        new_data: dict[str, Any] = {"join_consent_accepted": jc, "join_entry": je}
+        if je == "vacancy" and pos:
+            new_data["position"] = pos
+        s["data"] = new_data
+        if je == "vacancy" and pos:
+            s["step"] = "full_name"
+            return {
+                "notification": "Заполняем заново…",
+                "text": f"Должность: *{pos}*\n\n{_basic_info_intro()}",
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        s["step"] = "profession_category"
         return {
-            "notification": "Отметили ✅",
-            "text": preview,
+            "notification": "Заполняем заново…",
+            "text": "*ВЫБОР ПРОФЕССИИ*\n\nВыберите категорию 👇",
             "format": "markdown",
-            "attachments": visit_card.submit_join_keyboard(),
+            "attachments": visit_card.profession_categories_keyboard(),
         }
 
-    if flow == "join" and step == "review_submit" and payload == "submit_join_anketa":
+    if flow == "join" and step == "review_submit" and payload in ("join_review_ok", "submit_join_anketa"):
         rid = _new_id()
-        plain = _format_join_plain(data, rid, who)
+        aligned = _align_join_payload_for_pg(data)
+        aligned["specialization_tags"] = _build_join_tags(aligned)
+        plain = _format_join_plain(aligned, rid, who)
         await _notify_plain(f"Новая заявка в команду #{rid}", plain)
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
         try:
-            save_visit_join(max_uid, str(username or ""), json.dumps(data, ensure_ascii=False))
+            save_visit_join(max_uid, str(username or ""), json.dumps(aligned, ensure_ascii=False))
         except Exception:
             logger.exception("save_visit_join")
         funnel_touch_complete(max_uid)
         clear_session(max_uid)
         return {
-            "notification": "✅ Анкета у команды. Ответим после рассмотрения.",
+            "notification": "Отправлено на проверку ✅",
             "text": (
-                f"*Заявка #{rid} принята.*\n\n"
-                f"Спасибо за интерес к {COMPANY_NAME}!\n\n"
-                "*Меню исполнителя* — ниже."
+                f"*Заявка #{rid} отправлена на проверку.*\n\n"
+                f"После подтверждения администратором вам откроется меню исполнителя.\n\n"
+                f"Спасибо за интерес к {COMPANY_NAME}!"
             ),
             "format": "markdown",
-            "attachments": visit_card.worker_registered_main_menu_keyboard(),
-        }
-
-    if flow == "join" and step == "position_pick":
-        if payload == "jpos_other":
-            s["step"] = "position_text"
-            return {
-                "notification": "Введите должность текстом.",
-                "text": "Введите желаемую должность одной строкой:",
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
-        if payload.startswith("jpos_"):
-            try:
-                idx = int(payload[5:])
-            except ValueError:
-                return None
-            if idx < 0 or idx >= len(APPLICANT_POSITIONS[:12]):
-                return None
-            data["position"] = APPLICANT_POSITIONS[idx]
-            s["step"] = "full_name"
-            return {
-                "notification": f"Должность: {APPLICANT_POSITIONS[idx]}",
-                "text": (
-                    "Введите полное ФИО.\n\n"
-                    "_Образец:_ `Иванов Иван Иванович`\n\n"
-                ),
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
-
-    if flow == "join" and step == "profile_pick" and payload.startswith("jp_"):
-        tracks = {
-            "jp_exp": "С опытом в ивентах",
-            "jp_beginner": "Начинающий",
-            "jp_weekend": "Подработка по выходным",
-            "jp_direct": "Без трека (прямой выбор роли)",
-        }
-        track = tracks.get(payload)
-        if not track:
-            return None
-        data["profile_track"] = track
-        s["step"] = "position_pick"
-        return {
-            "notification": "Отлично, идём дальше.",
-            "text": "Выберите желаемую должность:",
-            "format": "markdown",
-            "attachments": visit_card.join_applicant_pick_keyboard(),
+            "attachments": visit_card.main_menu_keyboard(),
         }
 
     return None
@@ -1913,21 +2183,33 @@ async def process_text(
             }
 
     if flow == "join":
-        if step == "position_text":
-            pos = text.strip()
-            if len(pos) < 2:
+        if step == "anketa_invite":
+            return {
+                "text": (
+                    "Нажмите *«Заполнить анкету»* под предыдущим сообщением "
+                    "или вернитесь в главное меню."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.join_anketa_invite_keyboard(),
+            }
+        if step == "profession_category":
+            return {
+                "text": "Продолжите выбор кнопками в сообщении выше.",
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if step == "profession_custom":
+            t = text.strip()
+            if len(t) < 2:
                 return {
-                    "text": "Слишком коротко. Укажите должность текстом.",
+                    "text": "Слишком коротко. Укажите название профессии.",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
-            data["position"] = pos
+            data["position"] = t
             s["step"] = "full_name"
             return {
-                "text": (
-                    "Введите полное ФИО.\n\n"
-                    "_Образец:_ `Иванов Иван Иванович`\n\n"
-                ),
+                "text": _basic_info_intro(),
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
@@ -1938,9 +2220,11 @@ async def process_text(
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
-            if not validate_full_name(text):
+            if not visit_join_validators.validate_join_full_name(text):
                 return {
-                    "text": "ФИО: минимум 2 слова. Пример: Иванов Иван Иванович",
+                    "text": (
+                        "💡 *Укажите полные фамилию, имя и отчество — это нужно для оформления документов.*"
+                    ),
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -1948,95 +2232,285 @@ async def process_text(
             s["step"] = "phone"
             return {
                 "text": (
-                    "Отправьте телефон кнопкой или введите вручную.\n\n"
-                    "_Образец:_ `+79001234567`\n\n"
+                    "📞 *Введите номер телефона:*\n\n"
+                    "_Пример: +7 916 123-45-67_"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
         if step == "phone":
-            v = validate_phone(text)
+            v = visit_join_validators.validate_join_phone(text)
             if not v:
                 return {
-                    "text": "Пример: +79001234567",
+                    "text": (
+                        "💡 *Укажите номер в формате мобильного телефона РФ — он нужен для связи по сменам.*"
+                    ),
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["phone"] = v
-            s["step"] = "city"
+            s["step"] = "birth_date"
             return {
-                "text": "Укажите город проживания.\n\n_Образец:_ `Москва`",
+                "text": "🎂 *Дата рождения:*\n\n_Пример: 15.05.1990_",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
-        if step == "city":
-            data["city"] = text.strip()
-            s["step"] = "metro"
+        if step == "birth_date":
+            bd = visit_join_validators.parse_birth_date(text)
+            today = visit_join_validators.age_check_reference_date()
+            if not bd or not visit_join_validators.validate_birth_date_16_50(bd, today):
+                return {
+                    "text": (
+                        "Укажите дату рождения в формате *ДД.ММ.ГГГГ*.\n"
+                        "Возраст для работы: от *16* до *50* лет включительно."
+                    ),
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["birth_date"] = bd.isoformat()
+            s["step"] = "tax_menu"
+            return {
+                "text": visit_card.text_tax_status_intro(),
+                "format": "markdown",
+                "attachments": visit_card.join_tax_status_keyboard(),
+            }
+        if step == "tax_se_inn":
+            if not visit_join_validators.validate_inn_digits(text):
+                return {
+                    "text": "ИНН: введите 10 или 12 цифр.",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["tax_inn"] = re.sub(r"\D", "", text.strip())
+            s["step"] = "tax_se_cert"
             return {
                 "text": (
-                    "Ближайшая станция метро (если в городе нет метро — отправьте `0`).\n\n"
-                    "_Образец:_ `Тверская` или `0`"
+                    "Пришлите *справку о постановке на учёт* файлом или чётким фото.\n\n"
+                    "Когда документ получен, нажмите *«Отправить на проверку»*.\n"
+                    "Кнопка *«📎 Загрузить справку»* — напоминание прикрепить файл."
                 ),
                 "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
+                "attachments": visit_card.tax_se_actions_keyboard(),
             }
-        if step == "metro":
-            if not validate_metro(text):
+        if step == "tax_ip_inn":
+            if not visit_join_validators.validate_inn_digits(text):
                 return {
-                    "text": "Укажите название станции или `0`, если метро нет.",
+                    "text": "ИНН: введите 10 или 12 цифр.",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
-            data["metro"] = text.strip()
-            s["step"] = "preferred_shift"
+            data["tax_inn"] = re.sub(r"\D", "", text.strip())
+            s["step"] = "tax_ip_cert"
             return {
-                "text": "Какие смены вам удобнее?\n\nВыберите один вариант.",
+                "text": (
+                    "Пришлите *выписку из ЕГРИП* файлом или чётким фото.\n\n"
+                    "Затем нажмите *«Отправить на проверку»*."
+                ),
                 "format": "markdown",
-                "attachments": visit_card.join_shift_pref_keyboard(),
+                "attachments": visit_card.tax_ip_actions_keyboard(),
             }
-        if step == "travel_radius":
-            km = validate_radius_km(text)
-            if km is None:
+        if step in ("tax_se_cert", "tax_help_cert"):
+            ref = _image_ref_from_body(message_body)
+            if not ref:
                 return {
-                    "text": "Укажите число от 0 до 200. Пример: 15",
+                    "text": (
+                        "Пришлите фото или документ вложением. "
+                        "Кнопка *«📎 Загрузить справку»* — подсказка."
+                    ),
                     "format": "markdown",
-                    "attachments": visit_card.back_to_main_keyboard(),
+                    "attachments": visit_card.tax_se_actions_keyboard(),
                 }
-            data["travel_radius_km"] = str(km)
-            s["step"] = "docs_ready"
+            data["tax_cert_ref"] = ref
             return {
-                "text": "Какие документы уже готовы?",
+                "text": "Файл получен ✅ Можно нажать «Отправить на проверку».",
                 "format": "markdown",
-                "attachments": visit_card.join_docs_keyboard(),
+                "attachments": visit_card.tax_se_actions_keyboard(),
+            }
+        if step == "tax_ip_cert":
+            ref = _image_ref_from_body(message_body)
+            if not ref:
+                return {
+                    "text": "Пришлите выписку вложением.",
+                    "format": "markdown",
+                    "attachments": visit_card.tax_ip_actions_keyboard(),
+                }
+            data["tax_ip_doc_ref"] = ref
+            return {
+                "text": "Файл получен ✅ Можно нажать «Отправить на проверку».",
+                "format": "markdown",
+                "attachments": visit_card.tax_ip_actions_keyboard(),
+            }
+        if step == "tax_menu":
+            return {
+                "text": "Выберите налоговый статус кнопками ниже.",
+                "format": "markdown",
+                "attachments": visit_card.join_tax_status_keyboard(),
+            }
+        if step == "tax_fl_menu":
+            return {
+                "text": "Выберите вариант кнопками ниже.",
+                "format": "markdown",
+                "attachments": visit_card.tax_fl_followup_keyboard(),
+            }
+        if step == "experience_pick":
+            return {
+                "text": "Выберите уровень опыта кнопками под предыдущим сообщением.",
+                "format": "markdown",
+                "attachments": visit_card.experience_level_keyboard(),
             }
         if step == "experience_desc":
-            if len(text.strip()) < 5:
+            t = text.strip()
+            if len(t) < 30:
                 return {
-                    "text": "Слишком коротко. Например: «Промо в ТЦ, выкладка, общение с гостями».",
+                    "text": "Опишите опыт подробнее — минимум 30 символов.",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
-            data["experience_desc"] = text.strip()
-            s["step"] = "skills"
+            if len(t) > 300:
+                return {
+                    "text": "Максимум 300 символов. Сократите текст.",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["experience_desc"] = t
+            data["anketa_bonus_star"] = 1
+            s["step"] = "param_height"
             return {
                 "text": (
-                    "Дополнительные навыки и инструменты (языки, ПО, права, медкнижка и т.д.).\n\n"
-                    "_Образец:_ `Английский B1, права кат. B, опыт работы с кассой`\n"
-                    "Если нечего добавить — отправьте `—`."
+                    "*ВАШИ ПАРАМЕТРЫ*\n\n"
+                    "_Эти данные нужны для подбора формы и спецодежды._\n\n"
+                    "📏 *Введите ваш рост (см):*\n\n"
+                    "_Пример: 175. Допустимо 150–210. Отправьте 0, чтобы пропустить._"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
+        if step == "param_height":
+            v = visit_join_validators.validate_height_cm(text)
+            if v is None:
+                return {
+                    "text": "Укажите целое число сантиметров от 150 до 210 или 0, чтобы пропустить.",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["height_cm"] = v if v else ""
+            s["step"] = "param_weight"
+            return {
+                "text": (
+                    "⚖️ *Введите ваш вес (кг):*\n\n"
+                    "_Пример: 70. Допустимо 45–120. 0 = пропустить._"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if step == "param_weight":
+            v = visit_join_validators.validate_weight_kg(text)
+            if v is None:
+                return {
+                    "text": "Укажите целое число кг от 45 до 120 или 0, чтобы пропустить.",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["weight_kg"] = v if v else ""
+            s["step"] = "param_gender"
+            return {
+                "text": "*Выберите ваш пол:*",
+                "format": "markdown",
+                "attachments": visit_card.gender_keyboard(),
+            }
+        if step == "param_gender":
+            return {
+                "text": "Выберите пол кнопками ниже.",
+                "format": "markdown",
+                "attachments": visit_card.gender_keyboard(),
+            }
+        if step == "param_clothing":
+            return {
+                "text": "Выберите размер одежды кнопками ниже.",
+                "format": "markdown",
+                "attachments": visit_card.clothing_size_keyboard(),
+            }
+        if step == "param_shoe":
+            v = visit_join_validators.validate_shoe_size(text)
+            if v is None:
+                return {
+                    "text": "Укажите целый размер обуви от 35 до 48 или 0, чтобы пропустить.",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["shoe_size"] = v if v else ""
+            s["step"] = "uniform_choice"
+            return {
+                "text": (
+                    "*👕 ФОРМА ОДЕЖДЫ*\n\n"
+                    "_Для разных профессий требования к форме отличаются._"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.uniform_entry_keyboard(),
+            }
+        if step == "uniform_choice":
+            return {
+                "text": "Выберите вариант кнопками ниже.",
+                "format": "markdown",
+                "attachments": visit_card.uniform_entry_keyboard(),
+            }
+        if step == "medbook_has":
+            return {
+                "text": "Ответьте кнопками ниже.",
+                "format": "markdown",
+                "attachments": visit_card.medbook_has_keyboard(),
+            }
+        if step == "medbook_number":
+            num = text.strip()
+            if len(num) < 3:
+                return {
+                    "text": "Укажите номер медкнижки или свяжитесь с менеджером, если номера нет.",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["medbook_number"] = num
+            s["step"] = "medbook_expiry"
+            return {
+                "text": (
+                    "Укажите *дату окончания срока действия* медкнижки.\n\n"
+                    "_Пример: 31.12.2026_"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if step == "medbook_expiry":
+            d = visit_join_validators.validate_medbook_expiry(text)
+            if not d:
+                return {
+                    "text": "Формат ДД.ММ.ГГГГ, например 31.12.2026",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["medbook_expiry"] = d.isoformat()
+            data["medbook_label"] = f"Да, №{data.get('medbook_number', '')}, до {d.isoformat()}"
+            s["step"] = "trips"
+            return {
+                "text": "*Готовы ли вы к командировкам?*",
+                "format": "markdown",
+                "attachments": visit_card.trips_keyboard(),
+            }
+        if step == "trips":
+            return {
+                "text": "Ответьте кнопками ниже.",
+                "format": "markdown",
+                "attachments": visit_card.trips_keyboard(),
+            }
         if step == "skills":
-            skills = text.strip()
-            if skills == "—":
-                skills = ""
+            raw = text.strip()
+            skills = "" if raw == "0" else raw
             data["skills"] = skills
             s["step"] = "terms_accept"
             return {
                 "text": (
-                    "⚖️ Перед загрузкой селфи ознакомьтесь с документами.\n\n"
-                    "Нажимая «Согласен», вы подтверждаете, что ознакомлены и согласны с условиями."
+                    "⚖️ Перед загрузкой селфи ознакомьтесь с документами и подтвердите согласие с условиями.\n\n"
+                    f"📄 [Политика конфиденциальности]({PRIVACY_POLICY_URL})\n"
+                    f"📄 [Пользовательское соглашение]({TERMS_OF_SERVICE_URL})\n\n"
+                    "Нажимая «Согласен», вы подтверждаете, что ознакомлены и согласны."
                 ),
                 "format": "markdown",
                 "attachments": visit_card.join_terms_keyboard(),
@@ -2056,81 +2530,77 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["selfie_ref"] = ref
-            data["portfolio_refs"] = []
-            s["step"] = "portfolio"
+            s["step"] = "passport_sn"
             return {
                 "text": (
-                    "Добавьте мини-портфолио: 1–2 *фото* с проектов.\n\n"
-                    "Отправьте минимум 1 фото, затем нажмите *«Продолжить»*.\n\n"
+                    "🪪 *Паспортные данные*\n\n"
+                    "Для оформления договоров и пропусков введите *серию и номер паспорта* подряд (10 цифр).\n\n"
+                    "_Пример: 4519 123456_"
                 ),
                 "format": "markdown",
-                "attachments": visit_card.join_portfolio_keyboard(),
+                "attachments": visit_card.back_to_main_keyboard(),
             }
-        if step == "portfolio":
-            if _message_body_has_video(message_body):
+        if step == "passport_sn":
+            raw = text.strip()
+            if not visit_join_validators.validate_passport_series_number(raw):
                 return {
                     "text": (
-                        "Видео в портфолио не принимаем — только *фото*. "
-                        "Пришлите 1–2 изображения с проектов."
+                        "💡 *Укажите серию и номер паспорта — 10 цифр (можно с пробелом после 4-й цифры).*"
                     ),
                     "format": "markdown",
-                    "attachments": visit_card.join_portfolio_keyboard(),
+                    "attachments": visit_card.back_to_main_keyboard(),
                 }
-            ref = _portfolio_photo_ref_from_body(message_body)
+            data["passport_sn"] = visit_join_validators.normalize_passport_series_number(raw)
+            s["step"] = "passport_main"
+            return {
+                "text": (
+                    "*📸 Паспорт — основная страница*\n\n"
+                    "Для верификации пришлите фото разворота с фото.\n\n"
+                    "_Нажмите 📎 → Камера._\n\n"
+                    "💡 _Чёткое фото, без бликов, лицо и данные читаемы._"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if step == "passport_main":
+            ref = _image_ref_from_body(message_body)
             if not ref:
                 return {
-                    "text": "Отправьте *фото*. После этого нажмите «Продолжить».",
+                    "text": "Нужно отправить фото.",
                     "format": "markdown",
-                    "attachments": visit_card.join_portfolio_keyboard(),
+                    "attachments": visit_card.back_to_main_keyboard(),
                 }
-            refs = list(data.get("portfolio_refs") or [])
-            if len(refs) >= 2:
-                return {
-                    "text": "Достаточно, уже получено 2 фото. Нажмите «Продолжить».",
-                    "format": "markdown",
-                    "attachments": visit_card.join_portfolio_keyboard(),
-                }
-            refs.append(ref)
-            data["portfolio_refs"] = refs
-            left = 2 - len(refs)
-            if left > 0:
-                txt = f"Фото получено ✅ Можно добавить ещё {left} или нажать «Продолжить»."
-            else:
-                txt = "Получено 2 фото ✅ Нажмите «Продолжить»."
+            data["passport_main_ref"] = ref
+            s["step"] = "passport_reg"
             return {
-                "text": txt,
+                "text": (
+                    "*📸 Паспорт — страница с пропиской*\n\n"
+                    "Пришлите фото страницы с регистрацией.\n\n"
+                    "💡 _Данные не должны быть засвечены._"
+                ),
                 "format": "markdown",
-                "attachments": visit_card.join_portfolio_keyboard(),
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if step == "passport_reg":
+            ref = _image_ref_from_body(message_body)
+            if not ref:
+                return {
+                    "text": "Нужно отправить фото.",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["passport_reg_ref"] = ref
+            s["step"] = "review_submit"
+            return {
+                "text": _build_join_review_text(data),
+                "format": "markdown",
+                "attachments": visit_card.join_review_keyboard(),
             }
         if step == "review_submit":
             return {
-                "text": "Нажмите кнопку «Отправить анкету» ниже.",
+                "text": "Используйте кнопки под сообщением с проверкой данных.",
                 "format": "markdown",
-                "attachments": visit_card.submit_join_keyboard(),
-            }
-        if step == "experience_years":
-            return {
-                "text": "Выберите стаж.",
-                "format": "markdown",
-                "attachments": visit_card.experience_keyboard(),
-            }
-        if step == "preferred_shift":
-            return {
-                "text": "Какие смены вам удобнее?\n\nВыберите один вариант.",
-                "format": "markdown",
-                "attachments": visit_card.join_shift_pref_keyboard(),
-            }
-        if step == "docs_ready":
-            return {
-                "text": "Какие документы уже готовы?",
-                "format": "markdown",
-                "attachments": visit_card.join_docs_keyboard(),
-            }
-        if step == "priority_pool":
-            return {
-                "text": "Выберите вариант кнопкой.",
-                "format": "markdown",
-                "attachments": visit_card.join_priority_keyboard(),
+                "attachments": visit_card.join_review_keyboard(),
             }
 
     return None

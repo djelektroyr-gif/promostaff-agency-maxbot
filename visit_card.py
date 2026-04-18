@@ -16,12 +16,14 @@ from config import (
     CONTACT_TELEGRAM,
     EXPERIENCE_OPTIONS,
     PRIVACY_POLICY_URL,
+    TBANK_LK_URL,
     TERMS_OF_SERVICE_URL,
     WEBSITE_URL,
     contact_telegram_url,
     contact_whatsapp_url,
 )
 from max_attachments import cb_btn, inline_keyboard, link_btn
+from visit_join_anketa_catalog import PROFESSION_BY_CATEGORY, ProfessionCategory, UNIFORM_REQUIREMENTS_TEXT
 
 # Пэйлоады, которые обрабатывает visit_flows (не статичное редактирование одного сообщения).
 FLOW_PAYLOADS = frozenset(
@@ -40,12 +42,56 @@ FLOW_PAYLOADS = frozenset(
 )
 VAC_PREFIX = "vac_apply_"
 
+# Синхронно с promostaff-agency-bot/keyboards.py — VACANCY_DISPLAY (текст вакансий).
+_VACANCY_CATALOG: list[tuple[str, str, str]] = [
+    ("helper", "👷 Хелпер", "Навигация, поддержка гостей, логистика на площадке"),
+    ("loader", "📦 Грузчик", "Погрузка, перенос, работа с грузом"),
+    ("promoter", "📢 Промоутер", "Презентация продукта, раздача материалов"),
+    ("hostess", "👩‍💼 Хостес", "Встреча гостей, регистрация, сопровождение"),
+    ("animator", "🎭 Аниматор", "Работа в образе, развлечение гостей, детские и family-зоны"),
+    ("barista", "☕ Бариста", "Приготовление кофе и напитков на точке"),
+    ("bartender", "🍸 Бармен", "Барная стойка, классические и авторские напитки"),
+    ("waiter", "🍽️ Официант", "Сервировка, обслуживание гостей в зале"),
+    ("cashier", "💰 Кассир", "Расчёт с гостями, вежливое обслуживание на кассе"),
+    ("chef_head", "👨‍🍳 Шеф-повар", "Горячий цех, сложные блюда и координация кухни на площадке"),
+    ("cook", "🍳 Повар", "Приготовление блюд по технологическим картам"),
+    ("dishwasher", "🧼 Мойщик посуды", "Мойка посуды и поддержание порядка на кухне"),
+    ("cleaner", "🧹 Уборщик", "Поддержание чистоты в зонах для гостей и персонала"),
+    ("cloakroom", "🧥 Гардеробщик", "Приём и выдача верхней одежды"),
+    ("security", "🛡️ Охранник", "Контроль доступа, порядок и безопасность на объекте"),
+    ("parking", "🚗 Парковщик", "Организация парковки, встреча авто"),
+    ("driver", "🚐 Водитель", "Трансфер и служебные перевозки по маршруту"),
+    ("shuttle_driver", "🚌 Шаттл-водитель", "Перевозка гостей на шаттлах между точками"),
+    ("supervisor", "👨‍💼 Супервайзер", "Координация команды на площадке"),
+]
+
 
 def is_visit_flow_payload(p: str) -> bool:
     """Колбэки сценария (order/join), не статические экраны."""
     if p in FLOW_PAYLOADS or p.startswith(VAC_PREFIX):
         return True
+    if p.startswith(("prof_cat:", "prof_pick:", "prof_custom:")):
+        return True
+    if p in (
+        "prof_back",
+        "uniform_info",
+        "uniform_own_yes",
+        "uniform_own_no",
+        "medbook_yes",
+        "medbook_no",
+        "trips_yes",
+        "trips_no",
+        "join_review_ok",
+        "join_review_edit",
+        "gender_m",
+        "gender_f",
+    ):
+        return True
+    if p.startswith("size_"):
+        return True
     if p.startswith(("pos_", "jpos_", "exp_", "quick_", "jp_", "shift_", "docs_", "prio_")):
+        return True
+    if (p or "").startswith("tax_"):
         return True
     if p in (
         "positions_done",
@@ -70,6 +116,7 @@ def is_visit_flow_payload(p: str) -> bool:
         "portfolio_done",
         "consent_order_accept",
         "consent_join_accept",
+        "join_proceed_anketa",
         "consent_question_accept",
         "join_terms_agree",
         "join_terms_decline",
@@ -231,6 +278,126 @@ def join_team_keyboard() -> list[dict]:
     )
 
 
+def join_anketa_invite_keyboard() -> list[dict]:
+    """После согласия ПДн: приглашение заполнить анкету (до выбора трека)."""
+    return inline_keyboard(
+        [
+            [cb_btn("📝 Заполнить анкету", "join_proceed_anketa")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def profession_categories_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("👷 Основной персонал", f"prof_cat:{ProfessionCategory.MAIN}")],
+            [cb_btn("🔧 Технический персонал", f"prof_cat:{ProfessionCategory.TECH}")],
+            [cb_btn("🎨 Креативный персонал", f"prof_cat:{ProfessionCategory.CREATIVE}")],
+            [cb_btn("👔 Административный персонал", f"prof_cat:{ProfessionCategory.ADMIN}")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def profession_list_keyboard(cat: ProfessionCategory) -> list[dict]:
+    rows: list[list[dict]] = []
+    for emoji, title, slug in PROFESSION_BY_CATEGORY[cat]:
+        rows.append([cb_btn(f"{emoji} {title}", f"prof_pick:{slug}")])
+    rows.append([cb_btn("➕ Добавить новую профессию", f"prof_custom:{cat.value}")])
+    rows.append([cb_btn("🔙 Назад к категориям", "prof_back")])
+    rows.append([cb_btn("🏠 Главное меню", "main_menu")])
+    return inline_keyboard(rows)
+
+
+def experience_level_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("👶 Меньше года — 1⭐", "exp_lt1")],
+            [cb_btn("👨‍💼 1–3 года — 2⭐", "exp_1_3")],
+            [cb_btn("👨‍🎓 Более 3 лет — 3⭐", "exp_gt3")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def gender_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("🙋‍♂️ Мужской", "gender_m")],
+            [cb_btn("🙋‍♀️ Женский", "gender_f")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def clothing_size_keyboard() -> list[dict]:
+    sizes = ["XS", "S", "M", "L", "XL", "XXL"]
+    row1 = [cb_btn(f"👕 {sizes[i]}", f"size_{sizes[i]}") for i in range(3)]
+    row2 = [cb_btn(f"👕 {sizes[i]}", f"size_{sizes[i]}") for i in range(3, 6)]
+    return inline_keyboard(
+        [
+            row1,
+            row2,
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def uniform_after_info_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("✅ У меня есть подходящая одежда для работы", "uniform_own_yes")],
+            [cb_btn("❌ Мне нужна форма от работодателя", "uniform_own_no")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def uniform_entry_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("ℹ️ Уточнить требования к форме", "uniform_info")],
+            [cb_btn("✅ У меня есть подходящая одежда для работы", "uniform_own_yes")],
+            [cb_btn("❌ Мне нужна форма от работодателя", "uniform_own_no")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def medbook_has_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("✅ Есть", "medbook_yes")],
+            [cb_btn("❌ Нет", "medbook_no")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def trips_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("✅ Готов(а)", "trips_yes")],
+            [cb_btn("❌ Не готов(а)", "trips_no")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def join_review_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("✅ Данные верны, отправить на проверку", "join_review_ok")],
+            [cb_btn("✏️ Изменить данные", "join_review_edit")],
+        ]
+    )
+
+
+def text_uniform_requirements() -> str:
+    return UNIFORM_REQUIREMENTS_TEXT
+
+
 def join_profile_keyboard() -> list[dict]:
     return inline_keyboard(
         [
@@ -240,6 +407,101 @@ def join_profile_keyboard() -> list[dict]:
             [cb_btn("🎯 Сразу выбрать должность", "jp_direct")],
             [cb_btn("👥 К работе в команде", "join_team")],
             [cb_btn("🏠 В главное меню", "main_menu")],
+        ]
+    )
+
+
+def text_tax_status_intro() -> str:
+    return (
+        "💼 *НАЛОГОВЫЙ СТАТУС*\n\n"
+        "*Выберите ваш налоговый статус:*\n"
+        "Статус влияет на размер выплат и способ перечисления.\n\n"
+        "ℹ️ Если вы ещё не зарегистрированы как самозанятый, вы можете сделать это, "
+        "выбрав соответствующий пункт."
+    )
+
+
+def text_tax_fl_disclaimer() -> str:
+    return (
+        "Вы выбрали статус *физическое лицо*. Мы обязаны предупредить: налог *13% НДФЛ* "
+        "(удерживается платформой). Вы можете оформить самозанятость.\n\n"
+        "✨ *Преимущества самозанятости:*\n"
+        "• Ниже налог (*6%* вместо *13%*)\n"
+        "• Не нужно сдавать декларацию в рамках режима НПД\n"
+        "• Легальный доход с подтверждением в приложении «Мой налог»\n"
+        "• Возможность работать с юрлицами и ИП\n"
+    )
+
+
+def tbank_self_employed_invite_md() -> str:
+    u = (TBANK_LK_URL or "").strip()
+    if not u:
+        return ""
+    return (
+        "\n\n🔗 *Т-Банк Бизнес (самозанятые):*\n"
+        f"[Перейти по ссылке из вашего кабинета]({u})\n"
+        "_Оформление в банке не заменяет регистрацию в «Мой налог» и загрузку справки в анкету — "
+        "это отдельный шаг для выплат через Т-Банк, если он вам нужен._"
+    )
+
+
+def text_tax_self_help() -> str:
+    return (
+        "*Что нужно сделать:*\n\n"
+        "1. Скачайте приложение *«Мой налог»*:\n"
+        "• [App Store](https://apps.apple.com/ru/app/%D0%BC%D0%BE%D0%B9-%D0%BD%D0%B0%D0%BB%D0%BE%D0%B3/id1437518854?l=en-GB)\n"
+        "• [Google Play](https://play.google.com/store/apps/details?id=com.gnivts.selfemployed&hl=ru&pli=1)\n"
+        "• [RuStore](https://www.rustore.ru/catalog/app/com.gnivts.selfemployed)\n\n"
+        "2. Зарегистрируйтесь по паспорту и ИНН.\n"
+        "3. Подтвердите регистрацию в приложении.\n"
+        "4. Скачайте *справку о постановке на учёт* и пришлите её нам кнопкой *«📎 Загрузить справку»* "
+        "(документ или чёткое фото).\n\n"
+        "После загрузки вы будете отмечены в системе как самозанятый (данные попадут в панель)."
+    ) + tbank_self_employed_invite_md()
+
+
+def join_tax_status_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("👤 Физическое лицо", "tax_fl")],
+            [cb_btn("💼 Самозанятый", "tax_se")],
+            [cb_btn("🏢 Индивидуальный предприниматель", "tax_ip")],
+            [cb_btn("🔗 Помощь в оформлении самозанятости", "tax_help")],
+            [cb_btn("🔙 Назад к дате рождения", "tax_back_bd")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def tax_fl_followup_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("🔗 Помощь в оформлении самозанятости", "tax_help")],
+            [cb_btn("➡️ Продолжить как 👤 Физическое лицо", "tax_fl_go")],
+            [cb_btn("🔙 Назад к выбору статуса", "tax_back_status")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def tax_se_actions_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("📎 Загрузить справку", "tax_upload_cert")],
+            [cb_btn("✅ Отправить на проверку", "tax_se_send")],
+            [cb_btn("🔙 Назад к выбору статуса", "tax_back_status")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def tax_ip_actions_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("📎 Загрузить выписку", "tax_upload_cert")],
+            [cb_btn("✅ Отправить на проверку", "tax_ip_send")],
+            [cb_btn("🔙 Назад к выбору статуса", "tax_back_status")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
         ]
     )
 
@@ -431,15 +693,8 @@ def consent_gate_keyboard(flow: str) -> list[dict]:
 def vacancies_keyboard() -> list[dict]:
     return inline_keyboard(
         [
-            [cb_btn("Хочу: Хелпер", "vac_apply_helper")],
-            [cb_btn("Хочу: Грузчик", "vac_apply_loader")],
-            [cb_btn("Хочу: Промоутер", "vac_apply_promoter")],
-            [cb_btn("Хочу: Гардеробщик", "vac_apply_cloakroom")],
-            [cb_btn("Хочу: Парковщик", "vac_apply_parking")],
-            [cb_btn("Хочу: Хостес", "vac_apply_hostess")],
-            [cb_btn("Хочу: Супервайзер", "vac_apply_supervisor")],
-            [cb_btn("\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", "join_team")],
-            [cb_btn("\U0001f3e0 \u0412 \u0433\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e", "main_menu")],
+            [cb_btn("📝 Заполнить анкету", "fill_anketa")],
+            [cb_btn("🏠 В главное меню", "main_menu")],
         ]
     )
 
@@ -557,15 +812,10 @@ def text_brief_template() -> str:
 
 def text_join_team() -> str:
     return (
-        f"👥 *Работа в {COMPANY_NAME}*\n\n"
-        "Мы всегда в поиске активных и ответственных людей!\n\n"
-        "📌 *Открытые вакансии:*\n"
-        "• Хелперы (event assistants)\n"
-        "• Гардеробщики\n"
-        "• Парковщики\n"
-        "• Промоутеры / Хостес\n"
-        "• Супервайзеры\n\n"
-        "Выберите действие:"
+        f"*Работа в {COMPANY_NAME}*\n\n"
+        "Мы всегда в поиске активных и ответственных людей.\n\n"
+        "*Направления:* хелперы, гардеробщики, парковщики, промоутеры, хостес, супервайзеры.\n\n"
+        "👇 *Выберите действие:*"
     )
 
 
@@ -585,16 +835,10 @@ def text_requirements() -> str:
 
 
 def text_vacancies() -> str:
-    return (
-        "📂 *Открытые вакансии*\n\n"
-        "🔹 *Хелпер* — навигация, поддержка гостей\n\n"
-        "🔹 *Грузчик* — погрузка, перенос\n\n"
-        "🔹 *Промоутер* — презентация\n\n"
-        "🔹 *Гардеробщик* — гардероб\n\n"
-        "🔹 *Парковщик* — парковка\n\n"
-        "🔹 *Хостес* — встреча гостей, регистрация\n\n"
-        "🔹 *Супервайзер* — координация на площадке"
-    )
+    lines = ["*Открытые вакансии*\n"]
+    for _key, title, desc in _VACANCY_CATALOG:
+        lines.append(f"*{title}*\n{desc}\n")
+    return "\n".join(lines).strip()
 
 def text_faq() -> str:
     return (
