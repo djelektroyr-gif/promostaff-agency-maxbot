@@ -385,14 +385,23 @@ def start_order(max_uid: int, *, announce_order_consent: bool = True) -> dict[st
             "format": "markdown",
             "attachments": visit_card.consent_gate_keyboard("client_visit"),
         }
-    SESSIONS[max_uid] = {"flow": "order", "step": "consent", "data": {}}
+    SESSIONS[max_uid] = {
+        "flow": "order",
+        "step": "order_mode",
+        "data": {"order_consent_accepted": True},
+    }
     msg: dict[str, Any] = {
-        "text": _consent_gate_text("заказ расчёта"),
+        "text": (
+            "*Заказ расчёта стоимости*\n\n"
+            "*Срочный расчёт* — оценка по одной типичной смене прямо в боте.\n"
+            "*Коммерческое предложение* — менеджер подготовит КП по вашим вводным.\n\n"
+            "Выберите вариант:"
+        ),
         "format": "markdown",
-        "attachments": visit_card.consent_gate_keyboard("order"),
+        "attachments": visit_card.order_mode_keyboard(),
     }
     if announce_order_consent:
-        msg["notification"] = "Сначала подтвердите согласие на обработку данных."
+        msg["notification"] = " "
     return msg
 
 
@@ -1060,15 +1069,21 @@ async def process_callback(
         except Exception:
             logger.exception("save_max_visit_client_verified")
         clear_session(max_uid)
+        SESSIONS[max_uid] = {
+            "flow": "order",
+            "step": "order_mode",
+            "data": {"order_consent_accepted": True},
+        }
         return {
             "notification": "Отлично!",
             "text": (
-                "*Меню заказчика*\n\n"
-                "Проекты, история заявок и веб-панель — по мере подключения учёта. "
-                "Новый расчёт — кнопкой ниже."
+                "*Регистрация завершена.* Выберите тип расчёта:\n\n"
+                "*Срочный расчёт* — оценка по одной типичной смене прямо в боте.\n"
+                "*Коммерческое предложение* — менеджер подготовит КП по вашим вводным.\n\n"
+                "Выберите вариант:"
             ),
             "format": "markdown",
-            "attachments": visit_card.client_registered_main_menu_keyboard(),
+            "attachments": visit_card.order_mode_keyboard(),
         }
 
     if flow == "client_visit" and step == "confirm" and payload == "confirm_client_visit_edit":
@@ -1115,7 +1130,7 @@ async def process_callback(
                     "_Образец:_ `Корпоратив, 200 гостей, Москва-Сити`\n\n"
                 ),
                 "format": "markdown",
-                "attachments": visit_card.cp_flow_back_keyboard(),
+                "attachments": visit_card.cp_step_keyboard(),
             }
         if step == "cp_dates":
             s["step"] = "cp_city"
@@ -1123,7 +1138,7 @@ async def process_callback(
                 "notification": "Назад",
                 "text": "Укажите город проведения мероприятия.\n\n_Образец:_ `Москва`",
                 "format": "markdown",
-                "attachments": visit_card.cp_flow_back_keyboard(),
+                "attachments": visit_card.cp_step_keyboard(),
             }
         if step == "cp_brief_wait":
             s["step"] = "cp_dates"
@@ -1134,7 +1149,7 @@ async def process_callback(
                     "_Образец:_ `15.06.2026` или `12–14 июня 2026`\n\n"
                 ),
                 "format": "markdown",
-                "attachments": visit_card.cp_flow_back_keyboard(),
+                "attachments": visit_card.cp_step_keyboard(),
             }
         if step == "cp_brief_text":
             s["step"] = "cp_brief_wait"
@@ -1252,7 +1267,7 @@ async def process_callback(
                 "_Образец:_ `Корпоратив, 200 гостей, Москва-Сити`\n\n"
             ),
             "format": "markdown",
-            "attachments": visit_card.cp_flow_back_keyboard(),
+            "attachments": visit_card.cp_step_keyboard(),
         }
 
     if flow == "question" and step == "consent" and payload == "consent_question_accept":
@@ -1442,7 +1457,7 @@ async def process_callback(
                 "подпись к вложению необязательна.\n\n"
             ),
             "format": "markdown",
-            "attachments": visit_card.cp_flow_back_keyboard(),
+            "attachments": visit_card.cp_step_keyboard(),
         }
 
     if flow == "order" and step == "cp_brief_wait" and payload == "cp_brief_no":
@@ -1465,7 +1480,7 @@ async def process_callback(
             "notification": "Звонок",
             "text": "Когда удобно принять звонок менеджера?\n\n_Образец:_ `будни 10:00–18:00`",
             "format": "markdown",
-            "attachments": visit_card.cp_flow_back_keyboard(),
+            "attachments": visit_card.cp_step_keyboard(),
         }
 
     if flow == "order" and step == "cp_channel_pick" and payload == "cp_ch_msg":
@@ -1504,20 +1519,25 @@ async def process_callback(
         plain = _format_cp_plain(to_save, oid, who)
         await _notify_plain(f"Новая заявка на КП #{oid}", plain)
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
+        public_ref = "—"
         try:
-            save_visit_order(max_uid, str(username or ""), json.dumps(to_save, ensure_ascii=False))
+            _, public_ref = save_visit_order_payload(max_uid, str(username or ""), to_save)
         except Exception:
-            logger.exception("save_visit_order cp")
+            logger.exception("save_visit_order_payload cp")
+        ref_show = (
+            public_ref if public_ref not in (None, "OFFLINE", "—") else f"внутр. #{oid}"
+        )
         funnel_touch_complete(max_uid)
         clear_session(max_uid)
         return {
             "notification": "✅ Заявка на КП у команды.",
             "text": (
-                f"*Заявка на КП #{oid} принята.*\n\n"
+                f"*Заявка на КП принята.* Номер: `{ref_show}`\n\n"
                 "Менеджер подготовит предложение и свяжется с вами.\n\n"
+                "*Меню заказчика* — ниже.",
             ),
             "format": "markdown",
-            "attachments": visit_card.main_menu_keyboard(),
+            "attachments": visit_card.client_registered_main_menu_keyboard(),
         }
 
     if flow == "order" and step == "cp_confirm" and payload == "edit_cp_order":
@@ -1990,7 +2010,7 @@ async def process_text(
             return {
                 "text": "Укажите город проведения мероприятия.\n\n_Образец:_ `Москва`",
                 "format": "markdown",
-                "attachments": visit_card.cp_flow_back_keyboard(),
+                "attachments": visit_card.cp_step_keyboard(),
             }
         if step == "cp_city":
             data["city"] = text.strip()
@@ -2001,7 +2021,7 @@ async def process_text(
                     "_Образец:_ `15.06.2026` или `12–14 июня 2026`\n\n"
                 ),
                 "format": "markdown",
-                "attachments": visit_card.cp_flow_back_keyboard(),
+                "attachments": visit_card.cp_step_keyboard(),
             }
         if step == "cp_dates":
             data["event_date"] = text.strip()
@@ -2019,7 +2039,7 @@ async def process_text(
                         "(Word, Excel, PDF и др.) либо опишите задачу текстом."
                     ),
                     "format": "markdown",
-                    "attachments": visit_card.cp_flow_back_keyboard(),
+                    "attachments": visit_card.cp_step_keyboard(),
                 }
             bf = _brief_file_from_body(message_body)
             note = (text or "").strip()
@@ -2030,7 +2050,7 @@ async def process_text(
                         "(Word, Excel, PDF и др.). Подпись к файлу необязательна."
                     ),
                     "format": "markdown",
-                    "attachments": visit_card.cp_flow_back_keyboard(),
+                    "attachments": visit_card.cp_step_keyboard(),
                 }
             data["cp_brief_has"] = True
             data.pop("cp_brief_max_url", None)

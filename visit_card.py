@@ -203,6 +203,11 @@ def cp_flow_back_keyboard() -> list[dict]:
     return inline_keyboard([[cb_btn("⬅️ Назад", "cp_flow_back")]])
 
 
+def cp_step_keyboard() -> list[dict]:
+    """Шаги КП без кнопки «Назад» (паритет с Telegram-визиткой)."""
+    return inline_keyboard([])
+
+
 def order_flow_back_keyboard() -> list[dict]:
     """Назад по срочному расчёту (в т.ч. с ввода даты)."""
     return inline_keyboard([[cb_btn("⬅️ Назад", "order_flow_back")]])
@@ -603,7 +608,6 @@ def cp_brief_keyboard() -> list[dict]:
         [
             [cb_btn("Да, есть бриф / ТЗ", "cp_brief_yes")],
             [cb_btn("Нет", "cp_brief_no")],
-            [cb_btn("⬅️ Назад", "cp_flow_back")],
         ]
     )
 
@@ -614,7 +618,6 @@ def cp_channel_keyboard() -> list[dict]:
             [cb_btn("📞 Звонок", "cp_ch_call")],
             [cb_btn("💬 Сообщение в мессенджере", "cp_ch_msg")],
             [cb_btn("✉️ Email", "cp_ch_mail")],
-            [cb_btn("⬅️ Назад", "cp_flow_back")],
         ]
     )
 

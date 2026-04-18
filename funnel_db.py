@@ -1,6 +1,7 @@
 """Опциональное подключение к Postgres для воронки и напоминаний (схема как в PROMOSTAFF PRO)."""
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from contextlib import contextmanager
@@ -9,9 +10,154 @@ from typing import Any
 
 import psycopg2
 
-from config import DATABASE_URL
+from config import DATABASE_URL, PD_CONSENT_VERSION
 
 logger = logging.getLogger(__name__)
+
+# Синхронно с promostaff-bot/services/messenger_user_policy.py
+_MAX_TG_SYNTHETIC_LEAST = 10**15
+PRO_PG_MAX_VISIT_CLIENT = "agency_max_visit_client"
+
+
+def _synthetic_tg_for_max(max_user_id: int) -> int:
+    return _MAX_TG_SYNTHETIC_LEAST + int(max_user_id)
+
+
+def _client_tg_id_for_max_cp(max_user_id: int) -> int:
+    """tg_id для cp_requests.client_tg_id (FK users): сначала строка с max_user_id, иначе синтетика."""
+    uid = int(max_user_id)
+    if not DATABASE_URL:
+        return _synthetic_tg_for_max(uid)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT tg_id FROM users WHERE max_user_id = %s LIMIT 1",
+                    (uid,),
+                )
+                row = cur.fetchone()
+                if row:
+                    return int(row[0])
+    except Exception:
+        logger.exception("_client_tg_id_for_max_cp max_uid=%s", uid)
+    return _synthetic_tg_for_max(uid)
+
+
+def _pg_upsert_user_for_max_visit_client(
+    max_user_id: int, username: str, data: dict[str, Any]
+) -> None:
+    """После регистрации заказчика в MAX — строка в users (нужна для cp_requests и панели)."""
+    if not DATABASE_URL:
+        return
+    uid = int(max_user_id)
+    cn = (data.get("contact_name") or "").strip()
+    tg_row = _client_tg_id_for_max_cp(uid)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO users (
+                        tg_id, max_user_id, role, company_name, contact_person, phone, inn, org_position, full_name,
+                        pd_consent_at, pd_consent_version, funnel_completed_at, pro_access_at, pro_access_source,
+                        updated_at
+                    ) VALUES (
+                        %s, %s, 'client', %s, %s, %s, %s, %s, %s,
+                        NOW(), %s, NOW(), NOW(), %s, NOW()
+                    )
+                    ON CONFLICT (tg_id) DO UPDATE SET
+                        max_user_id = COALESCE(EXCLUDED.max_user_id, users.max_user_id),
+                        role = 'client',
+                        company_name = EXCLUDED.company_name,
+                        contact_person = EXCLUDED.contact_person,
+                        phone = EXCLUDED.phone,
+                        inn = EXCLUDED.inn,
+                        org_position = EXCLUDED.org_position,
+                        full_name = EXCLUDED.full_name,
+                        pd_consent_at = COALESCE(users.pd_consent_at, EXCLUDED.pd_consent_at),
+                        pd_consent_version = COALESCE(users.pd_consent_version, EXCLUDED.pd_consent_version),
+                        funnel_completed_at = COALESCE(users.funnel_completed_at, EXCLUDED.funnel_completed_at),
+                        pro_access_at = EXCLUDED.pro_access_at,
+                        pro_access_source = EXCLUDED.pro_access_source,
+                        updated_at = NOW()
+                    """,
+                    (
+                        tg_row,
+                        uid,
+                        (data.get("company_name") or "").strip(),
+                        cn,
+                        (data.get("phone") or "").strip(),
+                        (data.get("inn") or "").strip(),
+                        (data.get("position_in_org") or "").strip(),
+                        cn,
+                        (PD_CONSENT_VERSION or "").strip() or "agency_visit_v1",
+                        PRO_PG_MAX_VISIT_CLIENT,
+                    ),
+                )
+    except Exception:
+        logger.exception("_pg_upsert_user_for_max_visit_client max_uid=%s", uid)
+
+
+def _sync_cp_request_from_max_visit_order(
+    max_user_id: int, username: str, payload: dict[str, Any], agency_order_pg_id: int
+) -> int | None:
+    """Панель «Запрос КП»: cp_requests + agency_crm_cards (как в Telegram-визитке)."""
+    if not DATABASE_URL:
+        return None
+    from datetime import datetime
+
+    client_tg_id = _client_tg_id_for_max_cp(max_user_id)
+    y = datetime.now().year
+    et = (payload.get("event_type") or "").strip()
+    city = (payload.get("city") or "").strip()
+    title = f"{et} · {city}" if et and city else (et or city or "Запрос КП (MAX визитка)")
+    title = title[:500]
+    brief = {
+        "source": "agency_visit_card_max",
+        "max_user_id": int(max_user_id),
+        "agency_visit_order_id": int(agency_order_pg_id),
+        "visit_public_ref": payload.get("public_ref"),
+        "username": (username or "").strip(),
+    }
+    comment = json.dumps(brief, ensure_ascii=False)[:8000]
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO cp_requests (public_number, client_tg_id, company_id, channel, status, title, client_comment)
+                    VALUES (NULL, %s, NULL, 'max', 'collecting_brief', %s, %s)
+                    RETURNING id
+                    """,
+                    (int(client_tg_id), title, comment),
+                )
+                row = cur.fetchone()
+                if not row:
+                    conn.rollback()
+                    return None
+                rid = int(row[0])
+                pub = f"KP-{y}-{rid:06d}"
+                cur.execute(
+                    "UPDATE cp_requests SET public_number = %s, updated_at = NOW() WHERE id = %s",
+                    (pub, rid),
+                )
+                card_title = title if len(title) > 8 else f"Запрос КП {pub}"
+                cur.execute(
+                    """
+                    INSERT INTO agency_crm_cards (pipeline, stage, source_kind, source_id, client_tg_id, title, created_at, updated_at)
+                    VALUES ('kp', 'new', 'cp_request', %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (source_kind, source_id) DO NOTHING
+                    """,
+                    (rid, int(client_tg_id), card_title[:500]),
+                )
+        return rid
+    except Exception:
+        logger.exception(
+            "_sync_cp_request_from_max_visit_order max_uid=%s order_id=%s",
+            max_user_id,
+            agency_order_pg_id,
+        )
+        return None
 
 _LOCAL_CLIENT_DB = Path(__file__).resolve().parent / "data" / "max_visit_clients.sqlite"
 
@@ -278,6 +424,17 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                         """,
                         (uid, un, cn, contact, pos, phone, inn, cemail),
                     )
+            _pg_upsert_user_for_max_visit_client(
+                uid,
+                un,
+                {
+                    "company_name": cn,
+                    "contact_name": contact,
+                    "position_in_org": pos,
+                    "phone": phone,
+                    "inn": inn,
+                },
+            )
             return
         except Exception:
             logger.exception("save_max_visit_client_verified pg")
@@ -356,6 +513,18 @@ def save_visit_order_payload(max_user_id: int, username: str, data: dict[str, An
                     "UPDATE agency_visit_orders SET payload = %s::jsonb WHERE id = %s",
                     (_json.dumps(base, ensure_ascii=False), pg_id),
                 )
+        if (base.get("order_kind") or "").strip() == "cp_request":
+            cp_rid = _sync_cp_request_from_max_visit_order(
+                int(max_user_id), (username or "").strip(), base, int(pg_id)
+            )
+            if cp_rid:
+                base["cp_request_id"] = cp_rid
+                with connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE agency_visit_orders SET payload = %s::jsonb WHERE id = %s",
+                            (_json.dumps(base, ensure_ascii=False), pg_id),
+                        )
     return pg_id, ref
 
 
