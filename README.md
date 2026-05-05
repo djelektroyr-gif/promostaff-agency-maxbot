@@ -4,6 +4,8 @@
 
 **Связка репозиториев:** визитка MAX — этот репозиторий; визитка Telegram — `promostaff-agency-bot`; веб-панель PRO — `promostaff-bot`. Подробнее: [`docs/WORKSPACE_SCOPE.md`](docs/WORKSPACE_SCOPE.md).
 
+**Порядок развития:** канон ERP и запись в общую PostgreSQL — у **Telegram-бота** (`promostaff-agency-bot`). Здесь — второй транспорт (MAX): после стабилизации и полировки Telegram переносим **ту же** логику и функции сюда, чтобы не плодить параллельные разные правила в двух ботах. Единый контракт статусов и источник истины: в agency-репо → `docs/SHIFT_ASSIGNMENT_STATUS_CONTRACT.md`.
+
 ## Локально
 
 ```bash
