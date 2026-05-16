@@ -55,7 +55,7 @@ Webhook API: `promostaff-bot/docs/MAX_WEBHOOK_AND_SUBSCRIPTIONS.md`.
 | О нас, преимущества, как работаем, FAQ, отзывы, кейсы | подменю `about_section_keyboard` | OK (`about_keyboard` в MAX) | — |
 | **Один телефон — один `users`, без смены роли** | `visit_user_identity` + шаг телефона в join/visit | OK (`user_identity.py`, шаг `phone` в `visit_flows`) | — |
 | Связаться (тел/email + вопрос менеджеру) | OK | OK | — |
-| Хочу в команду → intro | OK | OK | — |
+| Хочу в команду → intro | `join_team_intro_keyboard` (3 кнопки) | OK (с 2026-05-16: не статический старый экран) | — |
 | Вакансии + кнопка «Хочу: …» на каждую | `vac_view` / `vac_apply_*` | OK (`vacancies_list_keyboard`, `vacancy_detail_keyboard`) | — |
 | Подписка на канал (gate) | `check_subscribe` | Нет | P2 |
 | Медиа-альбомы кейсов | `visit_card_media` | Нет (только текст) | P2 |
@@ -83,6 +83,7 @@ Webhook API: `promostaff-bot/docs/MAX_WEBHOOK_AND_SUBSCRIPTIONS.md`.
 |------|--------------------------------------|---------------------|-----------|
 | Согласие ПДн + terms перед селфи | OK | OK | — |
 | Каталог профессий | OK | OK | — |
+| Несколько профессий (profession_summary) | OK | **Нет** (одна профессия за анкету) | P1 |
 | ФИО, телефон, ДР | OK | OK | — |
 | Налоговые ветки (ФЛ/СЗ/ИП) | полные | OK (ИНН ФЛ 12 цифр → СНИЛС/реквизиты); СЗ/помощь → FSM Т-Банк при `TBANK_LK_URL` | — |
 | T-Bank cabinet / register confirm | `tbank_*` states | OK (`join_tbank_*`, шаги `tbank_cabinet` / `tbank_register_confirm`) | — |

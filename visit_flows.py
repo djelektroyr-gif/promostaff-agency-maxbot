@@ -656,8 +656,58 @@ def start_order(max_uid: int, *, announce_order_consent: bool = True) -> dict[st
     return msg
 
 
+def show_join_team(max_uid: int) -> dict[str, Any]:
+    """Меню исполнителя — паритет TG show_join_team."""
+    blocked = _join_entry_blocked(max_uid)
+    if blocked:
+        return blocked
+    clear_session(max_uid)
+    return {
+        "text": visit_card.text_join_team(),
+        "format": "markdown",
+        "attachments": visit_card.join_team_intro_keyboard(),
+    }
+
+
+def show_requirements(max_uid: int) -> dict[str, Any]:
+    clear_session(max_uid)
+    return {
+        "text": visit_card.text_requirements(),
+        "format": "markdown",
+        "attachments": visit_card.join_team_back_keyboard(),
+    }
+
+
+def show_vacancies_list(max_uid: int) -> dict[str, Any]:
+    blocked = _join_entry_blocked(max_uid)
+    if blocked:
+        return blocked
+    clear_session(max_uid)
+    return {
+        "text": visit_card.vacancies_summary_markdown(),
+        "format": "markdown",
+        "attachments": visit_card.vacancies_list_keyboard(),
+    }
+
+
+def show_vacancy_detail(max_uid: int, payload: str) -> dict[str, Any] | None:
+    blocked = _join_entry_blocked(max_uid)
+    if blocked:
+        return blocked
+    slug = payload.replace("vac_view_", "", 1).strip().lower()
+    body = visit_card.vacancy_detail_markdown(slug)
+    if not body:
+        return None
+    clear_session(max_uid)
+    return {
+        "text": body,
+        "format": "markdown",
+        "attachments": visit_card.vacancy_detail_keyboard(slug),
+    }
+
+
 def start_fill_anketa(max_uid: int) -> dict[str, Any]:
-    """Запуск полной анкеты исполнителя прямо в MAX-визитке."""
+    """Запуск полной анкеты исполнителя — как TG begin_executor_full_anketa."""
     blocked = _join_entry_blocked(max_uid)
     if blocked:
         return blocked
@@ -682,7 +732,7 @@ def start_join(max_uid: int) -> dict[str, Any]:
         "data": {"join_entry": "profile"},
     }
     return {
-        "text": _consent_gate_text("отклик в команду"),
+        "text": _consent_gate_text("регистрация исполнителя"),
         "format": "markdown",
         "attachments": visit_card.consent_gate_keyboard("join"),
     }
@@ -702,7 +752,7 @@ def join_from_vacancy(max_uid: int, payload: str) -> dict[str, Any] | None:
         "data": {"position": title, "join_entry": "vacancy"},
     }
     return {
-        "text": _consent_gate_text("отклик в команду"),
+        "text": _consent_gate_text("регистрация исполнителя"),
         "format": "markdown",
         "attachments": visit_card.consent_gate_keyboard("join"),
     }

@@ -23,7 +23,12 @@ from config import (
     contact_whatsapp_url,
 )
 from max_attachments import cb_btn, inline_keyboard, link_btn
-from visit_join_anketa_catalog import PROFESSION_BY_CATEGORY, ProfessionCategory, UNIFORM_REQUIREMENTS_TEXT
+from visit_join_anketa_catalog import (
+    PROFESSION_BY_CATEGORY,
+    PROFESSION_SLUG_TO_TITLE,
+    ProfessionCategory,
+    UNIFORM_REQUIREMENTS_TEXT,
+)
 
 # Пэйлоады, которые обрабатывает visit_flows (не статичное редактирование одного сообщения).
 FLOW_PAYLOADS = frozenset(
@@ -31,6 +36,10 @@ FLOW_PAYLOADS = frozenset(
         "calculate",
         "ask_manager",
         "fill_anketa",
+        "join_team",
+        "requirements",
+        "vacancies",
+        "join_proceed_anketa",
         "main_menu",
         "visit_public_menu",
         "back_to_main",
@@ -319,15 +328,38 @@ def contact_keyboard() -> list[dict]:
     return inline_keyboard(rows)
 
 
-def join_team_keyboard() -> list[dict]:
+# Единый текст с Telegram handlers/visit_public.py JOIN_CANDIDATE_REQUIREMENTS_MARKDOWN
+JOIN_CANDIDATE_REQUIREMENTS_MARKDOWN = (
+    "*Требования к кандидатам*\n\n"
+    "Возраст от 18 лет\n"
+    "Гражданство РФ / РБ / Казахстан\n"
+    "Ответственность и пунктуальность\n"
+    "Опрятный внешний вид\n"
+    "Грамотная речь\n\n"
+    "*Для некоторых позиций:*\n"
+    "• Наличие медкнижки\n"
+    "• Опыт работы в event-сфере\n"
+    "• Знание английского языка"
+)
+
+
+def join_team_intro_keyboard() -> list[dict]:
+    """Паритет keyboards.join_team_intro_keyboard — без вакансий на первом экране."""
     return inline_keyboard(
         [
             [cb_btn("📝 Заполнить анкету", "fill_anketa")],
             [cb_btn("📋 Требования к кандидатам", "requirements")],
-            [cb_btn("📂 Открытые вакансии", "vacancies")],
-            [cb_btn("🏠 В главное меню", "main_menu")],
+            [cb_btn("⬅️ Назад", "back_to_main")],
         ]
     )
+
+
+def join_team_back_keyboard() -> list[dict]:
+    return inline_keyboard([[cb_btn("🛠 К меню исполнителя", "join_team")]])
+
+
+def join_team_keyboard() -> list[dict]:
+    return join_team_intro_keyboard()
 
 
 def join_anketa_invite_keyboard() -> list[dict]:
@@ -987,33 +1019,53 @@ def text_brief_template() -> str:
 
 def text_join_team() -> str:
     return (
-        f"*Работа в {COMPANY_NAME}*\n\n"
-        "Мы всегда в поиске активных и ответственных людей.\n\n"
+        f"*Меню исполнителя · {COMPANY_NAME}*\n\n"
+        "Ищем ответственных специалистов под задачи агентства.\n\n"
         "*Направления:* хелперы, гардеробщики, парковщики, промоутеры, хостес, супервайзеры.\n\n"
-        "👇 *Выберите действие:*"
+        "👇 *Дальше:*"
     )
 
 
 def text_requirements() -> str:
+    return JOIN_CANDIDATE_REQUIREMENTS_MARKDOWN
+
+
+def vacancies_summary_markdown() -> str:
     return (
-        "📋 *Требования к кандидатам*\n\n"
-        "✅ Возраст от 18 лет\n"
-        "✅ Гражданство РФ / РБ / Казахстан\n"
-        "✅ Ответственность и пунктуальность\n"
-        "✅ Опрятный внешний вид\n"
-        "✅ Грамотная речь\n\n"
-        "*Для некоторых позиций:*\n"
-        "• Наличие медкнижки\n"
-        "• Опыт работы в event-сфере\n"
-        "• Знание английского языка"
+        "*Открытые вакансии*\n\n"
+        f"{COMPANY_NAME} всегда в поиске надёжных специалистов для задач агентства.\n\n"
+        + JOIN_CANDIDATE_REQUIREMENTS_MARKDOWN
     )
 
 
 def text_vacancies() -> str:
-    lines = ["*Открытые вакансии*\n"]
-    for _key, title, desc in _VACANCY_CATALOG:
-        lines.append(f"*{title}*\n{desc}\n")
-    return "\n".join(lines).strip()
+    return vacancies_summary_markdown()
+
+
+def vacancy_detail_markdown(slug: str) -> str | None:
+    from config import order_hourly_rates
+
+    for key, title_em, desc in _VACANCY_CATALOG:
+        if key != slug:
+            continue
+        title_plain = PROFESSION_SLUG_TO_TITLE.get(slug) or (
+            title_em.split(" ", 1)[-1] if " " in title_em else title_em
+        )
+        base_rub = order_hourly_rates().get(title_plain)
+        if base_rub is not None:
+            br_fmt = f"{int(base_rub):,}".replace(",", " ")
+            rate_lines = (
+                f"\n\n💰 *Ориентир:* {br_fmt} ₽/ч при уровне подбора *0* (база каталога).\n\n"
+                "_Итоговая ставка считается индивидуально: к базе добавляются надбавки по вашему рейтингу — "
+                "он формируется по анкете и по проектам при работе с агентством._"
+            )
+        else:
+            rate_lines = (
+                "\n\n_Итоговая ставка считается индивидуально по вашему рейтингу "
+                "(данные анкеты и проекты с агентством)._"
+            )
+        return f"*{title_em}*\n\n{desc}{rate_lines}"
+    return None
 
 def text_faq() -> str:
     return (
@@ -1233,22 +1285,7 @@ def message_for_static_payload(payload: str) -> dict[str, Any] | None:
         return {"text": text_contact_manager(), "format": "markdown", "attachments": contact_keyboard()}
     if p == "brief_template":
         return {"text": text_brief_template(), "format": "markdown", "attachments": contact_keyboard()}
-    if p == "join_team":
-        return {"text": text_join_team(), "format": "markdown", "attachments": join_team_keyboard()}
-    if p == "requirements":
-        return {"text": text_requirements(), "format": "markdown", "attachments": back_to_main_keyboard()}
-    if p == "vacancies":
-        return {"text": text_vacancies(), "format": "markdown", "attachments": vacancies_list_keyboard()}
-    if p.startswith("vac_view_"):
-        slug = p.replace("vac_view_", "", 1)
-        for key, title, desc in _VACANCY_CATALOG:
-            if key == slug:
-                return {
-                    "text": f"*{title}*\n\n{desc}",
-                    "format": "markdown",
-                    "attachments": vacancy_detail_keyboard(slug),
-                }
-        return None
+    # join_team, requirements, vacancies, vac_view_* — visit_flows (роли, тексты как в TG)
     if p == "faq":
         return {"text": text_faq(), "format": "markdown", "attachments": back_to_main_keyboard()}
     if p == "reviews":

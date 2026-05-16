@@ -199,6 +199,30 @@ async def process_update(body: dict[str, Any]) -> None:
             )
             return
 
+        if payload == "join_team":
+            await _answer_message(callback_id, max_uid, visit_flows.show_join_team(max_uid))
+            await _sync_funnel(max_uid)
+            return
+
+        if payload == "requirements":
+            await _answer_message(callback_id, max_uid, visit_flows.show_requirements(max_uid))
+            await _sync_funnel(max_uid)
+            return
+
+        if payload == "vacancies":
+            await _answer_message(callback_id, max_uid, visit_flows.show_vacancies_list(max_uid))
+            await _sync_funnel(max_uid)
+            return
+
+        if payload.startswith("vac_view_"):
+            msg = visit_flows.show_vacancy_detail(max_uid, payload)
+            if msg is not None:
+                await _answer_message(callback_id, max_uid, msg)
+            else:
+                await post_answer(MAX_TOKEN, callback_id, {"notification": "Неизвестная вакансия"})
+            await _sync_funnel(max_uid)
+            return
+
         if payload.startswith("vac_apply_"):
             msg = visit_flows.join_from_vacancy(max_uid, payload)
             if msg is not None:
