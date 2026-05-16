@@ -102,6 +102,19 @@ def is_visit_flow_payload(p: str) -> bool:
         "edit_order",
         "order_mode_quick",
         "order_mode_cp",
+        "order_mode_listing",
+        "client_quote_listing",
+        "confirm_listing_order",
+        "edit_listing_order",
+        "join_tbank_proceed",
+        "join_tbank_reg_yes",
+        "join_tbank_reg_no",
+        "join_tbank_reg_retry",
+        "clrf:start",
+        "clrf:ack",
+        "contact_ch_call",
+        "contact_ch_max",
+        "contact_ch_mail",
         "cp_brief_yes",
         "cp_brief_no",
         "cp_ch_call",
@@ -121,6 +134,10 @@ def is_visit_flow_payload(p: str) -> bool:
         "consent_question_accept",
         "join_terms_agree",
         "join_terms_decline",
+        "join_portfolio_none",
+        "join_portfolio_pdf",
+        "join_portfolio_url",
+        "join_metro_skip",
         "client_reg_projects",
         "client_reg_orders",
         "client_reg_settings",
@@ -134,17 +151,45 @@ def is_visit_flow_payload(p: str) -> bool:
     return False
 
 
-def client_registered_main_menu_keyboard() -> list[dict]:
+def client_pre_erp_pending_keyboard() -> list[dict]:
+    """Заказчик зарегистрирован, админ ещё не подтвердил — как _pre_erp_client_keyboard(quotes_enabled=False)."""
+    return inline_keyboard(
+        [
+            [cb_btn("📞 Связаться с менеджером", "contact_manager")],
+            [cb_btn("🏠 Меню визитки", "visit_public_menu")],
+        ]
+    )
+
+
+def client_registered_main_menu_keyboard(*, quotes_enabled: bool = True) -> list[dict]:
     """Меню заказчика после регистрации — REGISTRATION_AND_POST_MENU_SPEC.md §5."""
     rows: list[list[dict]] = [
         [cb_btn("📂 Мои проекты", "client_reg_projects")],
         [cb_btn("📜 История заказов", "client_reg_orders")],
         [cb_btn("⚙️ Настройки", "client_reg_settings")],
         [cb_btn("🌐 Открыть веб-панель", "client_reg_web")],
-        [cb_btn("💰 Заказать расчёт", "calculate")],
-        [cb_btn("🏠 Меню визитки", "visit_public_menu")],
     ]
+    if quotes_enabled:
+        rows.append([cb_btn("💰 Заказать расчёт", "calculate")])
+        rows.append([cb_btn("📣 Разместить объявление", "client_quote_listing")])
+    rows.append([cb_btn("🏠 Меню визитки", "visit_public_menu")])
     return inline_keyboard(rows)
+
+
+def worker_pending_verification_keyboard() -> list[dict]:
+    """Исполнитель на проверке — только связь с менеджером."""
+    return inline_keyboard([[cb_btn("📞 Связаться с менеджером", "contact_manager")]])
+
+
+def worker_clarification_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("✏️ Дозаполнить запрошенные данные", "clrf:start")],
+            [cb_btn("✅ Отправить на проверку снова", "clrf:ack")],
+            [cb_btn("📞 Связаться с менеджером", "contact_manager")],
+            [cb_btn("🏠 Меню визитки", "visit_public_menu")],
+        ]
+    )
 
 
 def worker_registered_main_menu_keyboard() -> list[dict]:
@@ -451,6 +496,74 @@ def tbank_self_employed_invite_md() -> str:
     )
 
 
+def tbank_self_employed_invite_plain() -> str:
+    if not (TBANK_LK_URL or "").strip():
+        return ""
+    return (
+        "✅ *Справка принята.*\n\n"
+        "🏦 *Кабинет Т-Банка для выплат (самозанятый)*\n\n"
+        "Нажмите *«Открыть кабинет Т-Банка»* ниже, при необходимости завершите регистрацию, "
+        "затем *«Далее»*.\n\n"
+        "_Оформление в банке не заменяет регистрацию в «Мой налог» и загрузку справки в анкету — "
+        "это отдельный шаг для выплат через Т-Банк._"
+    )
+
+
+def tbank_register_confirm_prompt_md() -> str:
+    return (
+        "*Регистрация в кабинете Т-Банка*\n\n"
+        "Нажмите кнопку подтверждения ниже *только если вы действительно завершили регистрацию "
+        "самозанятого* в личном кабинете Т-Банка для выплат.\n\n"
+        "_Недостоверное подтверждение недопустимо: сведения проверяет менеджер._\n\n"
+        "_Это ваше заявление в боте, а не автоматическая проверка банком._"
+    )
+
+
+def tbank_register_must_complete_md() -> str:
+    return (
+        "*Анкета на паузе: нужен кабинет Т-Банка*\n\n"
+        "Следующие шаги анкеты откроются после регистрации самозанятого в ЛК Т-Банка.\n\n"
+        "1. *«Открыть кабинет Т-Банка»* — доделайте регистрацию.\n"
+        "2. *«Завершил(а) в ЛК — к подтверждению»* — вернётесь к подтверждению."
+    )
+
+
+def tbank_cabinet_gate_keyboard() -> list[dict] | None:
+    u = (TBANK_LK_URL or "").strip()
+    if not u:
+        return None
+    return inline_keyboard(
+        [
+            [link_btn("🏦 Открыть кабинет Т-Банка", u)],
+            [cb_btn("➡️ Далее", "join_tbank_proceed")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def tbank_register_confirm_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("Подтверждаю: завершил(а) регистрацию НПД в ЛК Т-Банка", "join_tbank_reg_yes")],
+            [cb_btn("❌ Нет, ещё нет", "join_tbank_reg_no")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def tbank_register_blocked_keyboard() -> list[dict] | None:
+    u = (TBANK_LK_URL or "").strip()
+    if not u:
+        return tbank_register_confirm_keyboard()
+    return inline_keyboard(
+        [
+            [link_btn("🏦 Открыть кабинет Т-Банка", u)],
+            [cb_btn("🔁 Завершил(а) в ЛК — к подтверждению", "join_tbank_reg_retry")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
 def text_tax_self_help() -> str:
     return (
         "*Что нужно сделать:*\n\n"
@@ -535,13 +648,28 @@ def join_docs_keyboard() -> list[dict]:
     )
 
 
-def join_portfolio_keyboard() -> list[dict]:
+def join_portfolio_menu_keyboard() -> list[dict]:
     return inline_keyboard(
         [
-            [cb_btn("✅ Продолжить", "portfolio_done")],
-            [cb_btn("🏠 В главное меню", "main_menu")],
+            [cb_btn("Нет портфолио", "join_portfolio_none")],
+            [cb_btn("Отправлю PDF", "join_portfolio_pdf")],
+            [cb_btn("Пришлю ссылку (https)", "join_portfolio_url")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
         ]
     )
+
+
+def work_metro_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("⏭ Пропустить", "join_metro_skip")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
+
+
+def join_portfolio_keyboard() -> list[dict]:
+    return join_portfolio_menu_keyboard()
 
 
 def join_priority_keyboard() -> list[dict]:
@@ -586,6 +714,28 @@ def order_mode_keyboard() -> list[dict]:
         [
             [cb_btn("⚡ Срочный расчёт в боте", "order_mode_quick")],
             [cb_btn("📄 Запросить коммерческое предложение", "order_mode_cp")],
+            [cb_btn("📣 Разместить объявление", "order_mode_listing")],
+            [cb_btn("В главное меню", "main_menu")],
+        ]
+    )
+
+
+def listing_confirm_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("✅ Отправить заявку", "confirm_listing_order")],
+            [cb_btn("✏️ Изменить", "edit_listing_order")],
+            [cb_btn("В главное меню", "main_menu")],
+        ]
+    )
+
+
+def order_contact_channel_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("📞 Звонок", "contact_ch_call")],
+            [cb_btn("💬 Сообщение в MAX", "contact_ch_max")],
+            [cb_btn("📧 Email", "contact_ch_mail")],
             [cb_btn("В главное меню", "main_menu")],
         ]
     )
@@ -694,13 +844,33 @@ def consent_gate_keyboard(flow: str) -> list[dict]:
     )
 
 
-def vacancies_keyboard() -> list[dict]:
+def vacancies_list_keyboard() -> list[dict]:
+    """Список вакансий — паритет с Telegram keyboards.vacancies_list_keyboard."""
+    rows: list[list[dict]] = []
+    catalog = list(_VACANCY_CATALOG)
+    for i in range(0, len(catalog), 2):
+        chunk = catalog[i : i + 2]
+        row = [cb_btn(chunk[0][1], f"vac_view_{chunk[0][0]}")]
+        if len(chunk) > 1:
+            row.append(cb_btn(chunk[1][1], f"vac_view_{chunk[1][0]}"))
+        rows.append(row)
+    rows.append([cb_btn("📋 К разделу «О нас»", "about")])
+    rows.append([cb_btn("🏠 Главное меню визитки", "main_menu")])
+    return inline_keyboard(rows)
+
+
+def vacancy_detail_keyboard(slug: str) -> list[dict]:
     return inline_keyboard(
         [
-            [cb_btn("📝 Заполнить анкету", "fill_anketa")],
-            [cb_btn("🏠 В главное меню", "main_menu")],
+            [cb_btn("📝 Заполнить анкету", f"vac_apply_{slug}")],
+            [cb_btn("⬅️ К списку вакансий", "vacancies")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
         ]
     )
+
+
+def vacancies_keyboard() -> list[dict]:
+    return vacancies_list_keyboard()
 
 
 def text_welcome() -> str:
@@ -958,28 +1128,53 @@ def message_main_menu() -> dict[str, Any]:
 
 def message_role_home(max_uid: int | None) -> dict[str, Any]:
     """Главный экран при старте и «домой»: кабинет заказчика/исполнителя по БД или публичная визитка."""
-    from funnel_db import is_max_visit_client_verified, is_max_visit_worker_verified
+    from funnel_db import (
+        WORKER_STATUS_CLARIFICATION,
+        get_max_worker_display_name,
+        has_max_active_executor_profile,
+        is_max_visit_client_registered,
+        is_max_visit_client_verified,
+        is_max_visit_worker_verified,
+    )
+    from join_clarification_db import (
+        CLARIFICATION_FLAG_LABELS_RU,
+        get_max_join_clarification_context,
+        get_max_worker_status,
+    )
 
     if not max_uid:
         return message_main_menu()
     uid = int(max_uid)
-    if is_max_visit_client_verified(uid):
-        cap = (
-            f"*Главное меню заказчика*\n\n"
-            f"Вы вошли как зарегистрированный заказчик *{COMPANY_NAME}*.\n\n"
-            "Разделы кабинета и заказ расчёта — в меню ниже."
-        )
-        if is_max_visit_worker_verified(uid):
-            cap += (
-                "\n\n_У вас также есть профиль исполнителя — показано меню заказчика; "
-                "публичная визитка — кнопка «Меню визитки»._"
+    wk = is_max_visit_worker_verified(uid)
+    if get_max_worker_status(uid) == WORKER_STATUS_CLARIFICATION:
+        ctx = get_max_join_clarification_context(uid)
+        lines = [
+            "*Нужны уточнения по анкете*\n",
+            "Менеджер запросил дозаполнение. Нажмите кнопку ниже и пришлите данные по очереди.\n",
+        ]
+        flags = ctx.get("flags") or []
+        if flags:
+            lines.append("*Что нужно:*")
+            for c in flags:
+                cc = str(c).strip().lower()
+                lines.append(f"• {CLARIFICATION_FLAG_LABELS_RU.get(cc, cc)}")
+        note = str(ctx.get("note") or "").strip()
+        if note:
+            lines.append(f"\n*Комментарий менеджера:*\n{note}")
+        if not flags:
+            lines.append(
+                "\n_Если правки только в комментарии — нажмите «Отправить на проверку снова»._"
             )
         return {
-            "text": cap,
+            "text": "\n".join(lines),
             "format": "markdown",
-            "attachments": client_registered_main_menu_keyboard(),
+            "attachments": worker_clarification_keyboard(),
         }
-    if is_max_visit_worker_verified(uid):
+    exec_pending = bool(has_max_active_executor_profile(uid) and not wk)
+    cl_verified = is_max_visit_client_verified(uid)
+    cl_registered = is_max_visit_client_registered(uid)
+
+    if wk:
         return {
             "text": (
                 "*Главное меню исполнителя*\n\n"
@@ -989,6 +1184,37 @@ def message_role_home(max_uid: int | None) -> dict[str, Any]:
             "format": "markdown",
             "attachments": worker_registered_main_menu_keyboard(),
         }
+    if exec_pending:
+        fio = get_max_worker_display_name(uid)
+        name_block = f"👤 *{fio}*\n\n" if fio else ""
+        return {
+            "text": (
+                "*Анкета исполнителя на проверке*\n\n"
+                f"{name_block}"
+                "Вы уже отправили анкету. После подтверждения администратором откроются "
+                "назначения на смены, выплаты и остальные разделы исполнителя.\n\n"
+                "_Публичное меню визитки — только для гостей без профиля в системе._"
+            ),
+            "format": "markdown",
+            "attachments": worker_pending_verification_keyboard(),
+        }
+    if cl_registered:
+        if cl_verified:
+            cap = (
+                f"*Главное меню заказчика*\n\n"
+                f"Вы вошли как зарегистрированный заказчик *{COMPANY_NAME}*.\n\n"
+                "Профиль подтверждён. Заявки, расчёты и связь с менеджером — в меню ниже."
+            )
+            kb = client_registered_main_menu_keyboard(quotes_enabled=True)
+        else:
+            cap = (
+                f"*Главное меню заказчика*\n\n"
+                f"Регистрация принята. Данные проверяет администратор; после подтверждения "
+                "откроются заявки на расчёт, запрос КП и раздел «История заказов».\n\n"
+                "Пока можете написать менеджеру — кнопка ниже."
+            )
+            kb = client_pre_erp_pending_keyboard()
+        return {"text": cap, "format": "markdown", "attachments": kb}
     return message_main_menu()
 
 
@@ -1011,7 +1237,17 @@ def message_for_static_payload(payload: str) -> dict[str, Any] | None:
     if p == "requirements":
         return {"text": text_requirements(), "format": "markdown", "attachments": back_to_main_keyboard()}
     if p == "vacancies":
-        return {"text": text_vacancies(), "format": "markdown", "attachments": vacancies_keyboard()}
+        return {"text": text_vacancies(), "format": "markdown", "attachments": vacancies_list_keyboard()}
+    if p.startswith("vac_view_"):
+        slug = p.replace("vac_view_", "", 1)
+        for key, title, desc in _VACANCY_CATALOG:
+            if key == slug:
+                return {
+                    "text": f"*{title}*\n\n{desc}",
+                    "format": "markdown",
+                    "attachments": vacancy_detail_keyboard(slug),
+                }
+        return None
     if p == "faq":
         return {"text": text_faq(), "format": "markdown", "attachments": back_to_main_keyboard()}
     if p == "reviews":

@@ -158,6 +158,12 @@ async def process_update(body: dict[str, Any]) -> None:
             await _sync_funnel(max_uid)
             return
 
+        if payload == "client_quote_listing":
+            msg = visit_flows.start_listing_order(max_uid)
+            await _answer_message(callback_id, max_uid, msg)
+            await _sync_funnel(max_uid)
+            return
+
         if payload == "ask_manager":
             msg = visit_flows.start_question(max_uid)
             await _answer_message(callback_id, max_uid, msg)

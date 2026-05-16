@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,8 +20,21 @@ _MAX_TG_SYNTHETIC_LEAST = 10**15
 PRO_PG_MAX_VISIT_CLIENT = "agency_max_visit_client"
 
 
-def _synthetic_tg_for_max(max_user_id: int) -> int:
+def worker_tg_id_for_max(max_user_id: int) -> int:
+    """PK users / workers / agency_visit_* — как в promostaff-bot messenger_user_policy."""
     return _MAX_TG_SYNTHETIC_LEAST + int(max_user_id)
+
+
+def _synthetic_tg_for_max(max_user_id: int) -> int:
+    return worker_tg_id_for_max(max_user_id)
+
+
+WORKER_STATUS_PENDING_REVIEW = "pending_review"
+WORKER_STATUS_CLARIFICATION = "clarification_needed"
+WORKER_STATUS_REJECTED = "rejected"
+WORKER_STATUS_APPROVED = "approved"
+_HRM_PIPELINE = "hrm"
+_HRM_JOIN_SOURCE = "agency_visit_join"
 
 
 def _client_tg_id_for_max_cp(max_user_id: int) -> int:
@@ -365,20 +379,28 @@ def get_max_visit_client(max_user_id: int) -> dict[str, Any] | None:
     return None
 
 
-def is_max_visit_client_verified(max_user_id: int) -> bool:
-    """Заказчик прошёл предапроверку (как visit_clients в Telegram-визитке)."""
+def is_max_visit_client_registered(max_user_id: int) -> bool:
+    """Заказчик зарегистрирован (как get_client в Telegram), без учёта verified_at."""
     uid = int(max_user_id)
+    tg = worker_tg_id_for_max(uid)
     if DATABASE_URL:
         try:
             with connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT 1 FROM agency_max_visit_clients WHERE max_user_id = %s",
-                        (uid,),
+                        """
+                        SELECT 1 FROM visit_clients WHERE user_id = %s
+                        UNION ALL
+                        SELECT 1 FROM clients WHERE user_id = %s
+                        UNION ALL
+                        SELECT 1 FROM agency_max_visit_clients WHERE max_user_id = %s
+                        LIMIT 1
+                        """,
+                        (tg, tg, uid),
                     )
                     return bool(cur.fetchone())
         except Exception:
-            logger.exception("is_max_visit_client_verified pg")
+            logger.exception("is_max_visit_client_registered pg")
     try:
         _ensure_local_client_db()
         conn = sqlite3.connect(_LOCAL_CLIENT_DB)
@@ -389,14 +411,109 @@ def is_max_visit_client_verified(max_user_id: int) -> bool:
         finally:
             conn.close()
     except Exception:
+        logger.exception("is_max_visit_client_registered local")
+    return False
+
+
+def is_max_visit_client_verified(max_user_id: int) -> bool:
+    """Заказчик подтверждён админом (visit_clients.verified_at), как в Telegram."""
+    uid = int(max_user_id)
+    tg = worker_tg_id_for_max(uid)
+    if DATABASE_URL:
+        try:
+            with connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT 1 FROM visit_clients
+                        WHERE user_id = %s AND verified_at IS NOT NULL
+                        LIMIT 1
+                        """,
+                        (tg,),
+                    )
+                    return bool(cur.fetchone())
+        except Exception:
+            logger.exception("is_max_visit_client_verified pg")
+    try:
+        _ensure_local_client_db()
+        conn = sqlite3.connect(_LOCAL_CLIENT_DB)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM max_visit_clients WHERE max_user_id = ? AND verified_at IS NOT NULL",
+                (uid,),
+            )
+            return bool(cur.fetchone())
+        finally:
+            conn.close()
+    except Exception:
         logger.exception("is_max_visit_client_verified local")
     return False
 
 
 def is_max_visit_worker_verified(max_user_id: int) -> bool:
-    """Исполнитель верифицирован в MAX (аналог visit_workers в Telegram). Пока нет учёта — False."""
-    _ = int(max_user_id)
+    """Исполнитель одобрен в панели (workers.status = approved), как is_visit_worker_verified."""
+    tg = worker_tg_id_for_max(int(max_user_id))
+    if DATABASE_URL:
+        try:
+            with connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT 1 FROM workers
+                        WHERE user_id = %s AND COALESCE(status, 'new') = %s
+                        LIMIT 1
+                        """,
+                        (tg, WORKER_STATUS_APPROVED),
+                    )
+                    return bool(cur.fetchone())
+        except Exception:
+            logger.exception("is_max_visit_worker_verified pg")
     return False
+
+
+def has_max_active_executor_profile(max_user_id: int) -> bool:
+    """Профиль исполнителя в работе (не rejected), как has_active_executor_profile."""
+    tg = worker_tg_id_for_max(int(max_user_id))
+    if not DATABASE_URL:
+        return False
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COALESCE(status, 'new') FROM workers WHERE user_id = %s LIMIT 1",
+                    (tg,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return False
+                st = str(row[0] or "new").strip().lower()
+                return st != WORKER_STATUS_REJECTED
+    except Exception:
+        logger.exception("has_max_active_executor_profile max_uid=%s", max_user_id)
+    return False
+
+
+def get_max_worker_display_name(max_user_id: int) -> str:
+    tg = worker_tg_id_for_max(int(max_user_id))
+    if not DATABASE_URL:
+        return ""
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT full_name FROM workers WHERE user_id = %s LIMIT 1",
+                    (tg,),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    return str(row[0]).strip()
+                cur.execute("SELECT full_name FROM users WHERE tg_id = %s LIMIT 1", (tg,))
+                row = cur.fetchone()
+                return str(row[0]).strip() if row and row[0] else ""
+    except Exception:
+        logger.exception("get_max_worker_display_name")
+    return ""
 
 
 def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[str, Any]) -> None:
@@ -424,10 +541,36 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                             position_in_org = EXCLUDED.position_in_org,
                             phone = EXCLUDED.phone,
                             inn = EXCLUDED.inn,
-                            contact_email = EXCLUDED.contact_email,
-                            verified_at = NOW()
+                            contact_email = EXCLUDED.contact_email
                         """,
                         (uid, un, cn, contact, pos, phone, inn, cemail),
+                    )
+                    tg_row = _client_tg_id_for_max_cp(uid)
+                    inn_digits = re.sub(r"\D", "", inn)
+                    inn_sql = inn_digits if len(inn_digits) in (10, 12) else ""
+                    cur.execute(
+                        """
+                        INSERT INTO visit_clients (
+                            user_id, company_name, contact_name, phone, contact_email, verified_at, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, NULL, NOW())
+                        ON CONFLICT (user_id) DO UPDATE SET
+                            company_name = EXCLUDED.company_name,
+                            contact_name = EXCLUDED.contact_name,
+                            phone = EXCLUDED.phone,
+                            contact_email = COALESCE(NULLIF(EXCLUDED.contact_email, ''), visit_clients.contact_email)
+                        """,
+                        (tg_row, cn, contact, phone, cemail),
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO clients (user_id, company_name, contact_name, phone, registered_at)
+                        VALUES (%s, %s, %s, %s, NOW())
+                        ON CONFLICT (user_id) DO UPDATE SET
+                            company_name = EXCLUDED.company_name,
+                            contact_name = EXCLUDED.contact_name,
+                            phone = EXCLUDED.phone
+                        """,
+                        (tg_row, cn, contact, phone),
                     )
             _pg_upsert_user_for_max_visit_client(
                 uid,
@@ -459,8 +602,7 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                     position_in_org = excluded.position_in_org,
                     phone = excluded.phone,
                     inn = excluded.inn,
-                    contact_email = excluded.contact_email,
-                    verified_at = datetime('now')
+                    contact_email = excluded.contact_email
                 """,
                 (uid, un, cn, contact, pos, phone, inn, cemail),
             )
@@ -482,7 +624,7 @@ def save_visit_order(max_user_id: int, username: str, payload_json: str) -> int 
                 VALUES ('max', %s, %s, %s::jsonb)
                 RETURNING id
                 """,
-                (max_user_id, username, payload_json),
+                (worker_tg_id_for_max(int(max_user_id)), username, payload_json),
             )
             row = cur.fetchone()
             return int(row[0]) if row else None
@@ -504,7 +646,7 @@ def save_visit_order_payload(max_user_id: int, username: str, data: dict[str, An
                 VALUES ('max', %s, %s, %s::jsonb)
                 RETURNING id
                 """,
-                (int(max_user_id), username, payload_s),
+                (worker_tg_id_for_max(int(max_user_id)), username, payload_s),
             )
             row = cur.fetchone()
             pg_id = int(row[0]) if row else None
@@ -537,18 +679,18 @@ def list_agency_visit_orders_for_user(max_user_id: int, limit: int = 20) -> list
     if not DATABASE_URL:
         return []
     lim = max(1, min(int(limit), 50))
-    uid = int(max_user_id)
+    tg = worker_tg_id_for_max(int(max_user_id))
     with connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id, payload, created_at
                 FROM agency_visit_orders
-                WHERE user_id = %s AND source = 'max'
+                WHERE source = 'max' AND user_id IN (%s, %s)
                 ORDER BY id DESC
                 LIMIT %s
                 """,
-                (uid, lim),
+                (tg, int(max_user_id), lim),
             )
             rows = cur.fetchall()
     out: list[dict[str, Any]] = []
@@ -573,9 +715,69 @@ def list_agency_visit_orders_for_user(max_user_id: int, limit: int = 20) -> list
     return out
 
 
+def _hrm_card_title_from_join_payload(data: dict[str, Any], join_id: int) -> str:
+    fn = (data.get("full_name") or "").strip()
+    pos = (data.get("position") or "").strip()
+    if fn and pos:
+        return (f"{fn} · {pos}")[:2000]
+    if fn:
+        return fn[:2000]
+    return f"Заявка в команду #{join_id}"
+
+
+def _sync_hrm_crm_card_for_join_request(
+    join_id: int, user_tg_id: int, *, stage: str, payload_dict: dict[str, Any]
+) -> None:
+    if not DATABASE_URL:
+        return
+    title = _hrm_card_title_from_join_payload(payload_dict, int(join_id))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO agency_crm_cards (
+                        pipeline, stage, source_kind, source_id, client_tg_id, title, created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (source_kind, source_id) DO UPDATE SET
+                        pipeline = EXCLUDED.pipeline,
+                        stage = EXCLUDED.stage,
+                        client_tg_id = COALESCE(EXCLUDED.client_tg_id, agency_crm_cards.client_tg_id),
+                        title = COALESCE(NULLIF(EXCLUDED.title, ''), agency_crm_cards.title),
+                        updated_at = NOW()
+                    """,
+                    (_HRM_PIPELINE, stage, _HRM_JOIN_SOURCE, int(join_id), int(user_tg_id), title),
+                )
+    except Exception:
+        logger.warning(
+            "sync_hrm_crm_card_for_join_request failed join_id=%s", join_id, exc_info=True
+        )
+
+
 def save_visit_join(max_user_id: int, username: str, payload_json: str) -> int | None:
+    """Заявка в команду + users/workers (pending_review), user_id = synthetic tg_id."""
     if not DATABASE_URL:
         return None
+    try:
+        data = json.loads(payload_json) if isinstance(payload_json, str) else dict(payload_json)
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    tg_id = worker_tg_id_for_max(int(max_user_id))
+    full_name = (data.get("full_name") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    position = (data.get("position") or "").strip()
+    try:
+        pay_tier = int(data.get("experience_base_stars", 3))
+    except (TypeError, ValueError):
+        pay_tier = 3
+    pay_tier = max(0, min(5, pay_tier))
+    base_rating = float(pay_tier) if pay_tier >= 1 else 3.0
+    city_sql = (data.get("city") or "").strip() or None
+    metro_sql = (data.get("metro_station") or "").strip() or None
+    selfie_ref = (str(data.get("selfie_url") or "")).strip() or None
+    payload_s = json.dumps(data, ensure_ascii=False, default=str)
     with connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -584,10 +786,69 @@ def save_visit_join(max_user_id: int, username: str, payload_json: str) -> int |
                 VALUES ('max', %s, %s, %s::jsonb)
                 RETURNING id
                 """,
-                (max_user_id, username, payload_json),
+                (tg_id, username, payload_s),
             )
             row = cur.fetchone()
-            return int(row[0]) if row else None
+            request_id = int(row[0]) if row else None
+            if not request_id:
+                return None
+            cur.execute(
+                """
+                INSERT INTO users (
+                    tg_id, max_user_id, role, full_name, phone, profession, rating,
+                    city, metro_station, selfie_photo_url, created_at, updated_at
+                ) VALUES (%s, %s, 'worker', %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (tg_id) DO UPDATE SET
+                    max_user_id = COALESCE(EXCLUDED.max_user_id, users.max_user_id),
+                    full_name = EXCLUDED.full_name,
+                    phone = EXCLUDED.phone,
+                    profession = EXCLUDED.profession,
+                    rating = EXCLUDED.rating,
+                    city = EXCLUDED.city,
+                    metro_station = EXCLUDED.metro_station,
+                    selfie_photo_url = COALESCE(
+                        NULLIF(BTRIM(EXCLUDED.selfie_photo_url), ''), users.selfie_photo_url
+                    ),
+                    updated_at = NOW()
+                """,
+                (
+                    tg_id,
+                    int(max_user_id),
+                    full_name,
+                    phone,
+                    position,
+                    base_rating,
+                    city_sql,
+                    metro_sql,
+                    selfie_ref,
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO workers (
+                    user_id, full_name, phone, profession, status, rating,
+                    compensation_pay_tier, registered_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id) DO UPDATE SET
+                    full_name = EXCLUDED.full_name,
+                    phone = EXCLUDED.phone,
+                    profession = EXCLUDED.profession,
+                    status = EXCLUDED.status,
+                    rating = EXCLUDED.rating,
+                    compensation_pay_tier = EXCLUDED.compensation_pay_tier
+                """,
+                (
+                    tg_id,
+                    full_name,
+                    phone,
+                    position,
+                    WORKER_STATUS_PENDING_REVIEW,
+                    base_rating,
+                    pay_tier,
+                ),
+            )
+    _sync_hrm_crm_card_for_join_request(request_id, tg_id, stage="new", payload_dict=data)
+    return request_id
 
 
 def save_visit_question(max_user_id: int, username: str, question: str) -> int | None:

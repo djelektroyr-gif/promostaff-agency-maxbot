@@ -69,6 +69,7 @@ PORTFOLIO_URL = _env("PORTFOLIO_URL") or "https://promostaff-agency.ru/#reviews"
 CONTACT_PHONE = _env("CONTACT_PHONE") or "+7 (929) 556-56-96"
 CONTACT_TELEGRAM = _env("CONTACT_TELEGRAM") or "@promostaffagency"
 CONTACT_EMAIL = _env("CONTACT_EMAIL") or "Elektro.07@mail.ru"
+LISTING_PUBLICATION_FEE_RUB = _env_int("LISTING_PUBLICATION_FEE_RUB", 500)
 
 # === Базовые ставки (как в Telegram-визитке) ===
 RATES = {

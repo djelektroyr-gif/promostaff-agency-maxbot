@@ -14,6 +14,21 @@ Examples:
 - `/admin/export?kind=orders`
 - `/admin/export?kind=join&date_from=2026-04-01&date_to=2026-04-15`
 
+## Production (Timeweb)
+
+| | |
+|---|---|
+| Приложение | `PROMOSTAFF AGENCY MAX BOT` |
+| Домен (канон, 2026-05) | `https://djelektroyr-gif-promostaff-agency-maxbot-d923.twc1.net` |
+| Статус | Webhook на **d923**, бот отвечает на Старт (подписка перепривязана с ошибочного `…-e4a0…` / старых доменов) |
+| Health | `GET …/health` |
+| Webhook endpoint | `POST …/webhook` |
+| Подписка MAX API | `POST https://platform-api.max.ru/subscriptions` → `url` = webhook выше (см. `promostaff-bot/docs/MAX_WEBHOOK_AND_SUBSCRIPTIONS.md`) |
+
+Переменные в панели (имена): `MAX_TOKEN`, `DATABASE_URL`, `TBANK_LK_URL`, `ADMIN_MAX_USER_IDS`, `WEBSITE_URL`, `PRIVACY_POLICY_URL`, `PYTHONUNBUFFERED` (+ `AGENCY_FEE_PERCENT` в панели, в коде maxbot не используется).
+
+Паритет с Telegram (визитка, до ERP): **`docs/MAX_VISIT_TELEGRAM_PARITY_INVENTORY.md`**.
+
 ## Environment
 
 Required:

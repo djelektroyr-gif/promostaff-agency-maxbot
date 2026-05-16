@@ -22,6 +22,8 @@ uvicorn app:app --reload --host 0.0.0.0 --port 8000
 
 ## Timeweb App Platform
 
+**Прод (2026-05):** приложение `PROMOSTAFF AGENCY MAX BOT`, домен `https://djelektroyr-gif-promostaff-agency-maxbot-d923.twc1.net`, health `/health`, webhook `/webhook` (подписка API на тот же домен). Снимок env: `promostaff-bot/docs/TIMEWEB_APP_PLATFORM_SNAPSHOT.md` §3. **Паритет визитки с Telegram:** `docs/MAX_VISIT_TELEGRAM_PARITY_INVENTORY.md`.
+
 1. Репозиторий: этот GitHub, ветка `main`, корень репозитория.  
 2. **Запуск (важно):** в логах ошибки `Invalid value for '--port': '${PORT:-8000}'` и `app:app: Syntax error` значат, что в **настройках приложения** всё ещё указана **старая** команда с `${PORT:-8000}` или битый `sh -c "..."`.  
    - **Вариант A (Python / Backend):** в поле «Команда запуска» укажите **только** `sh start.sh` (без кавычек вокруг всей строки). Поле «Сборка» — как раньше: `pip install -r requirements.txt` (или ваш вариант).  

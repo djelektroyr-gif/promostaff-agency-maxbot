@@ -13,11 +13,13 @@ import random
 import re
 import time
 import json
+from datetime import date
 from typing import Any
 
 from config import (
     CLIENT_POSITIONS,
     COMPANY_NAME,
+    LISTING_PUBLICATION_FEE_RUB,
     SUPERVISOR_TM_LEAD,
     PRIVACY_POLICY_URL,
     TERMS_OF_SERVICE_URL,
@@ -34,7 +36,10 @@ from visit_join_anketa_catalog import (
 )
 from funnel_store import funnel_touch_complete
 from funnel_db import (
+    has_max_active_executor_profile,
+    is_max_visit_client_registered,
     is_max_visit_client_verified,
+    is_max_visit_worker_verified,
     save_max_visit_client_verified,
     get_max_visit_client,
     save_visit_join,
@@ -199,6 +204,24 @@ def _advance_order_contact_step(
     if notification:
         out["notification"] = notification
     if _order_contact_ready(data):
+        if (data.get("order_kind") or "").strip() == "vacancy_listing":
+            ch = (data.get("contact_channel") or "").strip()
+            if ch not in ("call", "max_chat", "email"):
+                s["step"] = "contact_channel_pick"
+                out["text"] = "Как удобнее связаться по объявлению?"
+                out["attachments"] = visit_card.order_contact_channel_keyboard()
+                return out
+            if ch == "call" and not (data.get("call_time") or "").strip():
+                s["step"] = "call_time"
+                out["text"] = (
+                    "Когда удобно принять звонок менеджера?\n\n"
+                    "_Образец:_ `будни 10:00–18:00`"
+                )
+                return out
+            s["step"] = "listing_confirm"
+            out["text"] = _listing_preview_text(data)
+            out["attachments"] = visit_card.listing_confirm_keyboard()
+            return out
         s["step"] = "call_time"
         out["text"] = (
             "Когда удобно принять звонок менеджера?\n\n"
@@ -391,8 +414,90 @@ VAC_FROM_KEY = {
 }
 
 
+def _join_entry_blocked(max_uid: int) -> dict[str, Any] | None:
+    if is_max_visit_client_registered(max_uid):
+        return {
+            "notification": "Недоступно",
+            "text": (
+                "Вы зарегистрированы как заказчик. Анкета исполнителя для этого аккаунта недоступна.\n\n"
+                "_Смена роли — через администратора._"
+            ),
+            "format": "markdown",
+            "attachments": visit_card.main_menu_keyboard(),
+        }
+    if has_max_active_executor_profile(max_uid):
+        if is_max_visit_worker_verified(max_uid):
+            return {
+                "notification": "Уже в команде",
+                "text": "У вас уже есть профиль исполнителя. Откройте главное меню.",
+                "format": "markdown",
+                "attachments": visit_card.worker_registered_main_menu_keyboard(),
+            }
+        return {
+            "notification": "На проверке",
+            "text": (
+                "*Анкета уже отправлена.*\n\n"
+                "Дождитесь подтверждения администратором — затем откроется меню исполнителя."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.worker_pending_verification_keyboard(),
+        }
+    return None
+
+
+def start_listing_order(max_uid: int) -> dict[str, Any]:
+    """Размещение объявления в ленте (vacancy_listing)."""
+    if is_max_visit_client_registered(max_uid) and not is_max_visit_client_verified(max_uid):
+        return {
+            "notification": "Ожидает проверки",
+            "text": (
+                "*Регистрация заказчика на проверке*\n\n"
+                "После подтверждения администратором откроется размещение объявлений."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.client_pre_erp_pending_keyboard(),
+        }
+    if not is_max_visit_client_verified(max_uid):
+        return start_order(max_uid, announce_order_consent=False)
+    fee = int(LISTING_PUBLICATION_FEE_RUB)
+    fee_md = f"{fee:,}".replace(",", " ")
+    SESSIONS[max_uid] = {
+        "flow": "order",
+        "step": "listing_position",
+        "data": {
+            "order_kind": "vacancy_listing",
+            "order_consent_accepted": True,
+            "listing_publication_fee_rub": fee,
+        },
+    }
+    return {
+        "notification": "Объявление",
+        "text": (
+            "*Разместить объявление*\n\n"
+            "Заявка на публикацию в ленте для исполнителей агентства. "
+            f"Ориентир тарифа: *{fee_md}* ₽ (итог — в счёте от менеджера). "
+            "В эфир — после оплаты и подтверждения.\n\n"
+            "Шаг 1 из 4. Укажите *роль или задачу* в одной строке.\n\n"
+            "_Образец:_ `Промоутеры на дегустацию в ТЦ`"
+        ),
+        "format": "markdown",
+        "attachments": visit_card.order_flow_back_keyboard(),
+    }
+
+
 def start_order(max_uid: int, *, announce_order_consent: bool = True) -> dict[str, Any]:
     clear_session(max_uid)
+    if is_max_visit_client_registered(max_uid) and not is_max_visit_client_verified(max_uid):
+        return {
+            "notification": "Ожидает проверки",
+            "text": (
+                "*Регистрация заказчика на проверке*\n\n"
+                "После подтверждения администратором откроются расчёт, КП и история заказов.\n\n"
+                "Пока можете связаться с менеджером."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.client_pre_erp_pending_keyboard(),
+        }
     if not is_max_visit_client_verified(max_uid):
         SESSIONS[max_uid] = {"flow": "client_visit", "step": "consent", "data": {}}
         return {
@@ -410,7 +515,8 @@ def start_order(max_uid: int, *, announce_order_consent: bool = True) -> dict[st
         "text": (
             "*Заказ расчёта стоимости*\n\n"
             "*Срочный расчёт* — оценка по одной типичной смене прямо в боте.\n"
-            "*Коммерческое предложение* — менеджер подготовит КП по вашим вводным.\n\n"
+            "*Коммерческое предложение* — менеджер подготовит КП по вашим вводным.\n"
+            "*Разместить объявление* — публикация вакансии в ленте для исполнителей.\n\n"
             "Выберите вариант:"
         ),
         "format": "markdown",
@@ -423,6 +529,9 @@ def start_order(max_uid: int, *, announce_order_consent: bool = True) -> dict[st
 
 def start_fill_anketa(max_uid: int) -> dict[str, Any]:
     """Запуск полной анкеты исполнителя прямо в MAX-визитке."""
+    blocked = _join_entry_blocked(max_uid)
+    if blocked:
+        return blocked
     return start_join(max_uid)
 
 
@@ -451,6 +560,9 @@ def start_join(max_uid: int) -> dict[str, Any]:
 
 
 def join_from_vacancy(max_uid: int, payload: str) -> dict[str, Any] | None:
+    blocked = _join_entry_blocked(max_uid)
+    if blocked:
+        return blocked
     title = VAC_FROM_KEY.get(payload)
     if not title:
         return None
@@ -529,6 +641,93 @@ def _join_prompt_experience() -> dict[str, Any]:
     }
 
 
+def _join_parse_birth_from_data(data: dict[str, Any]) -> date | None:
+    br = data.get("birth_date")
+    if not br:
+        return None
+    try:
+        return date.fromisoformat(str(br)[:10])
+    except ValueError:
+        return visit_join_validators.parse_birth_date(str(br))
+
+
+def _join_prompt_snils() -> dict[str, Any]:
+    return {
+        "text": (
+            "🪪 *СНИЛС*\n\n"
+            "Укажите номер страхового свидетельства ОПС — *11 цифр*. "
+            "Можно с дефисами и пробелом, как на зелёной карточке или в Госуслугах.\n\n"
+            "_Пример: 112-233-445 95_"
+        ),
+        "format": "markdown",
+        "attachments": visit_card.back_to_main_keyboard(),
+    }
+
+
+def _join_begin_identity_chain(s: dict[str, Any]) -> dict[str, Any]:
+    s["step"] = "snils"
+    return _join_prompt_snils()
+
+
+def _join_begin_tbank_gate(s: dict[str, Any]) -> dict[str, Any]:
+    kb = visit_card.tbank_cabinet_gate_keyboard()
+    plain = visit_card.tbank_self_employed_invite_plain()
+    if not kb or not plain:
+        return _join_begin_identity_chain(s)
+    s["step"] = "tbank_cabinet"
+    return {
+        "text": plain,
+        "format": "markdown",
+        "attachments": kb,
+    }
+
+
+def _join_prompt_portfolio_menu() -> dict[str, Any]:
+    return {
+        "text": (
+            "📁 *ПОРТФОЛИО*\n\n"
+            "Если есть портфолио — отправьте *PDF-презентацию* или *ссылку* "
+            "(Behance, сайт, облако — только *https://*).\n\n"
+            "Шаг можно пропустить."
+        ),
+        "format": "markdown",
+        "attachments": visit_card.join_portfolio_menu_keyboard(),
+    }
+
+
+def _join_prompt_selfie() -> dict[str, Any]:
+    return {
+        "text": (
+            "*📸 СЕЛФИ*\n\n"
+            "Для верификации личности отправьте своё актуальное селфи (фото лица).\n\n"
+            "_Нажмите на скрепку 📎 → Камера, чтобы сделать фото._\n\n"
+            "💡 _Фото должно быть чётким, лицо полностью видно, без солнцезащитных очков и масок._"
+        ),
+        "format": "markdown",
+        "attachments": visit_card.back_to_main_keyboard(),
+    }
+
+
+def _join_go_to_review(s: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    s["step"] = "review_submit"
+    return {
+        "text": _build_join_review_text(data),
+        "format": "markdown",
+        "attachments": visit_card.join_review_keyboard(),
+    }
+
+
+def _join_portfolio_review_line(data: dict[str, Any]) -> str:
+    mode = str(data.get("portfolio_mode") or "none").strip().lower()
+    if mode == "pdf":
+        ref = (data.get("portfolio_pdf_file_id") or "").strip()
+        return "PDF" if ref else "— (PDF не прикреплён)"
+    if mode == "url":
+        u = (data.get("portfolio_url") or "").strip()
+        return u or "—"
+    return "нет"
+
+
 def _build_join_tags(data: dict[str, Any]) -> str:
     parts = [
         (data.get("position") or "").strip(),
@@ -561,8 +760,20 @@ def _build_join_review_text(data: dict[str, Any]) -> str:
         f"*Форма:* {data.get('uniform_choice_label') or m}\n"
         f"*Медкнижка:* {data.get('medbook_label') or m}\n"
         f"*Командировки:* {data.get('trips_label') or m}\n"
+        f"*СНИЛС:* {data.get('snils') or m}\n"
+        f"*E-mail:* {data.get('contact_email') or m}\n"
+        f"*Банк:* {data.get('gph_bank_name') or m}\n"
+        f"*БИК:* {data.get('gph_bik') or m}\n"
+        f"*Р/с:* {data.get('gph_settlement_account') or m}\n"
+        f"*К/с:* {data.get('gph_corr_account') or m}\n"
         f"*Навыки:* {data.get('skills') or m}\n"
-        f"*Паспорт:* {data.get('passport_sn') or m}\n\n"
+        f"*Портфолио:* {_join_portfolio_review_line(data)}\n"
+        f"*Паспорт:* {data.get('passport_sn') or m}\n"
+        f"*Кем выдан:* {data.get('passport_issued_by') or m}\n"
+        f"*Дата выдачи:* {data.get('passport_issued_on') or m}\n"
+        f"*Адрес регистрации:* {data.get('registration_address') or m}\n"
+        f"*Город работы:* {data.get('city') or m}\n"
+        f"*Метро:* {data.get('metro_station') or m}\n\n"
         "Нажмите кнопку ниже."
     )
 
@@ -579,6 +790,8 @@ def _align_join_payload_for_pg(data: dict[str, Any]) -> dict[str, Any]:
         out["passport_main_file_id"] = out["passport_main_ref"]
     if out.get("passport_reg_ref") and not out.get("passport_reg_file_id"):
         out["passport_reg_file_id"] = out["passport_reg_ref"]
+    if out.get("portfolio_pdf_ref") and not out.get("portfolio_pdf_file_id"):
+        out["portfolio_pdf_file_id"] = out["portfolio_pdf_ref"]
     return out
 
 
@@ -665,8 +878,18 @@ def _join_tax_callbacks(s: dict[str, Any], payload: str) -> dict[str, Any] | Non
         }
 
     if payload == "tax_fl_go" and step == "tax_fl_menu":
-        s["step"] = "experience_pick"
-        return {"notification": "Продолжаем", **_join_prompt_experience()}
+        s["step"] = "tax_fl_inn"
+        return {
+            "notification": "Физлицо",
+            "text": (
+                "👤 *ИНН физического лица*\n\n"
+                "Укажите ваш *ИНН* — *12 цифр* (как в документах ФНС или в личном кабинете налогоплательщика).\n\n"
+                "_Нужен для договоров и учёта НДФЛ 13%._\n\n"
+                "_После ИНН перейдём к СНИЛС и реквизитам для выплат._"
+            ),
+            "format": "markdown",
+            "attachments": visit_card.back_to_main_keyboard(),
+        }
 
     if payload == "tax_back_status" and step == "tax_fl_menu":
         s["step"] = "tax_menu"
@@ -717,8 +940,7 @@ def _join_tax_callbacks(s: dict[str, Any], payload: str) -> dict[str, Any] | Non
         if data.get("tax_status") == "se_help":
             data["tax_status"] = "se"
             data["tax_status_label"] = "Самозанятый"
-        s["step"] = "experience_pick"
-        return {"notification": "Принято ✅", **_join_prompt_experience()}
+        return {"notification": "Принято ✅", **_join_begin_tbank_gate(s)}
 
     if payload == "tax_ip_send" and step == "tax_ip_cert":
         if not data.get("tax_ip_doc_ref"):
@@ -728,8 +950,7 @@ def _join_tax_callbacks(s: dict[str, Any], payload: str) -> dict[str, Any] | Non
                 "format": "markdown",
                 "attachments": visit_card.tax_ip_actions_keyboard(),
             }
-        s["step"] = "experience_pick"
-        return {"notification": "Принято ✅", **_join_prompt_experience()}
+        return {"notification": "Принято ✅", **_join_begin_identity_chain(s)}
 
     return None
 
@@ -772,8 +993,20 @@ def _format_join_plain(data: dict[str, Any], rid: int, who: str) -> str:
         f"- Форма: {data.get('uniform_choice_label') or m}",
         f"- Медкнижка: {data.get('medbook_label') or m}",
         f"- Командировки: {data.get('trips_label') or m}",
+        f"- СНИЛС: {data.get('snils') or m}",
+        f"- E-mail: {data.get('contact_email') or m}",
+        f"- Банк: {data.get('gph_bank_name') or m}",
+        f"- БИК: {data.get('gph_bik') or m}",
+        f"- Р/с: {data.get('gph_settlement_account') or m}",
+        f"- К/с: {data.get('gph_corr_account') or m}",
         f"- Навыки: {(data.get('skills') or '').strip() or m}",
+        f"- Портфолио: {_join_portfolio_review_line(data)}",
         f"- Паспорт: {passport_sn}",
+        f"- Кем выдан: {data.get('passport_issued_by') or m}",
+        f"- Дата выдачи: {data.get('passport_issued_on') or m}",
+        f"- Адрес рег.: {data.get('registration_address') or m}",
+        f"- Город: {data.get('city') or m}",
+        f"- Метро: {data.get('metro_station') or m}",
         f"- Селфи (ссылка): {selfie}",
         f"- Паспорт фото (гл.): {pm}",
         f"- Паспорт фото (прописка): {pr}",
@@ -834,6 +1067,52 @@ def _cp_channel_label(ch: str) -> str:
         "max_chat": "Сообщение в мессенджере (MAX)",
         "email": "Email",
     }.get(ch or "", ch or "—")
+
+
+def _listing_preview_text(data: dict[str, Any]) -> str:
+    try:
+        fee = int(data.get("listing_publication_fee_rub") or LISTING_PUBLICATION_FEE_RUB)
+    except (TypeError, ValueError):
+        fee = int(LISTING_PUBLICATION_FEE_RUB)
+    co = (data.get("company_name") or "").strip() or "—"
+    inn = (data.get("company_inn") or "").strip() or "—"
+    ch = _cp_channel_label(str(data.get("contact_channel") or ""))
+    call_extra = ""
+    if data.get("contact_channel") == "call":
+        call_extra = f"\n• Удобное время звонка: {data.get('call_time') or '—'}"
+    return (
+        "*Проверьте заявку на размещение объявления*\n\n"
+        f"_Ориентир тарифа публикации: {fee} ₽. Итог — в счёте от менеджера. "
+        "Публикация — после оплаты и подтверждения._\n\n"
+        "*Объявление*\n"
+        f"• Роль / задача: {data.get('listing_role') or '—'}\n"
+        f"• Город: {data.get('city') or '—'}\n"
+        f"• Описание: {data.get('listing_description') or '—'}\n"
+        f"• Срок / когда нужны люди: {data.get('event_date') or '—'}\n\n"
+        "*Клиент*\n"
+        f"• ФИО: {data.get('contact_name') or '—'}\n"
+        f"• Компания: {co}\n"
+        f"• ИНН: {inn}\n"
+        f"• Телефон: {data.get('contact_phone') or '—'}\n"
+        f"• Email: {data.get('contact_email') or '—'}\n\n"
+        "*Связь*\n"
+        f"• Предпочтительно: {ch}{call_extra}\n\n"
+        "После отправки менеджер свяжется и подтвердит следующие шаги."
+    )
+
+
+def _format_listing_plain(data: dict[str, Any], oid: int, who: str) -> str:
+    role = (data.get("listing_role") or "").strip()
+    return (
+        f"Новая заявка на объявление #{oid}\n"
+        f"Клиент: {who}\n"
+        f"Роль: {role}\n"
+        f"Город: {data.get('city')}\n"
+        f"Описание: {(data.get('listing_description') or '')[:500]}\n"
+        f"Срок: {data.get('event_date')}\n"
+        f"Телефон: {data.get('contact_phone')}\n"
+        f"Email: {data.get('contact_email')}\n"
+    )
 
 
 def _cp_preview_text(data: dict[str, Any]) -> str:
@@ -934,6 +1213,13 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
     )
 
     if payload == "client_reg_projects":
+        if is_max_visit_client_registered(max_uid) and not is_max_visit_client_verified(max_uid):
+            return {
+                "notification": "Ожидает проверки",
+                "text": "Раздел «Мои проекты» откроется после подтверждения профиля администратором.",
+                "format": "markdown",
+                "attachments": visit_card.client_pre_erp_pending_keyboard(),
+            }
         if not is_max_visit_client_verified(max_uid):
             return {
                 "notification": "Нужна регистрация",
@@ -953,6 +1239,16 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
         }
 
     if payload == "client_reg_orders":
+        if is_max_visit_client_registered(max_uid) and not is_max_visit_client_verified(max_uid):
+            return {
+                "notification": "Ожидает проверки",
+                "text": (
+                    "Раздел «История заказов» и статусы расчётов доступны "
+                    "после проверки профиля администратором."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.client_pre_erp_pending_keyboard(),
+            }
         if not is_max_visit_client_verified(max_uid):
             return {
                 "notification": "Нужна регистрация",
@@ -1063,6 +1359,18 @@ async def process_callback(
     )
     if payload in _reg_payloads:
         return registered_menu_static_reply(max_uid, payload)
+    if payload == "clrf:ack":
+        import visit_clarification_flows as vcf
+
+        return vcf.process_clarification_ack(max_uid)
+    if payload == "clrf:start":
+        import visit_clarification_flows as vcf
+
+        s_cl = {"flow": "clarification", "step": "idle", "data": {}}
+        SESSIONS[max_uid] = s_cl
+        return vcf.start_clarification_input(max_uid, s_cl)
+    if payload == "client_quote_listing":
+        return start_listing_order(max_uid)
     if not s:
         return None
     flow = s.get("flow")
@@ -1071,6 +1379,46 @@ async def process_callback(
     join_tax = _join_tax_callbacks(s, payload)
     if join_tax is not None:
         return join_tax
+
+    if flow == "join" and step == "tbank_cabinet" and payload == "join_tbank_proceed":
+        s["step"] = "tbank_register_confirm"
+        return {
+            "notification": "Подтверждение",
+            "text": visit_card.tbank_register_confirm_prompt_md(),
+            "format": "markdown",
+            "attachments": visit_card.tbank_register_confirm_keyboard(),
+        }
+
+    if flow == "join" and step == "tbank_register_confirm":
+        if payload == "join_tbank_reg_yes":
+            return {
+                "notification": "Подтверждение записано",
+                **_join_begin_identity_chain(s),
+            }
+        if payload == "join_tbank_reg_no":
+            kb = visit_card.tbank_register_blocked_keyboard() or visit_card.tbank_register_confirm_keyboard()
+            return {
+                "notification": "Сначала ЛК Т-Банка",
+                "text": visit_card.tbank_register_must_complete_md(),
+                "format": "markdown",
+                "attachments": kb,
+            }
+        if payload == "join_tbank_reg_retry":
+            s["step"] = "tbank_register_confirm"
+            return {
+                "notification": " ",
+                "text": visit_card.tbank_register_confirm_prompt_md(),
+                "format": "markdown",
+                "attachments": visit_card.tbank_register_confirm_keyboard(),
+            }
+
+    if flow == "join" and step in ("tbank_cabinet", "tbank_register_confirm"):
+        return {
+            "notification": "Используйте кнопки",
+            "text": "Используйте кнопки под сообщением бота.",
+            "format": "markdown",
+            "attachments": visit_card.tbank_register_confirm_keyboard(),
+        }
 
     if flow == "client_visit" and step == "consent" and payload == "consent_client_visit_accept":
         s["step"] = "company_name"
@@ -1092,14 +1440,15 @@ async def process_callback(
             logger.exception("save_max_visit_client_verified")
         clear_session(max_uid)
         return {
-            "notification": "Отлично!",
+            "notification": "Принято!",
             "text": (
-                "✅ *Регистрация завершена.*\n\n"
-                "*Меню заказчика:* проекты, история, новый расчёт — ниже. "
-                "Чтобы заказать расчёт или запросить КП, нажмите «Заказать расчёт»."
+                "✅ *Регистрация принята.*\n\n"
+                "Данные проверяет администратор. После подтверждения откроются расчёт, "
+                "запрос КП и раздел «История заказов».\n\n"
+                "Пока можете написать менеджеру."
             ),
             "format": "markdown",
-            "attachments": visit_card.client_registered_main_menu_keyboard(),
+            "attachments": visit_card.client_pre_erp_pending_keyboard(),
         }
 
     if flow == "client_visit" and step == "confirm" and payload == "confirm_client_visit_edit":
@@ -1286,6 +1635,111 @@ async def process_callback(
             "attachments": visit_card.cp_step_keyboard(),
         }
 
+    if flow == "order" and step == "order_mode" and payload == "order_mode_listing":
+        return start_listing_order(max_uid)
+
+    if flow == "order" and step == "contact_channel_pick":
+        if payload == "contact_ch_call":
+            data["contact_channel"] = "call"
+            s["step"] = "call_time"
+            return {
+                "notification": "Звонок",
+                "text": (
+                    "Когда удобно принять звонок менеджера?\n\n"
+                    "_Образец:_ `будни 10:00–18:00`"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.order_flow_back_keyboard(),
+            }
+        if payload == "contact_ch_max":
+            data["contact_channel"] = "max_chat"
+            s["step"] = "listing_confirm"
+            return {
+                "notification": "MAX",
+                "text": _listing_preview_text(data),
+                "format": "markdown",
+                "attachments": visit_card.listing_confirm_keyboard(),
+            }
+        if payload == "contact_ch_mail":
+            data["contact_channel"] = "email"
+            s["step"] = "listing_confirm"
+            return {
+                "notification": "Email",
+                "text": _listing_preview_text(data),
+                "format": "markdown",
+                "attachments": visit_card.listing_confirm_keyboard(),
+            }
+
+    if flow == "order" and step == "listing_confirm" and payload == "confirm_listing_order":
+        if not data.get("order_consent_accepted"):
+            return {
+                "notification": "Сначала согласие на ПДн",
+                "text": _consent_gate_text("размещение объявления"),
+                "format": "markdown",
+                "attachments": visit_card.consent_gate_keyboard("order"),
+            }
+        role = (data.get("listing_role") or "").strip()
+        if len(role) < 2 or len((data.get("listing_description") or "").strip()) < 10:
+            return {
+                "notification": "Проверьте поля",
+                "text": "Заполните роль, описание и остальные поля объявления.",
+                "format": "markdown",
+                "attachments": visit_card.listing_confirm_keyboard(),
+            }
+        if not _order_contact_ready(data):
+            return _advance_order_contact_step(max_uid, s, notification="Нужны контакты")
+        oid = _new_id()
+        to_save = dict(data)
+        to_save["order_kind"] = "vacancy_listing"
+        to_save["listing_publication_fee_rub"] = int(
+            to_save.get("listing_publication_fee_rub") or LISTING_PUBLICATION_FEE_RUB
+        )
+        if role:
+            to_save["event_type"] = f"Объявление: {role[:120]}"
+        username = (sender or {}).get("username") if isinstance(sender, dict) else ""
+        public_ref = "—"
+        try:
+            _, public_ref = save_visit_order_payload(max_uid, str(username or ""), to_save)
+        except Exception:
+            logger.exception("save_visit_order_payload listing")
+        _schedule_notify(f"Новая заявка на объявление #{oid}", _format_listing_plain(to_save, oid, who))
+        ref_show = (
+            public_ref if public_ref not in (None, "OFFLINE", "—") else f"внутр. #{oid}"
+        )
+        funnel_touch_complete(max_uid)
+        clear_session(max_uid)
+        return {
+            "notification": "✅ Заявка принята",
+            "text": (
+                f"*Заявка на объявление принята.* Номер: `{ref_show}`\n\n"
+                "Менеджер выставит счёт; публикация в ленте — после оплаты.\n\n"
+                "*Меню заказчика* — ниже."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.client_registered_main_menu_keyboard(),
+        }
+
+    if flow == "order" and step == "listing_confirm" and payload == "edit_listing_order":
+        fee = int(data.get("listing_publication_fee_rub") or LISTING_PUBLICATION_FEE_RUB)
+        s["step"] = "listing_position"
+        data.pop("listing_role", None)
+        data.pop("listing_description", None)
+        data.pop("city", None)
+        data.pop("event_date", None)
+        data["listing_publication_fee_rub"] = fee
+        fee_md = f"{fee:,}".replace(",", " ")
+        return {
+            "notification": "Заполняем заново",
+            "text": (
+                f"*Разместить объявление*\n\n"
+                f"Ориентир тарифа: *{fee_md}* ₽.\n\n"
+                "Шаг 1 из 4. Укажите *роль или задачу*.\n\n"
+                "_Образец:_ `Промоутеры на дегустацию в ТЦ`"
+            ),
+            "format": "markdown",
+            "attachments": visit_card.order_flow_back_keyboard(),
+        }
+
     if flow == "question" and step == "consent" and payload == "consent_question_accept":
         data["question_consent_accepted"] = True
         s["step"] = "text"
@@ -1300,18 +1754,45 @@ async def process_callback(
         }
 
     if flow == "join" and step == "terms_accept" and payload == "join_terms_agree":
+        s["step"] = "portfolio_menu"
+        return {"notification": "Принято ✅", **_join_prompt_portfolio_menu()}
+
+    if flow == "join" and step == "portfolio_menu" and payload == "join_portfolio_none":
+        data["portfolio_mode"] = "none"
+        data["portfolio_url"] = ""
+        data["portfolio_pdf_file_id"] = ""
         s["step"] = "selfie"
+        return {"notification": " ", **_join_prompt_selfie()}
+
+    if flow == "join" and step == "portfolio_menu" and payload == "join_portfolio_pdf":
+        data["portfolio_mode"] = "pdf"
+        data["portfolio_url"] = ""
+        data["portfolio_pdf_file_id"] = ""
+        s["step"] = "portfolio_pdf"
         return {
-            "notification": "Принято ✅",
+            "notification": "PDF",
             "text": (
-                "*📸 СЕЛФИ*\n\n"
-                "Для верификации личности отправьте своё актуальное селфи (фото лица).\n\n"
-                "_Нажмите на скрепку 📎 → Камера, чтобы сделать фото._\n\n"
-                "💡 _Фото должно быть чётким, лицо полностью видно, без солнцезащитных очков и масок._"
+                "📄 *ПОРТФОЛИО (PDF)*\n\n"
+                "Пришлите файл **одним документом** (скрепка → Файл), формат **PDF**."
             ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
         }
+
+    if flow == "join" and step == "portfolio_menu" and payload == "join_portfolio_url":
+        data["portfolio_mode"] = "url"
+        data["portfolio_pdf_file_id"] = ""
+        s["step"] = "portfolio_url"
+        return {
+            "notification": "Ссылка",
+            "text": "🔗 *ПОРТФОЛИО (ССЫЛКА)*\n\nОдним сообщением пришлите ссылку, начинающуюся с **https://**.",
+            "format": "markdown",
+            "attachments": visit_card.back_to_main_keyboard(),
+        }
+
+    if flow == "join" and step == "work_metro" and payload == "join_metro_skip":
+        data["metro_station"] = ""
+        return _join_go_to_review(s, data)
 
     if flow == "join" and step == "terms_accept" and payload == "join_terms_decline":
         clear_session(max_uid)
@@ -1871,7 +2352,7 @@ async def process_callback(
                 f"Спасибо за интерес к {COMPANY_NAME}!"
             ),
             "format": "markdown",
-            "attachments": visit_card.main_menu_keyboard(),
+            "attachments": visit_card.worker_pending_verification_keyboard(),
         }
 
     return None
@@ -1890,6 +2371,12 @@ async def process_text(
     flow = s.get("flow")
     step = s.get("step")
     data = s.setdefault("data", {})
+
+    if flow == "clarification" and step == "waiting_input":
+        import visit_clarification_flows as vcf
+
+        ref = _image_ref_from_body(message_body) or ""
+        return vcf.process_clarification_text(max_uid, s, text, file_ref=ref)
 
     if step == "consent":
         if flow == "client_visit":
@@ -2245,8 +2732,88 @@ async def process_text(
                 }
             data["company_inn"] = re.sub(r"\D", "", raw)
             return _advance_order_contact_step(max_uid, s)
+        if step == "listing_position":
+            raw = text.strip()
+            if len(raw) < 2:
+                return {
+                    "text": "Укажите роль или задачу подробнее (минимум 2 символа).",
+                    "format": "markdown",
+                    "attachments": visit_card.order_flow_back_keyboard(),
+                }
+            data["listing_role"] = raw
+            s["step"] = "listing_city"
+            return {
+                "text": "Шаг 2 из 4. Укажите *город*.\n\n_Образец:_ `Москва`",
+                "format": "markdown",
+                "attachments": visit_card.order_flow_back_keyboard(),
+            }
+        if step == "listing_city":
+            raw = text.strip()
+            if len(raw) < 2:
+                return {
+                    "text": "Проверьте название города.",
+                    "format": "markdown",
+                    "attachments": visit_card.order_flow_back_keyboard(),
+                }
+            data["city"] = raw
+            s["step"] = "listing_description"
+            return {
+                "text": (
+                    "Шаг 3 из 4. *Описание объявления*: задачи, условия, ставка "
+                    "или «по договорённости».\n\n_Минимум 10 символов._"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.order_flow_back_keyboard(),
+            }
+        if step == "listing_description":
+            raw = text.strip()
+            if len(raw) < 10:
+                return {
+                    "text": "Опишите объявление подробнее (минимум 10 символов).",
+                    "format": "markdown",
+                    "attachments": visit_card.order_flow_back_keyboard(),
+                }
+            data["listing_description"] = raw
+            s["step"] = "listing_timing"
+            return {
+                "text": (
+                    "Шаг 4 из 4. *Срок или когда нужны исполнители*.\n\n"
+                    "_Образец:_ `4 промоутера 15–16.06, 10:00–20:00`"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.order_flow_back_keyboard(),
+            }
+        if step == "listing_timing":
+            raw = text.strip()
+            if len(raw) < 4:
+                return {
+                    "text": "Укажите срок или период подробнее.",
+                    "format": "markdown",
+                    "attachments": visit_card.order_flow_back_keyboard(),
+                }
+            data["event_date"] = raw
+            return _advance_order_contact_step(max_uid, s)
+        if step == "listing_confirm":
+            return {
+                "text": "Используйте кнопки под сообщением.",
+                "format": "markdown",
+                "attachments": visit_card.listing_confirm_keyboard(),
+            }
+        if step == "contact_channel_pick":
+            return {
+                "text": "Выберите способ связи кнопками ниже.",
+                "format": "markdown",
+                "attachments": visit_card.order_contact_channel_keyboard(),
+            }
         if step == "call_time":
             data["call_time"] = text.strip()
+            if (data.get("order_kind") or "").strip() == "vacancy_listing":
+                s["step"] = "listing_confirm"
+                return {
+                    "text": _listing_preview_text(data),
+                    "format": "markdown",
+                    "attachments": visit_card.listing_confirm_keyboard(),
+                }
             s["step"] = "confirm"
             staff = merged_staff_for_pricing(data)
             parsed = parse_shift_interval(data.get("shift_time", ""))
@@ -2381,6 +2948,162 @@ async def process_text(
                 "format": "markdown",
                 "attachments": visit_card.tax_se_actions_keyboard(),
             }
+        if step == "tax_fl_inn":
+            d = re.sub(r"\D", "", text.strip())
+            if len(d) != 12:
+                return {
+                    "text": (
+                        "💡 ИНН физлица — *12 цифр*. "
+                        "Его можно посмотреть в справке из ФНС или в личном кабинете налогоплательщика."
+                    ),
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["tax_inn"] = d
+            return _join_begin_identity_chain(s)
+
+        if step == "snils":
+            if not visit_join_validators.validate_join_snils(text):
+                return {
+                    "text": (
+                        "💡 Укажите *СНИЛС*: 11 цифр с верной контрольной суммой "
+                        "(как в страховом свидетельстве)."
+                    ),
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["snils"] = visit_join_validators.normalize_snils_display(text)
+            s["step"] = "contact_email"
+            return {
+                "text": (
+                    "📧 *E-mail*\n\n"
+                    "Адрес для документов по сменам и правок договоров.\n\n"
+                    "_Пример: ivanov@mail.ru_"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+
+        if step == "contact_email":
+            em = visit_join_validators.validate_join_contact_email(text)
+            if not em:
+                return {
+                    "text": (
+                        "💡 Введите корректный e-mail (латиница, символ @ и домен).\n\n"
+                        "_Пример: user@mail.ru_"
+                    ),
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["contact_email"] = em
+            s["step"] = "gph_bank_name"
+            return {
+                "text": (
+                    "🏦 *Банк для выплат*\n\n"
+                    "Полное название банка получателя — как в реквизитах для перевода.\n\n"
+                    "_Например: ПАО Сбербанк_"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+
+        if step == "gph_bank_name":
+            if not visit_join_validators.validate_gph_bank_name(text):
+                return {
+                    "text": "💡 Укажите название банка одной строкой (не пустое, до 200 символов).",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["gph_bank_name"] = text.strip()
+            s["step"] = "gph_bik"
+            return {
+                "text": "🔢 *БИК банка*\n\nВведите *9 цифр* без пробелов.",
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+
+        if step == "gph_bik":
+            if not visit_join_validators.validate_gph_bik(text):
+                return {
+                    "text": "💡 *БИК* — ровно 9 цифр (без букв и пробелов).",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["gph_bik"] = re.sub(r"\D", "", text.strip())
+            s["step"] = "gph_settlement_account"
+            return {
+                "text": (
+                    "💳 *Расчётный счёт (р/с)*\n\n"
+                    "Номер счёта получателя — *20 цифр*."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+
+        if step == "gph_settlement_account":
+            if not visit_join_validators.validate_gph_settlement_account(text):
+                return {
+                    "text": "💡 *Р/с* — 20 цифр.",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["gph_settlement_account"] = visit_join_validators.normalize_bank_account_20(text)
+            s["step"] = "gph_corr_account"
+            return {
+                "text": (
+                    "📎 *Корреспондентский счёт банка (к/с)*\n\n"
+                    "Обычно *20 цифр*. Если не используете к/с при переводах — напишите *нет*."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+
+        if step == "gph_corr_account":
+            cr = visit_join_validators.parse_gph_corr_account_optional(text)
+            if cr is None:
+                return {
+                    "text": "💡 *К/с* — 20 цифр или напишите *нет*, если поле не используете.",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["gph_corr_account"] = cr
+            s["step"] = "experience_pick"
+            return {"notification": "Реквизиты сохранены", **_join_prompt_experience()}
+
+        if step == "portfolio_url":
+            raw = text.strip()
+            if not visit_join_validators.validate_join_portfolio_https_url(raw):
+                return {
+                    "text": "Нужна ссылка, начинающаяся с https:// (не длиннее 2048 символов).",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["portfolio_url"] = raw
+            data["portfolio_mode"] = "url"
+            s["step"] = "selfie"
+            return _join_prompt_selfie()
+
+        if step == "portfolio_pdf":
+            ref = _brief_file_from_body(message_body)
+            if not ref:
+                return {
+                    "text": "Пришлите PDF одним **документом** (скрепка → Файл).",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["portfolio_pdf_ref"] = ref["url"]
+            data["portfolio_pdf_file_id"] = ref["url"]
+            data["portfolio_mode"] = "pdf"
+            s["step"] = "selfie"
+            return _join_prompt_selfie()
+
+        if step == "portfolio_menu":
+            return {
+                "text": "Выберите вариант кнопками под предыдущим сообщением.",
+                "format": "markdown",
+                "attachments": visit_card.join_portfolio_menu_keyboard(),
+            }
+
         if step == "tax_ip_inn":
             if not visit_join_validators.validate_inn_digits(text):
                 return {
@@ -2640,6 +3363,56 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["passport_sn"] = visit_join_validators.normalize_passport_series_number(raw)
+            s["step"] = "passport_issued_by"
+            return {
+                "text": (
+                    "📋 *Кем выдан паспорт*\n\n"
+                    "Как в строке *«Кем выдан»* на основном развороте.\n\n"
+                    "_Пример: ГУ МВД России по Москве_"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+
+        if step == "passport_issued_by":
+            raw = text.strip()
+            if not visit_join_validators.validate_passport_issued_by(raw):
+                return {
+                    "text": (
+                        "💡 Укажите подразделение, выдавшее паспорт "
+                        "(не короче нескольких слов, без шуток и шаблонов)."
+                    ),
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["passport_issued_by"] = raw
+            s["step"] = "passport_issued_on"
+            return {
+                "text": (
+                    "📅 *Дата выдачи паспорта*\n\n"
+                    "Формат *ДД.ММ.ГГГГ*, как в документе.\n\n"
+                    "_Пример: 12.03.2015_"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+
+        if step == "passport_issued_on":
+            issue_d = visit_join_validators.parse_birth_date(text)
+            bd_join = _join_parse_birth_from_data(data)
+            today = visit_join_validators.age_check_reference_date()
+            if not issue_d or not visit_join_validators.validate_passport_issue_date(
+                issue_d, birth=bd_join, today=today
+            ):
+                return {
+                    "text": (
+                        "💡 Дата выдачи в формате ДД.ММ.ГГГГ; "
+                        "не раньше даты рождения и не в будущем."
+                    ),
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["passport_issued_on"] = issue_d.isoformat()
             s["step"] = "passport_main"
             return {
                 "text": (
@@ -2660,6 +3433,29 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["passport_main_ref"] = ref
+            s["step"] = "registration_address"
+            return {
+                "text": (
+                    "🏠 *Адрес регистрации*\n\n"
+                    "Полный адрес *одной строкой* (как в паспорте или по ФИАС). "
+                    "После этого попросим *фото* страницы с пропиской."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+
+        if step == "registration_address":
+            raw = text.strip()
+            if not visit_join_validators.validate_registration_address(raw):
+                return {
+                    "text": (
+                        "💡 Укажите полный адрес регистрации текстом "
+                        "(несколько слов, без аббревиатур-заглушек)."
+                    ),
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["registration_address"] = raw
             s["step"] = "passport_reg"
             return {
                 "text": (
@@ -2670,6 +3466,7 @@ async def process_text(
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
+
         if step == "passport_reg":
             ref = _image_ref_from_body(message_body)
             if not ref:
@@ -2679,12 +3476,51 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["passport_reg_ref"] = ref
-            s["step"] = "review_submit"
+            s["step"] = "work_city"
             return {
-                "text": _build_join_review_text(data),
+                "text": (
+                    "📍 *Город для подбора смен*\n\n"
+                    "Укажите *город*, где вы обычно работаете и живёте.\n\n"
+                    "_Например: Москва, Санкт-Петербург, Казань._"
+                ),
                 "format": "markdown",
-                "attachments": visit_card.join_review_keyboard(),
+                "attachments": visit_card.back_to_main_keyboard(),
             }
+
+        if step == "work_city":
+            raw = text.strip()
+            if not visit_join_validators.validate_join_work_city(raw):
+                return {
+                    "text": "💡 Укажите название города текстом (2–120 символов).",
+                    "format": "markdown",
+                    "attachments": visit_card.back_to_main_keyboard(),
+                }
+            data["city"] = raw
+            if visit_join_validators.join_metro_followup_needed(raw):
+                s["step"] = "work_metro"
+                return {
+                    "text": (
+                        "🚇 *Метро*\n\n"
+                        "Укажите удобную *станцию* или *линию*.\n\n"
+                        "_Например: Парк Победы._\n\n"
+                        "Если метро не используете — нажмите *Пропустить*."
+                    ),
+                    "format": "markdown",
+                    "attachments": visit_card.work_metro_keyboard(),
+                }
+            data["metro_station"] = ""
+            return _join_go_to_review(s, data)
+
+        if step == "work_metro":
+            ok_m, err_m = visit_join_validators.validate_join_metro_station_text(text)
+            if not ok_m:
+                return {
+                    "text": err_m or "Проверьте текст.",
+                    "format": "markdown",
+                    "attachments": visit_card.work_metro_keyboard(),
+                }
+            data["metro_station"] = text.strip()
+            return _join_go_to_review(s, data)
         if step == "review_submit":
             return {
                 "text": "Используйте кнопки под сообщением с проверкой данных.",
