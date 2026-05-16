@@ -153,7 +153,25 @@ async def process_update(body: dict[str, Any]) -> None:
             return
 
         if payload == "calculate":
-            msg = visit_flows.start_order(max_uid)
+            msg = visit_flows.route_calculate_button(max_uid)
+            await _answer_message(callback_id, max_uid, msg)
+            await _sync_funnel(max_uid)
+            return
+
+        if payload == "client_visit_menu":
+            msg = visit_flows.start_client_visit_menu(max_uid)
+            await _answer_message(callback_id, max_uid, msg)
+            await _sync_funnel(max_uid)
+            return
+
+        if payload == "client_quote_quick":
+            msg = visit_flows.start_client_quote(max_uid, preset="quick")
+            await _answer_message(callback_id, max_uid, msg)
+            await _sync_funnel(max_uid)
+            return
+
+        if payload == "client_quote_cp":
+            msg = visit_flows.start_client_quote(max_uid, preset="cp")
             await _answer_message(callback_id, max_uid, msg)
             await _sync_funnel(max_uid)
             return

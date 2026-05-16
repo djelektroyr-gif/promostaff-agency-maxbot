@@ -477,20 +477,132 @@ def _join_entry_blocked(max_uid: int) -> dict[str, Any] | None:
     return None
 
 
-def start_listing_order(max_uid: int) -> dict[str, Any]:
-    """Размещение объявления в ленте (vacancy_listing)."""
-    if is_max_visit_client_registered(max_uid) and not is_max_visit_client_verified(max_uid):
+def _gate_client_quote_access(max_uid: int) -> dict[str, Any] | None:
+    """Расчёт/КП/объявление — только после admin-verify заказчика (как TG begin_client_quote_flow)."""
+    from user_identity import ROLE_SWITCH_VIA_ADMIN_FOOTER_RU
+
+    if has_max_active_executor_profile(max_uid):
+        return {
+            "notification": "Недоступно",
+            "text": (
+                "Исполнителям недоступен заказ расчёта как заказчику. "
+                "Откройте главное меню."
+                + ROLE_SWITCH_VIA_ADMIN_FOOTER_RU
+            ),
+            "format": "markdown",
+            "attachments": visit_card.main_menu_keyboard(),
+        }
+    if is_max_visit_client_verified(max_uid):
+        return None
+    if is_max_visit_client_registered(max_uid):
         return {
             "notification": "Ожидает проверки",
             "text": (
                 "*Регистрация заказчика на проверке*\n\n"
-                "После подтверждения администратором откроется размещение объявлений."
+                "Расчёты, КП и объявления доступны после подтверждения профиля администратором.\n\n"
+                "Пока можете связаться с менеджером."
             ),
             "format": "markdown",
             "attachments": visit_card.client_pre_erp_pending_keyboard(),
         }
-    if not is_max_visit_client_verified(max_uid):
-        return start_order(max_uid, announce_order_consent=False)
+    return {
+        "notification": "Нужна регистрация",
+        "text": (
+            "Сначала пройдите *регистрацию заказчика* (юрлицо) через «Меню заказчика» в визитке."
+        ),
+        "format": "markdown",
+        "attachments": visit_card.main_menu_keyboard(),
+    }
+
+
+def start_client_visit_menu(max_uid: int) -> dict[str, Any]:
+    """«Меню заказчика» — только регистрация, без заявок до verify (паритет TG client_visit_menu)."""
+    from user_identity import ROLE_SWITCH_VIA_ADMIN_FOOTER_RU
+
+    clear_session(max_uid)
+    if has_max_active_executor_profile(max_uid):
+        return {
+            "notification": "Недоступно",
+            "text": (
+                "Исполнителям недоступен вход как заказчику. Откройте главное меню."
+                + ROLE_SWITCH_VIA_ADMIN_FOOTER_RU
+            ),
+            "format": "markdown",
+            "attachments": visit_card.main_menu_keyboard(),
+        }
+    if is_max_visit_client_registered(max_uid):
+        if is_max_visit_client_verified(max_uid):
+            home = visit_card.message_role_home(max_uid)
+            home["notification"] = "Уже зарегистрированы"
+            if home.get("text"):
+                home["text"] = (
+                    "У вас уже есть профиль заказчика — меню ниже.\n\n" + home["text"]
+                )
+            return home
+        return _gate_client_quote_access(max_uid) or {}
+    SESSIONS[max_uid] = {"flow": "client_visit", "step": "consent", "data": {}}
+    return {
+        "notification": "Меню заказчика",
+        "text": _client_visit_entry_text(),
+        "format": "markdown",
+        "attachments": visit_card.consent_gate_keyboard("client_visit"),
+    }
+
+
+def route_calculate_button(max_uid: int) -> dict[str, Any]:
+    """Старые кнопки «Заказать расчёт» → регистрация или меню заказчика, не заявка без verify."""
+    if is_max_visit_client_verified(max_uid):
+        return start_client_quote(max_uid)
+    if is_max_visit_client_registered(max_uid):
+        return _gate_client_quote_access(max_uid) or start_client_visit_menu(max_uid)
+    return start_client_visit_menu(max_uid)
+
+
+def start_client_quote(max_uid: int, *, preset: str | None = None) -> dict[str, Any]:
+    """Заявка на расчёт/КП/listing после верификации заказчика."""
+    blocked = _gate_client_quote_access(max_uid)
+    if blocked:
+        return blocked
+    if preset == "listing":
+        return start_listing_order(max_uid)
+    clear_session(max_uid)
+    SESSIONS[max_uid] = {
+        "flow": "order",
+        "step": "order_mode",
+        "data": {"order_consent_accepted": True},
+    }
+    if preset == "quick":
+        SESSIONS[max_uid]["step"] = "event_type"
+        return {
+            "notification": "Срочный расчёт",
+            "text": (
+                "*Срочный расчёт*\n\n"
+                "Выберите быстрый сценарий или введите тип проекта вручную.\n\n"
+            ),
+            "format": "markdown",
+            "attachments": visit_card.order_quickstart_keyboard(),
+        }
+    if preset == "cp":
+        SESSIONS[max_uid]["data"]["order_kind"] = "cp_request"
+        SESSIONS[max_uid]["step"] = "cp_event_type"
+        return {
+            "notification": "Запрос КП",
+            "text": (
+                "*Запрос коммерческого предложения*\n\n"
+                "Опишите *тип мероприятия* (выставка, промо, корпоратив и т.д.).\n\n"
+                "_Образец:_ `Корпоратив, 200 гостей, Москва-Сити`\n\n"
+            ),
+            "format": "markdown",
+            "attachments": visit_card.cp_step_keyboard(),
+        }
+    return start_order(max_uid, announce_order_consent=False)
+
+
+def start_listing_order(max_uid: int) -> dict[str, Any]:
+    """Размещение объявления в ленте (vacancy_listing)."""
+    blocked = _gate_client_quote_access(max_uid)
+    if blocked:
+        return blocked
     fee = int(LISTING_PUBLICATION_FEE_RUB)
     fee_md = f"{fee:,}".replace(",", " ")
     SESSIONS[max_uid] = {
@@ -518,26 +630,11 @@ def start_listing_order(max_uid: int) -> dict[str, Any]:
 
 
 def start_order(max_uid: int, *, announce_order_consent: bool = True) -> dict[str, Any]:
+    """Выбор режима заявки — только для верифицированного заказчика."""
     clear_session(max_uid)
-    if is_max_visit_client_registered(max_uid) and not is_max_visit_client_verified(max_uid):
-        return {
-            "notification": "Ожидает проверки",
-            "text": (
-                "*Регистрация заказчика на проверке*\n\n"
-                "После подтверждения администратором откроются расчёт, КП и история заказов.\n\n"
-                "Пока можете связаться с менеджером."
-            ),
-            "format": "markdown",
-            "attachments": visit_card.client_pre_erp_pending_keyboard(),
-        }
-    if not is_max_visit_client_verified(max_uid):
-        SESSIONS[max_uid] = {"flow": "client_visit", "step": "consent", "data": {}}
-        return {
-            "notification": "Сначала регистрация заказчика.",
-            "text": _client_visit_entry_text(),
-            "format": "markdown",
-            "attachments": visit_card.consent_gate_keyboard("client_visit"),
-        }
+    blocked = _gate_client_quote_access(max_uid)
+    if blocked:
+        return blocked
     SESSIONS[max_uid] = {
         "flow": "order",
         "step": "order_mode",
@@ -1403,6 +1500,10 @@ async def process_callback(
         return vcf.start_clarification_input(max_uid, s_cl)
     if payload == "client_quote_listing":
         return start_listing_order(max_uid)
+    if payload == "client_quote_quick":
+        return start_client_quote(max_uid, preset="quick")
+    if payload == "client_quote_cp":
+        return start_client_quote(max_uid, preset="cp")
     if not s:
         return None
     flow = s.get("flow")
@@ -1616,6 +1717,16 @@ async def process_callback(
             }
         return None
 
+    if flow == "order" and step == "order_mode" and payload in (
+        "order_mode_quick",
+        "order_mode_cp",
+        "order_mode_listing",
+    ):
+        blocked = _gate_client_quote_access(max_uid)
+        if blocked:
+            clear_session(max_uid)
+            return blocked
+
     if flow == "order" and step == "order_mode" and payload == "order_mode_quick":
         data.pop("order_kind", None)
         for k in (
@@ -1703,6 +1814,10 @@ async def process_callback(
             }
 
     if flow == "order" and step == "listing_confirm" and payload == "confirm_listing_order":
+        blocked = _gate_client_quote_access(max_uid)
+        if blocked:
+            clear_session(max_uid)
+            return blocked
         if not data.get("order_consent_accepted"):
             return {
                 "notification": "Сначала согласие на ПДн",
@@ -2035,6 +2150,10 @@ async def process_callback(
         }
 
     if flow == "order" and step == "cp_confirm" and payload == "confirm_cp_order":
+        blocked = _gate_client_quote_access(max_uid)
+        if blocked:
+            clear_session(max_uid)
+            return blocked
         if not data.get("order_consent_accepted"):
             return {
                 "notification": "Сначала подтвердите согласие на обработку ПДн.",
@@ -2093,6 +2212,10 @@ async def process_callback(
         }
 
     if flow == "order" and step == "confirm" and payload == "confirm_order":
+        blocked = _gate_client_quote_access(max_uid)
+        if blocked:
+            clear_session(max_uid)
+            return blocked
         if not data.get("order_consent_accepted"):
             return {
                 "notification": "Подтвердите согласие на обработку персональных данных перед отправкой заявки.",

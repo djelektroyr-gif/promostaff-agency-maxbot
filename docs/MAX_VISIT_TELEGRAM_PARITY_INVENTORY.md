@@ -71,9 +71,10 @@ Webhook API: `promostaff-bot/docs/MAX_WEBHOOK_AND_SUBSCRIPTIONS.md`.
 | Админ-верификация заказчика → доступ к расчётам | `cvf:` / `visit_clients` | OK (`visit_clients.verified_at`, меню до approve — `client_pre_erp_pending_keyboard`) | — |
 | Запись в `users` + панель | `save_client` | OK (`synthetic tg_id`, `agency_max_visit_clients`) | — |
 | Меню после рег.: история заказов | OK | OK (чтение БД) | — |
-| **Заказать проект** (quick_estimate) | полный `OrderForm` | OK (без `public_ref` PSA на quick) | P1 |
-| **Коммерческое предложение** | `cp_request` + CRM | OK | — |
-| **Разместить объявление** (listing) | `client_quote_listing` | OK (`start_listing_order`, 4 шага + confirm) | — |
+| **Заказать проект** (quick_estimate) | только после `visit_clients.verified_at` | OK (`client_quote_quick`, `_gate_client_quote_access`) | — |
+| **Коммерческое предложение** | только после verify | OK (`client_quote_cp`) | — |
+| **Разместить объявление** (listing) | только после verify | OK (`client_quote_listing`, gate на submit) | — |
+| Кнопка «Заказать расчёт» (legacy) | → регистрация / меню, не заявка | OK (`route_calculate_button`) | — |
 | Заглушки: проекты, настройки, веб | TG | Частично | P2 |
 
 ### 3.3. Исполнитель (анкета + пре-ERP)

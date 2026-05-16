@@ -104,6 +104,9 @@ def is_visit_flow_payload(p: str) -> bool:
         "order_mode_cp",
         "order_mode_listing",
         "client_quote_listing",
+        "client_quote_quick",
+        "client_quote_cp",
+        "client_visit_menu",
         "confirm_listing_order",
         "edit_listing_order",
         "join_tbank_proceed",
@@ -170,7 +173,8 @@ def client_registered_main_menu_keyboard(*, quotes_enabled: bool = True) -> list
         [cb_btn("🌐 Открыть веб-панель", "client_reg_web")],
     ]
     if quotes_enabled:
-        rows.append([cb_btn("💰 Заказать расчёт", "calculate")])
+        rows.append([cb_btn("📋 Заказать проект", "client_quote_quick")])
+        rows.append([cb_btn("📄 Заказать КП", "client_quote_cp")])
         rows.append([cb_btn("📣 Разместить объявление", "client_quote_listing")])
     rows.append([cb_btn("🏠 Меню визитки", "visit_public_menu")])
     return inline_keyboard(rows)
@@ -256,9 +260,7 @@ def order_flow_back_keyboard() -> list[dict]:
 def advantages_keyboard() -> list[dict]:
     return inline_keyboard(
         [
-            [cb_btn("💰 Заказать расчёт", "calculate")],
-            [cb_btn("💬 Отзывы", "reviews")],
-            [cb_btn("⬅️ Назад", "back_to_main")],
+            [cb_btn("📋 К разделу «О нас»", "about")],
             [cb_btn("🏠 В главное меню", "main_menu")],
         ]
     )
@@ -284,8 +286,7 @@ def about_keyboard() -> list[dict]:
 def how_we_work_keyboard() -> list[dict]:
     return inline_keyboard(
         [
-            [cb_btn("💰 Заказать расчёт", "calculate")],
-            [cb_btn("⬅️ Назад", "back_to_main")],
+            [cb_btn("📋 К разделу «О нас»", "about")],
             [cb_btn("🏠 В главное меню", "main_menu")],
         ]
     )

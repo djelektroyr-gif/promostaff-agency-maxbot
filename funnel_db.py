@@ -21,12 +21,32 @@ PRO_PG_MAX_VISIT_CLIENT = "agency_max_visit_client"
 
 
 def worker_tg_id_for_max(max_user_id: int) -> int:
-    """PK users / workers / agency_visit_* — как в promostaff-bot messenger_user_policy."""
+    """Синтетический tg_id для нового MAX-only пользователя."""
     return _MAX_TG_SYNTHETIC_LEAST + int(max_user_id)
 
 
 def _synthetic_tg_for_max(max_user_id: int) -> int:
     return worker_tg_id_for_max(max_user_id)
+
+
+def resolve_tg_id_for_max_user(max_user_id: int) -> int:
+    """Канонический users.tg_id: строка с max_user_id, иначе синтетика."""
+    uid = int(max_user_id)
+    if not DATABASE_URL:
+        return _synthetic_tg_for_max(uid)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT tg_id FROM users WHERE max_user_id = %s LIMIT 1",
+                    (uid,),
+                )
+                row = cur.fetchone()
+                if row:
+                    return int(row[0])
+    except Exception:
+        logger.exception("resolve_tg_id_for_max_user max_uid=%s", uid)
+    return _synthetic_tg_for_max(uid)
 
 
 WORKER_STATUS_PENDING_REVIEW = "pending_review"
@@ -404,7 +424,7 @@ def get_max_visit_client(max_user_id: int) -> dict[str, Any] | None:
 def is_max_visit_client_registered(max_user_id: int) -> bool:
     """Заказчик зарегистрирован (как get_client в Telegram), без учёта verified_at."""
     uid = int(max_user_id)
-    tg = worker_tg_id_for_max(uid)
+    tg = resolve_tg_id_for_max_user(uid)
     if DATABASE_URL:
         try:
             with connection() as conn:
@@ -440,7 +460,7 @@ def is_max_visit_client_registered(max_user_id: int) -> bool:
 def is_max_visit_client_verified(max_user_id: int) -> bool:
     """Заказчик подтверждён админом (visit_clients.verified_at), как в Telegram."""
     uid = int(max_user_id)
-    tg = worker_tg_id_for_max(uid)
+    tg = resolve_tg_id_for_max_user(uid)
     if DATABASE_URL:
         try:
             with connection() as conn:
@@ -703,7 +723,7 @@ def list_agency_visit_orders_for_user(max_user_id: int, limit: int = 20) -> list
     if not DATABASE_URL:
         return []
     lim = max(1, min(int(limit), 50))
-    tg = worker_tg_id_for_max(int(max_user_id))
+    tg = resolve_tg_id_for_max_user(int(max_user_id))
     with connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
