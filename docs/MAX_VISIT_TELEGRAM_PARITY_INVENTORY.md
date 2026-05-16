@@ -51,8 +51,9 @@ Webhook API: `promostaff-bot/docs/MAX_WEBHOOK_AND_SUBSCRIPTIONS.md`.
 
 | Блок | Telegram | MAX | Приоритет |
 |------|----------|-----|-----------|
-| Главное меню визитки | `visit_card_keyboard` | OK | — |
-| О нас, преимущества, как работаем, FAQ, отзывы, кейсы | `visit_public` static | OK | — |
+| Главное меню визитки | `visit_card_keyboard` (5 кнопок: О нас, меню заказчика/исполнителя, FAQ, связь) | OK (с 2026-05-16: убран «плоский» старый список из 9+ кнопок) | — |
+| О нас, преимущества, как работаем, FAQ, отзывы, кейсы | подменю `about_section_keyboard` | OK (`about_keyboard` в MAX) | — |
+| **Один телефон — один `users`, без смены роли** | `visit_user_identity` + шаг телефона в join/visit | OK (`user_identity.py`, шаг `phone` в `visit_flows`) | — |
 | Связаться (тел/email + вопрос менеджеру) | OK | OK | — |
 | Хочу в команду → intro | OK | OK | — |
 | Вакансии + кнопка «Хочу: …» на каждую | `vac_view` / `vac_apply_*` | OK (`vacancies_list_keyboard`, `vacancy_detail_keyboard`) | — |
@@ -105,6 +106,7 @@ Webhook API: `promostaff-bot/docs/MAX_WEBHOOK_AND_SUBSCRIPTIONS.md`.
 
 | Блок | Готовность | Заметка |
 |------|------------|---------|
+| **Вход `/cabinet/login` только по телефону** | Код OK | Нужен env на **promostaff-web**: `CABINET_BROWSER_LOGIN_PHONE_ONLY=1` (без этого остаётся OTP в Telegram). **Не путать** с резолвом телефона в ботах MAX/TG. |
 | Чтение `agency_visit_*` по `user_id` | OK | Работает с synthetic `tg_id` |
 | Customer 360 / CRM / HRM join | OK | Метки MAX в UI |
 | Запись заказов/join из MAX | Частично | Пишет maxbot; `source` желательно `max` |

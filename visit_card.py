@@ -217,17 +217,12 @@ def join_terms_keyboard() -> list[dict]:
 
 
 def main_menu_keyboard() -> list[dict]:
-    # Главное меню: тот же порядок, что в Telegram; эмодзи — нативное «богатство» интерфейса MAX.
-    # ЛК заказчика («заявки» и т.д.) — в отдельном меню после регистрации, не в корневой визитке.
+    # Паритет с Telegram keyboards.visit_card_keyboard: компактное корневое меню;
+    # преимущества, кейсы, вакансии и расчёт — внутри «О нас» (about_keyboard).
     rows: list[list[dict]] = [
         [cb_btn("📋 О нас", "about")],
-        [cb_btn("⭐ Преимущества", "advantages")],
-        [cb_btn("🔄 Как мы работаем", "how_we_work")],
-        [cb_btn("💰 Заказать расчёт", "calculate")],
-        [cb_btn("👥 Хочу в команду", "join_team")],
-        [link_btn("🌐 Наш сайт", WEBSITE_URL)],
-        [cb_btn("💬 Отзывы", "reviews")],
-        [cb_btn("📁 Кейсы", "cases")],
+        [cb_btn("💼 Меню заказчика", "client_visit_menu")],
+        [cb_btn("🛠 Меню исполнителя", "join_team")],
         [cb_btn("❓ FAQ", "faq")],
         [cb_btn("📞 Связаться с менеджером", "contact_manager")],
     ]
@@ -270,12 +265,17 @@ def advantages_keyboard() -> list[dict]:
 
 
 def about_keyboard() -> list[dict]:
+    """Паритет с Telegram keyboards.about_section_keyboard."""
     return inline_keyboard(
         [
             [cb_btn("⭐ Преимущества", "advantages")],
-            [cb_btn("💰 Заказать расчёт", "calculate")],
+            [cb_btn("🔄 Как мы работаем", "how_we_work")],
             [cb_btn("💬 Отзывы", "reviews")],
-            [cb_btn("⬅️ Назад", "back_to_main")],
+            [cb_btn("📁 Кейсы", "cases")],
+            [link_btn("🌐 Наш сайт", WEBSITE_URL)],
+            [cb_btn("📂 Вакансии", "vacancies")],
+            [cb_btn("💼 Меню заказчика", "client_visit_menu")],
+            [cb_btn("🛠 Меню исполнителя", "join_team")],
             [cb_btn("🏠 В главное меню", "main_menu")],
         ]
     )

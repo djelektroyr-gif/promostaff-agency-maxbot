@@ -1,0 +1,41 @@
+"""Резолв пользователя по телефону (MAX)."""
+from unittest.mock import patch
+
+import user_identity as ui
+
+
+def test_normalize_phone_ru():
+    assert ui.normalize_phone_ru("+7 (916) 123-45-67") == "79161234567"
+    assert ui.normalize_phone_ru("89161234567") == "79161234567"
+    assert ui.normalize_phone_ru("") == ""
+
+
+def test_resolve_continue_when_no_rows():
+    with patch.object(ui, "find_users_by_phone", return_value=[]):
+        with patch("user_identity.worker_tg_id_for_max", return_value=10**15 + 42):
+            res = ui.resolve_registration_by_phone(42, "+79161234567", "worker")
+    assert res.action == "continue"
+    assert res.canonical_tg_id == 10**15 + 42
+
+
+def test_resolve_role_conflict_client_as_worker():
+    row = {"tg_id": 100, "max_user_id": None, "role": "client", "phone": "79161111111"}
+    with patch.object(ui, "find_users_by_phone", return_value=[row]):
+        with patch.object(ui, "_user_is_client", return_value=True):
+            with patch.object(ui, "_user_is_active_worker", return_value=False):
+                with patch.object(ui, "link_max_user_id"):
+                    res = ui.resolve_registration_by_phone(99, "79161111111", "worker")
+    assert res.action == "role_conflict"
+
+
+def test_resolve_resume_worker_links_max():
+    row = {"tg_id": 200, "max_user_id": None, "role": "worker", "phone": "79162222222"}
+    with patch.object(ui, "find_users_by_phone", return_value=[row]):
+        with patch.object(ui, "_user_is_client", return_value=False):
+            with patch.object(ui, "_user_is_active_worker", return_value=True):
+                with patch.object(ui, "_user_worker_status", return_value=ui.WORKER_STATUS_APPROVED):
+                    with patch.object(ui, "link_max_user_id") as link:
+                        res = ui.resolve_registration_by_phone(55, "79162222222", "worker")
+    link.assert_called_once_with(200, 55)
+    assert res.action == "resume_worker_verified"
+    assert res.canonical_tg_id == 200

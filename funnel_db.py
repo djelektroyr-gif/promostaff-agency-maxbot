@@ -37,9 +37,27 @@ _HRM_PIPELINE = "hrm"
 _HRM_JOIN_SOURCE = "agency_visit_join"
 
 
-def _client_tg_id_for_max_cp(max_user_id: int) -> int:
-    """tg_id для cp_requests.client_tg_id (FK users): сначала строка с max_user_id, иначе синтетика."""
+def _client_tg_id_for_max_cp(
+    max_user_id: int,
+    *,
+    phone: str | None = None,
+    data: dict[str, Any] | None = None,
+) -> int:
+    """tg_id для FK users: canonical из сессии/телефона, иначе max_user_id, иначе синтетика."""
     uid = int(max_user_id)
+    if data:
+        ctg = data.get("canonical_user_tg_id")
+        if ctg is not None:
+            return int(ctg)
+    if phone:
+        try:
+            from user_identity import find_users_by_phone
+
+            rows = find_users_by_phone(phone)
+            if len(rows) == 1:
+                return int(rows[0]["tg_id"])
+        except Exception:
+            logger.exception("_client_tg_id_for_max_cp phone max_uid=%s", uid)
     if not DATABASE_URL:
         return _synthetic_tg_for_max(uid)
     try:
@@ -65,7 +83,7 @@ def _pg_upsert_user_for_max_visit_client(
         return
     uid = int(max_user_id)
     cn = (data.get("contact_name") or "").strip()
-    tg_row = _client_tg_id_for_max_cp(uid)
+    tg_row = _client_tg_id_for_max_cp(uid, phone=(data.get("phone") or "").strip() or None, data=data)
     try:
         with connection() as conn:
             with conn.cursor() as cur:
@@ -120,7 +138,11 @@ def _sync_cp_request_from_max_visit_order(
         return None
     from datetime import datetime
 
-    client_tg_id = _client_tg_id_for_max_cp(max_user_id)
+    client_tg_id = _client_tg_id_for_max_cp(
+        max_user_id,
+        phone=(payload.get("contact_phone") or payload.get("phone") or "").strip() or None,
+        data=payload if isinstance(payload, dict) else None,
+    )
     y = datetime.now().year
     et = (payload.get("event_type") or "").strip()
     city = (payload.get("city") or "").strip()
@@ -545,7 +567,9 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                         """,
                         (uid, un, cn, contact, pos, phone, inn, cemail),
                     )
-                    tg_row = _client_tg_id_for_max_cp(uid)
+                    tg_row = _client_tg_id_for_max_cp(
+                        uid, phone=phone or None, data=data
+                    )
                     inn_digits = re.sub(r"\D", "", inn)
                     inn_sql = inn_digits if len(inn_digits) in (10, 12) else ""
                     cur.execute(
@@ -764,9 +788,11 @@ def save_visit_join(max_user_id: int, username: str, payload_json: str) -> int |
         data = {}
     if not isinstance(data, dict):
         data = {}
-    tg_id = worker_tg_id_for_max(int(max_user_id))
-    full_name = (data.get("full_name") or "").strip()
     phone = (data.get("phone") or "").strip()
+    tg_id = int(data.get("canonical_user_tg_id") or 0) or worker_tg_id_for_max(int(max_user_id))
+    if phone and not data.get("canonical_user_tg_id"):
+        tg_id = _client_tg_id_for_max_cp(int(max_user_id), phone=phone, data=data)
+    full_name = (data.get("full_name") or "").strip()
     position = (data.get("position") or "").strip()
     try:
         pay_tier = int(data.get("experience_base_stars", 3))

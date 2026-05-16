@@ -124,6 +124,38 @@ def clear_session(max_uid: int) -> None:
     SESSIONS.pop(max_uid, None)
 
 
+def _phone_resolve_or_none(
+    max_uid: int,
+    session: dict[str, Any],
+    phone: str,
+    intended_role: str,
+) -> dict[str, Any] | None:
+    """После ввода телефона: резолв по БД; None — продолжить регистрацию."""
+    from user_identity import resolve_registration_by_phone
+
+    res = resolve_registration_by_phone(int(max_uid), phone, intended_role)  # type: ignore[arg-type]
+    data = session.setdefault("data", {})
+    if res.canonical_tg_id:
+        data["canonical_user_tg_id"] = res.canonical_tg_id
+    if res.action == "continue":
+        return None
+    clear_session(max_uid)
+    if res.action.startswith("resume"):
+        home = visit_card.message_role_home(max_uid)
+        if res.text:
+            home = dict(home)
+            home["text"] = f"{res.text}\n\n{home.get('text', '')}"
+        if res.notification:
+            home["notification"] = res.notification
+        return home
+    return {
+        "notification": res.notification,
+        "text": res.text,
+        "format": res.format,
+        "attachments": visit_card.main_menu_keyboard(),
+    }
+
+
 def _sender_label(sender: dict[str, Any] | None) -> str:
     if not sender:
         return "MAX user"
@@ -2493,6 +2525,9 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["phone"] = v
+            blocked = _phone_resolve_or_none(max_uid, s, v, "client")
+            if blocked:
+                return blocked
             s["step"] = "email"
             return {
                 "text": (
@@ -2905,6 +2940,9 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["phone"] = v
+            blocked = _phone_resolve_or_none(max_uid, s, v, "worker")
+            if blocked:
+                return blocked
             s["step"] = "birth_date"
             return {
                 "text": "🎂 *Дата рождения:*\n\n_Пример: 15.05.1990_",
