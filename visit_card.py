@@ -40,6 +40,9 @@ FLOW_PAYLOADS = frozenset(
         "requirements",
         "vacancies",
         "join_proceed_anketa",
+        "prof_add_another",
+        "prof_done",
+        "prof_edit_reset",
         "main_menu",
         "visit_public_menu",
         "back_to_main",
@@ -343,6 +346,29 @@ JOIN_CANDIDATE_REQUIREMENTS_MARKDOWN = (
 )
 
 
+def role_entry_keyboard(role: str) -> list[dict]:
+    r = "client" if (role or "").strip().lower() == "client" else "worker"
+    return inline_keyboard(
+        [
+            [cb_btn("✅ Уже регистрировался", f"visit_entry_returning:{r}")],
+            [cb_btn("🆕 Регистрируюсь впервые", f"visit_entry_new:{r}")],
+            [cb_btn("⬅️ Назад", "main_menu")],
+        ]
+    )
+
+
+def role_not_found_keyboard(role: str) -> list[dict]:
+    """После «номер не найден» — сразу на регистрацию или повтор ввода."""
+    r = "client" if (role or "").strip().lower() == "client" else "worker"
+    return inline_keyboard(
+        [
+            [cb_btn("🆕 Регистрируюсь впервые", f"visit_entry_new:{r}")],
+            [cb_btn("📞 Указать другой номер", f"visit_entry_returning:{r}")],
+            [cb_btn("⬅️ В главное меню", "main_menu")],
+        ]
+    )
+
+
 def join_team_intro_keyboard() -> list[dict]:
     """Паритет keyboards.join_team_intro_keyboard — без вакансий на первом экране."""
     return inline_keyboard(
@@ -382,6 +408,18 @@ def profession_categories_keyboard() -> list[dict]:
             [cb_btn("🏠 Главное меню", "main_menu")],
         ]
     )
+
+
+def profession_summary_keyboard(*, edit_mode: bool = False) -> list[dict]:
+    """Паритет join_anketa profession_summary_keyboard."""
+    done_label = "✅ К подтверждению анкеты" if edit_mode else "➡️ Дальше — ФИО и анкета"
+    rows: list[list[dict]] = [
+        [cb_btn("➕ Добавить ещё профессию", "prof_add_another")],
+        [cb_btn(done_label, "prof_done")],
+    ]
+    if edit_mode:
+        rows.append([cb_btn("🔁 Очистить и выбрать заново", "prof_edit_reset")])
+    return inline_keyboard(rows)
 
 
 def profession_list_keyboard(cat: ProfessionCategory) -> list[dict]:

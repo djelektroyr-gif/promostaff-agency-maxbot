@@ -29,6 +29,7 @@ from config import (
 
 import visit_card
 import visit_join_validators
+from max_attachments import phone_input_keyboard
 from visit_join_anketa_catalog import (
     EXPERIENCE_RATING_TABLE,
     PROFESSION_SLUG_TO_TITLE,
@@ -118,6 +119,78 @@ def _client_visit_entry_text() -> str:
         + _consent_pd_tail()
         + ""
     )
+
+
+def _role_entry_text() -> str:
+    return (
+        "*У вас уже есть регистрация в Promostaff?*\n\n"
+        "Если вы уже проходили регистрацию в Telegram или MAX — нажмите "
+        "«Уже регистрировался» и укажите тот же номер телефона.\n\n"
+        "Если впервые — «Регистрируюсь впервые»."
+    )
+
+
+def _role_entry_screen(role: str) -> dict[str, Any]:
+    return {
+        "text": _role_entry_text(),
+        "format": "markdown",
+        "attachments": visit_card.role_entry_keyboard(role),
+    }
+
+
+def _start_role_entry_phone(max_uid: int, role: str) -> dict[str, Any]:
+    clear_session(max_uid)
+    SESSIONS[max_uid] = {
+        "flow": "role_entry",
+        "step": "phone",
+        "data": {"intended_role": role},
+    }
+    return {
+        "notification": "Вход по телефону",
+        "text": (
+            "📞 *Укажите номер телефона*\n\n"
+            "Нажмите *Поделиться контактом* или введите номер вручную.\n\n"
+            "_Пример: +7 916 123-45-67_"
+        ),
+        "format": "markdown",
+        "attachments": phone_input_keyboard(),
+    }
+
+
+def _begin_client_visit_registration_new(max_uid: int) -> dict[str, Any]:
+    clear_session(max_uid)
+    SESSIONS[max_uid] = {"flow": "client_visit", "step": "consent", "data": {}}
+    return {
+        "notification": "Меню заказчика",
+        "text": _client_visit_entry_text(),
+        "format": "markdown",
+        "attachments": visit_card.consent_gate_keyboard("client_visit"),
+    }
+
+
+def _show_join_team_intro(max_uid: int) -> dict[str, Any]:
+    clear_session(max_uid)
+    return {
+        "text": visit_card.text_join_team(),
+        "format": "markdown",
+        "attachments": visit_card.join_team_intro_keyboard(),
+    }
+
+
+def _extract_phone_from_incoming(
+    text: str, message_body: dict[str, Any] | None
+) -> str | None:
+    from max_contact_phone import contact_from_message_body
+
+    if message_body:
+        raw, _verified = contact_from_message_body(message_body)
+        if raw:
+            v = visit_join_validators.validate_join_phone(raw) or validate_phone(raw)
+            if v:
+                return v
+    if text:
+        return visit_join_validators.validate_join_phone(text) or validate_phone(text)
+    return None
 
 
 def clear_session(max_uid: int) -> None:
@@ -540,13 +613,8 @@ def start_client_visit_menu(max_uid: int) -> dict[str, Any]:
                 )
             return home
         return _gate_client_quote_access(max_uid) or {}
-    SESSIONS[max_uid] = {"flow": "client_visit", "step": "consent", "data": {}}
-    return {
-        "notification": "Меню заказчика",
-        "text": _client_visit_entry_text(),
-        "format": "markdown",
-        "attachments": visit_card.consent_gate_keyboard("client_visit"),
-    }
+    clear_session(max_uid)
+    return _role_entry_screen("client")
 
 
 def route_calculate_button(max_uid: int) -> dict[str, Any]:
@@ -657,16 +725,12 @@ def start_order(max_uid: int, *, announce_order_consent: bool = True) -> dict[st
 
 
 def show_join_team(max_uid: int) -> dict[str, Any]:
-    """Меню исполнителя — паритет TG show_join_team."""
+    """Меню исполнителя — сначала вход по телефону (паритет TG)."""
     blocked = _join_entry_blocked(max_uid)
     if blocked:
         return blocked
     clear_session(max_uid)
-    return {
-        "text": visit_card.text_join_team(),
-        "format": "markdown",
-        "attachments": visit_card.join_team_intro_keyboard(),
-    }
+    return _role_entry_screen("worker")
 
 
 def show_requirements(max_uid: int) -> dict[str, Any]:
@@ -798,6 +862,54 @@ def _format_question_plain(q: str, qid: int, who: str) -> str:
     )
 
 
+def _profession_summary_markdown(titles: list[str]) -> str:
+    if not titles:
+        return "*ПРОФЕССИИ*\n\nСписок пуст — выберите профессию в категории."
+    lines: list[str] = []
+    for i, t in enumerate(titles, start=1):
+        mark = " — *основная*" if i == 1 else ""
+        lines.append(f"{i}. {t}{mark}")
+    body = "\n".join(lines)
+    return (
+        "*ПРОФЕССИИ*\n\n"
+        f"{body}\n\n"
+        "Первая в списке — *основная* (её видят в профиле и используют в подборе по умолчанию).\n\n"
+        "Можно добавить ещё роль или перейти к ФИО."
+    )
+
+
+def _append_join_profession_title(data: dict[str, Any], title: str) -> tuple[list[str], bool]:
+    t = (title or "").strip()
+    if len(t) < 2:
+        return [], False
+    raw = list(data.get("join_profession_titles") or [])
+    if not raw and (data.get("position") or "").strip():
+        raw = [str(data.get("position") or "").strip()]
+    if any(x.strip().lower() == t.lower() for x in raw):
+        return raw, False
+    raw.append(t)
+    data["join_profession_titles"] = raw
+    data["position"] = raw[0]
+    return raw, True
+
+
+def _join_goto_profession_summary(
+    s: dict[str, Any], data: dict[str, Any], *, notification: str = ""
+) -> dict[str, Any]:
+    titles = list(data.get("join_profession_titles") or [])
+    s["step"] = "profession_summary"
+    out: dict[str, Any] = {
+        "text": _profession_summary_markdown(titles),
+        "format": "markdown",
+        "attachments": visit_card.profession_summary_keyboard(
+            edit_mode=bool(data.get("join_edit_mode"))
+        ),
+    }
+    if notification:
+        out["notification"] = notification
+    return out
+
+
 def _basic_info_intro() -> str:
     return (
         "*ОСНОВНАЯ ИНФОРМАЦИЯ*\n\n"
@@ -907,6 +1019,13 @@ def _join_portfolio_review_line(data: dict[str, Any]) -> str:
     return "нет"
 
 
+def _join_profession_display(data: dict[str, Any]) -> str:
+    titles = data.get("join_profession_titles")
+    if isinstance(titles, list) and titles:
+        return ", ".join(str(x).strip() for x in titles if str(x).strip())
+    return (data.get("position") or "").strip()
+
+
 def _build_join_tags(data: dict[str, Any]) -> str:
     parts = [
         (data.get("position") or "").strip(),
@@ -927,7 +1046,7 @@ def _build_join_review_text(data: dict[str, Any]) -> str:
         f"*ФИО:* {data.get('full_name') or m}\n"
         f"*Телефон:* {data.get('phone') or m}\n"
         f"*Дата рождения:* {data.get('birth_date') or m}\n"
-        f"*Профессия:* {data.get('position') or m}\n"
+        f"*Профессии:* {_join_profession_display(data) or m}\n"
         f"*Категория:* {data.get('profession_category') or m}\n"
         f"*Налоговый статус:* {data.get('tax_status_label') or m}\n"
         f"*ИНН:* {data.get('tax_inn') or m}\n"
@@ -1523,6 +1642,39 @@ async def process_callback(
 ) -> dict[str, Any] | None:
     payload = _norm_cb_payload(payload)
     who = _sender_label(sender)
+
+    if payload.startswith("visit_entry_returning:"):
+        role = payload.rsplit(":", 1)[-1].strip().lower()
+        if role not in ("client", "worker"):
+            return None
+        if role == "client" and has_max_active_executor_profile(max_uid):
+            from user_identity import ROLE_SWITCH_VIA_ADMIN_FOOTER_RU
+
+            return {
+                "notification": "Недоступно",
+                "text": (
+                    "Исполнителям недоступен вход как заказчику. Откройте главное меню."
+                    + ROLE_SWITCH_VIA_ADMIN_FOOTER_RU
+                ),
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
+        if role == "worker":
+            blocked = _join_entry_blocked(max_uid)
+            if blocked:
+                return blocked
+        return _start_role_entry_phone(max_uid, role)
+
+    if payload.startswith("visit_entry_new:"):
+        role = payload.rsplit(":", 1)[-1].strip().lower()
+        if role == "client":
+            return _begin_client_visit_registration_new(max_uid)
+        if role == "worker":
+            blocked = _join_entry_blocked(max_uid)
+            if blocked:
+                return blocked
+            return _show_join_team_intro(max_uid)
+
     s = SESSIONS.get(max_uid)
     _reg_payloads = frozenset(
         {
@@ -2005,6 +2157,9 @@ async def process_callback(
     if flow == "join" and step == "consent" and payload == "consent_join_accept":
         data["join_consent_accepted"] = True
         if data.get("join_entry") == "vacancy" and data.get("position"):
+            pos = str(data.get("position") or "").strip()
+            data["join_profession_titles"] = [pos]
+            data["position"] = pos
             s["step"] = "full_name"
             return {
                 "notification": "Согласие принято ✅",
@@ -2313,6 +2468,46 @@ async def process_callback(
         msg["notification"] = "Заполняем заявку заново…"
         return msg
 
+    if flow == "join" and step == "profession_summary":
+        if payload == "prof_add_another":
+            s["step"] = "profession_category"
+            return {
+                "notification": " ",
+                "text": "*ВЫБОР ПРОФЕССИИ*\n\nВыберите категорию 👇",
+                "format": "markdown",
+                "attachments": visit_card.profession_categories_keyboard(),
+            }
+        if payload == "prof_done":
+            titles = list(data.get("join_profession_titles") or [])
+            if not titles and (data.get("position") or "").strip():
+                titles = [str(data.get("position") or "").strip()]
+            if not titles:
+                return {
+                    "notification": "Добавьте хотя бы одну профессию",
+                    "text": _profession_summary_markdown([]),
+                    "format": "markdown",
+                    "attachments": visit_card.profession_summary_keyboard(),
+                }
+            if data.get("join_edit_mode"):
+                return _join_go_to_review(s, data)
+            s["step"] = "full_name"
+            return {
+                "notification": " ",
+                "text": _basic_info_intro(),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if payload == "prof_edit_reset":
+            data["join_profession_titles"] = []
+            data["position"] = ""
+            s["step"] = "profession_category"
+            return {
+                "notification": "Список очищен",
+                "text": "*ВЫБОР ПРОФЕССИИ*\n\nВыберите категорию 👇",
+                "format": "markdown",
+                "attachments": visit_card.profession_categories_keyboard(),
+            }
+
     if flow == "join" and step == "profession_category":
         low = payload.lower()
         if low in ("main_menu", "back", "back_to_main"):
@@ -2363,14 +2558,17 @@ async def process_callback(
                     "format": "markdown",
                     "attachments": visit_card.profession_categories_keyboard(),
                 }
-            data["position"] = title
-            s["step"] = "full_name"
-            return {
-                "notification": f"Профессия: {title}",
-                "text": _basic_info_intro(),
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            raw, added = _append_join_profession_title(data, title)
+            if not added:
+                return {
+                    "notification": "Уже в списке",
+                    "text": _profession_summary_markdown(raw),
+                    "format": "markdown",
+                    "attachments": visit_card.profession_summary_keyboard(
+                        edit_mode=bool(data.get("join_edit_mode"))
+                    ),
+                }
+            return _join_goto_profession_summary(s, data, notification=f"Профессия: {title}")
         if low.startswith("prof_custom:"):
             cat_s = payload.split(":", 1)[-1].strip().lower()
             try:
@@ -2583,6 +2781,49 @@ async def process_text(
         ref = _image_ref_from_body(message_body) or ""
         return vcf.process_clarification_text(max_uid, s, text, file_ref=ref)
 
+    if flow == "role_entry" and step == "phone":
+        role = str(data.get("intended_role") or "client")
+        v = _extract_phone_from_incoming(text, message_body)
+        if not v:
+            return {
+                "text": (
+                    "💡 Не удалось распознать номер. Нажмите *Поделиться контактом* "
+                    "или введите мобильный РФ, например +79161234567."
+                ),
+                "format": "markdown",
+                "attachments": phone_input_keyboard(),
+            }
+        from user_identity import resolve_registration_by_phone
+
+        res = resolve_registration_by_phone(int(max_uid), v, role)  # type: ignore[arg-type]
+        from visit_phone_login_log import log_visit_phone_login
+
+        un = (sender or {}).get("username") if isinstance(sender, dict) else ""
+        log_visit_phone_login(
+            source="max",
+            platform_user_id=int(max_uid),
+            phone=v,
+            intended_role=role,
+            outcome="not_found" if res.action == "continue" else res.action,
+            username=str(un or ""),
+        )
+        if res.action == "continue":
+            clear_session(max_uid)
+            return {
+                "notification": "Не найдено",
+                "text": (
+                    "По этому номеру регистрация *не найдена*.\n\n"
+                    "Если вы ещё не регистрировались — нажмите кнопку ниже. "
+                    "Или укажите другой номер."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.role_not_found_keyboard(role),
+            }
+        blocked = _phone_resolve_or_none(max_uid, s, v, role)
+        if blocked:
+            return blocked
+        return None
+
     if step == "consent":
         if flow == "client_visit":
             return {
@@ -2660,9 +2901,13 @@ async def process_text(
             data["position_in_org"] = t
             s["step"] = "phone"
             return {
-                "text": "Отправьте номер телефона кнопкой или введите вручную в формате +7…",
+                "text": (
+                    "📞 *Укажите номер телефона*\n\n"
+                    "Нажмите *Поделиться контактом* или введите вручную.\n\n"
+                    "_Пример: +7 916 123-45-67_"
+                ),
                 "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
+                "attachments": phone_input_keyboard(),
             }
         if step == "email":
             if not validate_email(text.strip()):
@@ -2690,12 +2935,15 @@ async def process_text(
                 "attachments": visit_card.client_reg_confirm_keyboard(),
             }
         if step == "phone":
-            v = validate_phone(text)
+            v = _extract_phone_from_incoming(text, message_body) or validate_phone(text)
             if not v:
                 return {
-                    "text": "❌ Не удалось распознать номер. Введите +7XXXXXXXXXX или отправьте контакт кнопкой.",
+                    "text": (
+                        "❌ Не удалось распознать номер. Нажмите *Поделиться контактом* "
+                        "или введите +7XXXXXXXXXX."
+                    ),
                     "format": "markdown",
-                    "attachments": visit_card.back_to_main_keyboard(),
+                    "attachments": phone_input_keyboard(),
                 }
             data["phone"] = v
             blocked = _phone_resolve_or_none(max_uid, s, v, "client")
@@ -3070,12 +3318,27 @@ async def process_text(
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
-            data["position"] = t
-            s["step"] = "full_name"
+            raw, added = _append_join_profession_title(data, t)
+            if not added:
+                return {
+                    "notification": "Уже в списке",
+                    "text": _profession_summary_markdown(raw),
+                    "format": "markdown",
+                    "attachments": visit_card.profession_summary_keyboard(
+                        edit_mode=bool(data.get("join_edit_mode"))
+                    ),
+                }
+            return _join_goto_profession_summary(s, data, notification="✅ Профессию записали")
+        if step == "profession_summary":
             return {
-                "text": _basic_info_intro(),
+                "text": (
+                    "Нажмите кнопку под сообщением: добавить профессию, "
+                    "перейти к ФИО или вернитесь в меню."
+                ),
                 "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
+                "attachments": visit_card.profession_summary_keyboard(
+                    edit_mode=bool(data.get("join_edit_mode"))
+                ),
             }
         if step == "full_name":
             if not data.get("join_consent_accepted"):
@@ -3096,21 +3359,23 @@ async def process_text(
             s["step"] = "phone"
             return {
                 "text": (
-                    "📞 *Введите номер телефона:*\n\n"
+                    "📞 *Укажите номер телефона*\n\n"
+                    "Нажмите *Поделиться контактом* или введите вручную.\n\n"
                     "_Пример: +7 916 123-45-67_"
                 ),
                 "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
+                "attachments": phone_input_keyboard(),
             }
         if step == "phone":
-            v = visit_join_validators.validate_join_phone(text)
+            v = _extract_phone_from_incoming(text, message_body)
             if not v:
                 return {
                     "text": (
-                        "💡 *Укажите номер в формате мобильного телефона РФ — он нужен для связи по сменам.*"
+                        "💡 *Укажите номер в формате мобильного телефона РФ — "
+                        "кнопкой контакта или вручную.*"
                     ),
                     "format": "markdown",
-                    "attachments": visit_card.back_to_main_keyboard(),
+                    "attachments": phone_input_keyboard(),
                 }
             data["phone"] = v
             blocked = _phone_resolve_or_none(max_uid, s, v, "worker")

@@ -359,6 +359,26 @@ def init_schema() -> None:
                 END $$;
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS visit_phone_login_log (
+                    id BIGSERIAL PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    platform_user_id BIGINT NOT NULL,
+                    username TEXT,
+                    intended_role TEXT NOT NULL,
+                    phone TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_visit_phone_login_log_created
+                ON visit_phone_login_log (created_at DESC)
+                """
+            )
     logger.info("agency_max_funnel schema ensured")
 
 

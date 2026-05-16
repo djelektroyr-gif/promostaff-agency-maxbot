@@ -54,6 +54,10 @@ Webhook API: `promostaff-bot/docs/MAX_WEBHOOK_AND_SUBSCRIPTIONS.md`.
 | Главное меню визитки | `visit_card_keyboard` (5 кнопок: О нас, меню заказчика/исполнителя, FAQ, связь) | OK (с 2026-05-16: убран «плоский» старый список из 9+ кнопок) | — |
 | О нас, преимущества, как работаем, FAQ, отзывы, кейсы | подменю `about_section_keyboard` | OK (`about_keyboard` в MAX) | — |
 | **Один телефон — один `users`, без смены роли** | `visit_user_identity` + шаг телефона в join/visit | OK (`user_identity.py`, шаг `phone` в `visit_flows`) | — |
+| **«Уже регистрировался» / «Впервые»** перед телефоном | `visit_role_entry` + `role_entry_keyboard` | OK (2026-05-16: flow `role_entry`, `visit_card.role_entry_keyboard`) | — |
+| **Журнал входа по телефону** | `visit_phone_login_log`, админ `/admin_phone_login` | OK (2026-05-16: `visit_phone_login_log.py`, `source=max`) | — |
+| **Телефон с кнопки контакта** (не ручной ввод) | request_contact / Reply | OK (2026-05-16: `max_contact_phone.py`, vCard + HMAC) | — |
+| **«Кабинет на сайте»** (одноразовая ссылка) | `open_web_cabinet` в TG | **Нет** | P1 после визитки; веб `/cabinet/enter` уже есть |
 | Связаться (тел/email + вопрос менеджеру) | OK | OK | — |
 | Хочу в команду → intro | `join_team_intro_keyboard` (3 кнопки) | OK (с 2026-05-16: не статический старый экран) | — |
 | Вакансии + кнопка «Хочу: …» на каждую | `vac_view` / `vac_apply_*` | OK (`vacancies_list_keyboard`, `vacancy_detail_keyboard`) | — |
@@ -83,7 +87,7 @@ Webhook API: `promostaff-bot/docs/MAX_WEBHOOK_AND_SUBSCRIPTIONS.md`.
 |------|--------------------------------------|---------------------|-----------|
 | Согласие ПДн + terms перед селфи | OK | OK | — |
 | Каталог профессий | OK | OK | — |
-| Несколько профессий (profession_summary) | OK | **Нет** (одна профессия за анкету) | P1 |
+| Несколько профессий (profession_summary) | OK | OK (`join_profession_titles`, `prof_add_another` / `prof_done`) | — |
 | ФИО, телефон, ДР | OK | OK | — |
 | Налоговые ветки (ФЛ/СЗ/ИП) | полные | OK (ИНН ФЛ 12 цифр → СНИЛС/реквизиты); СЗ/помощь → FSM Т-Банк при `TBANK_LK_URL` | — |
 | T-Bank cabinet / register confirm | `tbank_*` states | OK (`join_tbank_*`, шаги `tbank_cabinet` / `tbank_register_confirm`) | — |
@@ -108,7 +112,8 @@ Webhook API: `promostaff-bot/docs/MAX_WEBHOOK_AND_SUBSCRIPTIONS.md`.
 
 | Блок | Готовность | Заметка |
 |------|------------|---------|
-| **Вход `/cabinet/login` только по телефону** | Код OK | Нужен env на **promostaff-web**: `CABINET_BROWSER_LOGIN_PHONE_ONLY=1` (без этого остаётся OTP в Telegram). **Не путать** с резолвом телефона в ботах MAX/TG. |
+| **Единый вход `/login` + `/cabinet/enter?token=`** | TG: кнопка в боте | Веб OK (2026-05-16, **promostaff-bot**); MAX-бот — ссылку пока не выдаёт | P1: `cabinet_web_login_tokens` из MAX |
+| **Вход кабинета из браузера (телефон)** | `/login?role=client\|worker` | Код OK | Env **promostaff-web**: `CABINET_BROWSER_LOGIN_PHONE_ONLY=1`. **Не путать** с резолвом телефона в ботах MAX/TG. |
 | Чтение `agency_visit_*` по `user_id` | OK | Работает с synthetic `tg_id` |
 | Customer 360 / CRM / HRM join | OK | Метки MAX в UI |
 | Запись заказов/join из MAX | Частично | Пишет maxbot; `source` желательно `max` |
