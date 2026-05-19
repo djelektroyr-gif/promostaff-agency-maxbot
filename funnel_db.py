@@ -63,8 +63,18 @@ WORKER_STATUS_PENDING_REVIEW = "pending_review"
 WORKER_STATUS_CLARIFICATION = "clarification_needed"
 WORKER_STATUS_REJECTED = "rejected"
 WORKER_STATUS_APPROVED = "approved"
+COOPERATION_MODE_AGENCY = "agency"
+COOPERATION_MODE_PLATFORM = "platform"
+VALID_COOPERATION_MODES = frozenset({COOPERATION_MODE_AGENCY, COOPERATION_MODE_PLATFORM})
 _HRM_PIPELINE = "hrm"
 _HRM_JOIN_SOURCE = "agency_visit_join"
+
+
+def normalize_cooperation_mode(raw: object) -> str:
+    mode = str(raw or "").strip().lower()
+    if mode in VALID_COOPERATION_MODES:
+        return mode
+    return COOPERATION_MODE_AGENCY
 
 
 def _client_tg_id_for_max_cp(
@@ -389,6 +399,34 @@ def init_schema() -> None:
                 ON visit_phone_login_log (created_at DESC)
                 """
             )
+            cur.execute(
+                """
+                DO $$ BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = 'public' AND table_name = 'workers'
+                    ) THEN
+                        ALTER TABLE workers
+                        ADD COLUMN IF NOT EXISTS cooperation_mode TEXT NOT NULL DEFAULT 'agency';
+                        UPDATE workers
+                        SET cooperation_mode = 'agency'
+                        WHERE COALESCE(BTRIM(cooperation_mode), '') = '';
+                    END IF;
+                END $$;
+                """
+            )
+            cur.execute(
+                """
+                UPDATE agency_visit_join_requests
+                SET payload = jsonb_set(
+                    COALESCE(payload, '{}'::jsonb),
+                    '{cooperation_mode}',
+                    to_jsonb('agency'::text),
+                    true
+                )
+                WHERE COALESCE(payload->>'cooperation_mode', '') = ''
+                """
+            )
     logger.info("agency_max_funnel schema ensured")
 
 
@@ -534,24 +572,64 @@ def is_max_visit_worker_verified(max_user_id: int) -> bool:
                         cur.execute(
                             """
                             SELECT 1 FROM workers
-                            WHERE user_id = %s AND COALESCE(status, 'new') = %s
+                            WHERE user_id = %s
+                              AND COALESCE(status, 'new') = %s
+                              AND COALESCE(cooperation_mode, 'agency') = %s
                             LIMIT 1
                             """,
-                            (ids[0], WORKER_STATUS_APPROVED),
+                            (ids[0], WORKER_STATUS_APPROVED, COOPERATION_MODE_AGENCY),
                         )
                     else:
                         cur.execute(
                             """
                             SELECT 1 FROM workers
-                            WHERE user_id IN (%s, %s) AND COALESCE(status, 'new') = %s
+                            WHERE user_id IN (%s, %s)
+                              AND COALESCE(status, 'new') = %s
+                              AND COALESCE(cooperation_mode, 'agency') = %s
                             LIMIT 1
                             """,
-                            (ids[0], ids[1], WORKER_STATUS_APPROVED),
+                            (ids[0], ids[1], WORKER_STATUS_APPROVED, COOPERATION_MODE_AGENCY),
                         )
                     return bool(cur.fetchone())
         except Exception:
             logger.exception("is_max_visit_worker_verified pg")
     return False
+
+
+def get_max_worker_cooperation_mode(max_user_id: int) -> str:
+    ids = _worker_lookup_ids_for_max(int(max_user_id))
+    preferred = ids[0]
+    if not DATABASE_URL:
+        return COOPERATION_MODE_AGENCY
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                if len(ids) == 1:
+                    cur.execute(
+                        "SELECT COALESCE(cooperation_mode, %s) FROM workers WHERE user_id = %s LIMIT 1",
+                        (COOPERATION_MODE_AGENCY, ids[0]),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT COALESCE(cooperation_mode, %s)
+                        FROM workers
+                        WHERE user_id IN (%s, %s)
+                        ORDER BY CASE WHEN user_id = %s THEN 0 ELSE 1 END
+                        LIMIT 1
+                        """,
+                        (COOPERATION_MODE_AGENCY, ids[0], ids[1], preferred),
+                    )
+                row = cur.fetchone()
+                if row and row[0]:
+                    return normalize_cooperation_mode(row[0])
+    except Exception:
+        logger.exception("get_max_worker_cooperation_mode max_uid=%s", max_user_id)
+    return COOPERATION_MODE_AGENCY
+
+
+def max_worker_agency_operations_eligible(max_user_id: int) -> bool:
+    return bool(is_max_visit_worker_verified(max_user_id))
 
 
 def has_max_active_executor_profile(max_user_id: int) -> bool:
@@ -886,6 +964,7 @@ def save_visit_join(max_user_id: int, username: str, payload_json: str) -> int |
         data = {}
     if not isinstance(data, dict):
         data = {}
+    data["cooperation_mode"] = normalize_cooperation_mode(data.get("cooperation_mode"))
     phone = (data.get("phone") or "").strip()
     tg_id = int(data.get("canonical_user_tg_id") or 0) or worker_tg_id_for_max(int(max_user_id))
     if phone and not data.get("canonical_user_tg_id"):
@@ -951,15 +1030,16 @@ def save_visit_join(max_user_id: int, username: str, payload_json: str) -> int |
                 """
                 INSERT INTO workers (
                     user_id, full_name, phone, profession, status, rating,
-                    compensation_pay_tier, registered_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                    compensation_pay_tier, cooperation_mode, registered_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (user_id) DO UPDATE SET
                     full_name = EXCLUDED.full_name,
                     phone = EXCLUDED.phone,
                     profession = EXCLUDED.profession,
                     status = EXCLUDED.status,
                     rating = EXCLUDED.rating,
-                    compensation_pay_tier = EXCLUDED.compensation_pay_tier
+                    compensation_pay_tier = EXCLUDED.compensation_pay_tier,
+                    cooperation_mode = EXCLUDED.cooperation_mode
                 """,
                 (
                     tg_id,
@@ -969,6 +1049,7 @@ def save_visit_join(max_user_id: int, username: str, payload_json: str) -> int |
                     WORKER_STATUS_PENDING_REVIEW,
                     base_rating,
                     pay_tier,
+                    data["cooperation_mode"],
                 ),
             )
     _sync_hrm_crm_card_for_join_request(request_id, tg_id, stage="new", payload_dict=data)
@@ -1004,6 +1085,29 @@ def get_visitcard_stats() -> dict[str, int]:
             cur.execute("SELECT COUNT(*) FROM agency_visit_questions")
             questions = int((cur.fetchone() or [0])[0] or 0)
     return {"orders": orders, "join": join, "questions": questions}
+
+
+def get_worker_cooperation_mode_metrics() -> dict[str, int]:
+    if not DATABASE_URL:
+        return {"agency_workers": 0, "platform_workers": 0}
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COALESCE(cooperation_mode, 'agency') AS mode, COUNT(*)
+                FROM workers
+                GROUP BY 1
+                """
+            )
+            rows = cur.fetchall() or []
+    out = {"agency_workers": 0, "platform_workers": 0}
+    for mode, cnt in rows:
+        m = normalize_cooperation_mode(mode)
+        if m == COOPERATION_MODE_PLATFORM:
+            out["platform_workers"] += int(cnt or 0)
+        else:
+            out["agency_workers"] += int(cnt or 0)
+    return out
 
 
 def list_visit_rows(kind: str, limit: int = 100, date_from: str = "", date_to: str = "") -> list[dict]:

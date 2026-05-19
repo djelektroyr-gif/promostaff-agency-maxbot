@@ -37,6 +37,8 @@ from visit_join_anketa_catalog import (
 )
 from funnel_store import funnel_touch_complete
 from funnel_db import (
+    COOPERATION_MODE_PLATFORM,
+    get_max_worker_cooperation_mode,
     has_max_active_executor_profile,
     is_max_visit_client_registered,
     is_max_visit_client_verified,
@@ -69,6 +71,15 @@ def _norm_cb_payload(payload: Any) -> str:
 
 
 SESSIONS: dict[int, dict[str, Any]] = {}
+_PLATFORM_GATE_BLOCKS_TOTAL = 0
+_PLATFORM_GATE_BLOCKS_BY_USER: dict[int, int] = {}
+
+
+def get_platform_gate_metrics() -> dict[str, int]:
+    return {
+        "platform_gate_blocks_total": int(_PLATFORM_GATE_BLOCKS_TOTAL),
+        "platform_gate_users_count": int(len(_PLATFORM_GATE_BLOCKS_BY_USER)),
+    }
 
 
 SHIFT_STEP_TEXT = (
@@ -520,6 +531,7 @@ VAC_FROM_KEY = {
 
 
 def _join_entry_blocked(max_uid: int) -> dict[str, Any] | None:
+    global _PLATFORM_GATE_BLOCKS_TOTAL
     if is_max_visit_client_registered(max_uid):
         return {
             "notification": "Недоступно",
@@ -531,6 +543,21 @@ def _join_entry_blocked(max_uid: int) -> dict[str, Any] | None:
             "attachments": visit_card.main_menu_keyboard(),
         }
     if has_max_active_executor_profile(max_uid):
+        if get_max_worker_cooperation_mode(max_uid) == COOPERATION_MODE_PLATFORM:
+            _PLATFORM_GATE_BLOCKS_TOTAL += 1
+            _PLATFORM_GATE_BLOCKS_BY_USER[int(max_uid)] = int(
+                _PLATFORM_GATE_BLOCKS_BY_USER.get(int(max_uid), 0)
+            ) + 1
+            return {
+                "notification": "Платформенный контур",
+                "text": (
+                    "*Профиль исполнителя подтверждён.*\n\n"
+                    "Для аккаунта включён платформенный режим: агентские смены и рассылки сейчас недоступны.\n"
+                    "Откройте «Кабинет на сайте» или напишите менеджеру для смены режима."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
         if is_max_visit_worker_verified(max_uid):
             return {
                 "notification": "Уже в команде",
@@ -1505,6 +1532,8 @@ def _supervisor_offer_text(total: int, rec: int) -> str:
 def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] | None:
     """Меню заказчика/исполнителя без активной SESSION (после clear_session)."""
     from funnel_db import (
+        COOPERATION_MODE_PLATFORM,
+        get_max_worker_cooperation_mode,
         is_max_visit_client_verified,
         is_max_visit_worker_verified,
         list_agency_visit_orders_for_user,
@@ -1654,6 +1683,25 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
         ),
     }
     if payload in worker_texts:
+        if (
+            has_max_active_executor_profile(max_uid)
+            and get_max_worker_cooperation_mode(max_uid) == COOPERATION_MODE_PLATFORM
+        ):
+            global _PLATFORM_GATE_BLOCKS_TOTAL
+            _PLATFORM_GATE_BLOCKS_TOTAL += 1
+            _PLATFORM_GATE_BLOCKS_BY_USER[int(max_uid)] = int(
+                _PLATFORM_GATE_BLOCKS_BY_USER.get(int(max_uid), 0)
+            ) + 1
+            return {
+                "notification": "Платформенный контур",
+                "text": (
+                    "*Профиль исполнителя подтверждён.*\n\n"
+                    "Для аккаунта включён платформенный режим: агентские смены в MAX не показываются по умолчанию.\n"
+                    "Используйте кабинет на сайте или обратитесь к менеджеру для переключения режима."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
         if not is_max_visit_worker_verified(max_uid):
             return {
                 "notification": "Сначала регистрация и верификация",

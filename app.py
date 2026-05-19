@@ -23,6 +23,7 @@ from config import (
 from notify import smtp_configured
 from handlers import get_ui_spam_metrics, process_update
 from max_client import close_http_client, post_message
+from visit_flows import get_platform_gate_metrics
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -184,6 +185,21 @@ def _ui_metrics() -> dict:
         }
 
 
+def _cooperation_metrics() -> dict:
+    out = {"agency_workers": 0, "platform_workers": 0, "cooperation_metrics_error": ""}
+    if not DATABASE_URL:
+        return out
+    try:
+        from funnel_db import get_worker_cooperation_mode_metrics
+
+        stats = get_worker_cooperation_mode_metrics()
+        stats["cooperation_metrics_error"] = ""
+        return stats
+    except Exception as e:
+        out["cooperation_metrics_error"] = str(e)
+        return out
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if DATABASE_URL:
@@ -258,6 +274,8 @@ async def admin():
     funnel = _funnel_metrics()
     visit = _visitcard_metrics()
     ui = _ui_metrics()
+    coop = _cooperation_metrics()
+    gate = get_platform_gate_metrics()
     return {
         "status": "ok",
         "message": "PROMOSTAFF AGENCY MAX admin",
@@ -283,6 +301,10 @@ async def admin():
             "visit_questions": visit["questions"],
             "ui_spam_errors_total": ui.get("ui_spam_errors_total", 0),
             "ui_spam_users_count": ui.get("ui_spam_users_count", 0),
+            "workers_agency_mode": coop.get("agency_workers", 0),
+            "workers_platform_mode": coop.get("platform_workers", 0),
+            "platform_gate_blocks_total": gate.get("platform_gate_blocks_total", 0),
+            "platform_gate_users_count": gate.get("platform_gate_users_count", 0),
         },
         "quick_links": {
             "ui": "/admin/ui",
@@ -319,6 +341,8 @@ async def admin_ui(
     funnel = _funnel_metrics()
     visit = _visitcard_metrics()
     ui = _ui_metrics()
+    coop = _cooperation_metrics()
+    gate = get_platform_gate_metrics()
     visit_rows = []
     try:
         from funnel_db import list_visit_rows
@@ -343,6 +367,10 @@ async def admin_ui(
         ("Visit questions", str(visit["questions"])),
         ("UI spam errors", str(ui.get("ui_spam_errors_total", 0))),
         ("UI spam users", str(ui.get("ui_spam_users_count", 0))),
+        ("Workers agency mode", str(coop.get("agency_workers", 0))),
+        ("Workers platform mode", str(coop.get("platform_workers", 0))),
+        ("Platform gate blocks", str(gate.get("platform_gate_blocks_total", 0))),
+        ("Platform gate users", str(gate.get("platform_gate_users_count", 0))),
     ]
     cards_html = "\n".join(
         f'<div class="card"><div class="title">{title}</div><div class="value">{value}</div></div>'
