@@ -29,7 +29,7 @@ from config import (
 
 import visit_card
 import visit_join_validators
-from max_attachments import phone_input_keyboard
+from max_attachments import cb_btn, inline_keyboard, link_btn, phone_input_keyboard
 from visit_join_anketa_catalog import (
     EXPERIENCE_RATING_TABLE,
     PROFESSION_SLUG_TO_TITLE,
@@ -1529,8 +1529,8 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
             "notification": " ",
             "text": (
                 "*Мои проекты*\n\n"
-                "Раздел подключается к учёту в панели (promostaff-bot). "
-                "Скоро здесь будет список проектов."
+                "Раздел синхронизируется с веб-кабинетом Promostaff.\n"
+                "Пока откройте «Кабинет на сайте» в этом меню — там основной рабочий контур."
             ),
             "format": "markdown",
             "attachments": visit_card.client_registered_main_menu_keyboard(),
@@ -1588,34 +1588,70 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
             }
         return {
             "notification": " ",
-            "text": "*Настройки*\n\nЗаглушка: уведомления и профиль — в следующих версиях.",
-            "format": "markdown",
-            "attachments": visit_card.client_registered_main_menu_keyboard(),
-        }
-
-    if payload == "client_reg_web":
-        if not is_max_visit_client_verified(max_uid):
-            return {
-                "notification": "Нужна регистрация",
-                "text": "Сначала пройдите регистрацию заказчика.",
-                "format": "markdown",
-                "attachments": visit_card.main_menu_keyboard(),
-            }
-        return {
-            "notification": " ",
             "text": (
-                "*Веб-панель*\n\n"
-                "Вход будет доступен по ссылке из настроек (SSO / T-Банк — по готовности)."
+                "*Настройки*\n\n"
+                "Раздел в разработке. Сейчас изменения профиля и уведомлений делаются через кабинет и менеджера."
             ),
             "format": "markdown",
             "attachments": visit_card.client_registered_main_menu_keyboard(),
         }
 
+    if payload in ("client_reg_web", "open_web_cabinet", "client_cabinet"):
+        cl_ok = bool(is_max_visit_client_verified(max_uid))
+        wk_ok = bool(is_max_visit_worker_verified(max_uid))
+        if not cl_ok and not wk_ok:
+            return {
+                "notification": "Нужна верификация",
+                "text": "Кабинет на сайте доступен после верификации профиля.",
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
+        from cabinet_web_login_token import build_cabinet_web_login_url
+
+        url, err = build_cabinet_web_login_url(max_uid)
+        if not url:
+            return {
+                "notification": "Ошибка",
+                "text": err or "Не удалось подготовить ссылку. Попробуйте позже.",
+                "format": "markdown",
+                "attachments": (
+                    visit_card.client_registered_main_menu_keyboard()
+                    if cl_ok
+                    else visit_card.worker_registered_main_menu_keyboard()
+                ),
+            }
+        return {
+            "notification": " ",
+            "text": (
+                "*Кабинет на сайте*\n\n"
+                "Откройте кабинет в браузере. Ссылка одноразовая и действует около 15 минут."
+            ),
+            "format": "markdown",
+            "attachments": inline_keyboard(
+                [
+                    [link_btn("🌐 Открыть кабинет", url)],
+                    [cb_btn("🏠 Меню визитки", "visit_public_menu")],
+                ]
+            ),
+        }
+
     worker_texts = {
-        "worker_reg_profile": "*Мои данные*\n\nРедактирование анкеты — в следующей итерации (ТЗ Pro).",
-        "worker_reg_shifts": "*Мои смены*\n\nСписок смен — после связи с учётом в панели.",
-        "worker_reg_payments": "*Мои выплаты*\n\nВыплаты и T-Банк — по готовности данных.",
-        "worker_reg_beacon": "*Маяк*\n\nСрочный поиск: окно активности и уведомления — в разработке.",
+        "worker_reg_profile": (
+            "*Мои данные*\n\n"
+            "Карточка и документы синхронизируются с веб-кабинетом. Для актуальных данных откройте «Кабинет на сайте»."
+        ),
+        "worker_reg_shifts": (
+            "*Мои смены*\n\n"
+            "Смены в MAX появятся после завершения паритета с Telegram. Сейчас используйте веб-кабинет и Telegram-канал задач."
+        ),
+        "worker_reg_payments": (
+            "*Мои выплаты*\n\n"
+            "Раздел выплат в MAX в разработке. Актуальные суммы и статусы смотрите в веб-кабинете."
+        ),
+        "worker_reg_beacon": (
+            "*Маяк*\n\n"
+            "Режим срочного поиска в MAX запланирован после паритета по сменам."
+        ),
     }
     if payload in worker_texts:
         if not is_max_visit_worker_verified(max_uid):
@@ -1682,6 +1718,8 @@ async def process_callback(
             "client_reg_orders",
             "client_reg_settings",
             "client_reg_web",
+            "open_web_cabinet",
+            "client_cabinet",
             "worker_reg_profile",
             "worker_reg_shifts",
             "worker_reg_payments",

@@ -57,6 +57,7 @@ FUNNEL_REMINDERS_INTERVAL_SEC = _env_int("FUNNEL_REMINDERS_INTERVAL_SEC", 600)
 # Как в Desktop PROMOSTAFF-AGENCY BOT/config.py (можно переопределить в Timeweb).
 COMPANY_NAME = _env("COMPANY_NAME") or "PROMOSTAFF-AGENCY"
 WEBSITE_URL = _env("WEBSITE_URL") or "https://promostaff-agency.ru"
+CABINET_WEB_BASE_URL = (_env("CABINET_WEB_BASE_URL") or "https://promostaff.pro").strip().rstrip("/")
 _BASE_DIR = Path(__file__).resolve().parent
 LOGO_PNG_PATH = _BASE_DIR / "assets" / "logo.png"
 # Публичный HTTPS URL логотипа (для MAX и опционально в тексте). Файл в репо: assets/logo.png — см. assets/README.txt

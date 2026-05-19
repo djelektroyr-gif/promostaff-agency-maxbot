@@ -157,6 +157,7 @@ def is_visit_flow_payload(p: str) -> bool:
         "client_reg_orders",
         "client_reg_settings",
         "client_reg_web",
+        "open_web_cabinet",
         "worker_reg_profile",
         "worker_reg_shifts",
         "worker_reg_payments",
@@ -182,7 +183,7 @@ def client_registered_main_menu_keyboard(*, quotes_enabled: bool = True) -> list
         [cb_btn("📂 Мои проекты", "client_reg_projects")],
         [cb_btn("📜 История заказов", "client_reg_orders")],
         [cb_btn("⚙️ Настройки", "client_reg_settings")],
-        [cb_btn("🌐 Открыть веб-панель", "client_reg_web")],
+        [cb_btn("🌐 Кабинет на сайте", "open_web_cabinet")],
     ]
     if quotes_enabled:
         rows.append([cb_btn("📋 Заказать проект", "client_quote_quick")])
@@ -215,6 +216,7 @@ def worker_registered_main_menu_keyboard() -> list[dict]:
         [cb_btn("📅 Мои смены", "worker_reg_shifts")],
         [cb_btn("💳 Мои выплаты", "worker_reg_payments")],
         [cb_btn("📍 Маяк", "worker_reg_beacon")],
+        [cb_btn("🌐 Кабинет на сайте", "open_web_cabinet")],
         [cb_btn("🏠 Меню визитки", "visit_public_menu")],
     ]
     return inline_keyboard(rows)
