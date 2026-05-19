@@ -21,7 +21,7 @@ from config import (
     MAX_TOKEN,
 )
 from notify import smtp_configured
-from handlers import process_update
+from handlers import get_ui_spam_metrics, process_update
 from max_client import close_http_client, post_message
 
 logging.basicConfig(level=logging.INFO)
@@ -173,6 +173,17 @@ def _visitcard_metrics() -> dict:
         return out
 
 
+def _ui_metrics() -> dict:
+    try:
+        return get_ui_spam_metrics()
+    except Exception as e:
+        return {
+            "ui_spam_errors_total": 0,
+            "ui_spam_users_count": 0,
+            "ui_metrics_error": str(e),
+        }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if DATABASE_URL:
@@ -246,6 +257,7 @@ async def root():
 async def admin():
     funnel = _funnel_metrics()
     visit = _visitcard_metrics()
+    ui = _ui_metrics()
     return {
         "status": "ok",
         "message": "PROMOSTAFF AGENCY MAX admin",
@@ -269,6 +281,8 @@ async def admin():
             "visit_orders": visit["orders"],
             "visit_join": visit["join"],
             "visit_questions": visit["questions"],
+            "ui_spam_errors_total": ui.get("ui_spam_errors_total", 0),
+            "ui_spam_users_count": ui.get("ui_spam_users_count", 0),
         },
         "quick_links": {
             "ui": "/admin/ui",
@@ -304,6 +318,7 @@ async def admin_ui(
                 action_error = f"Ошибка ручного скана: {e}"
     funnel = _funnel_metrics()
     visit = _visitcard_metrics()
+    ui = _ui_metrics()
     visit_rows = []
     try:
         from funnel_db import list_visit_rows
@@ -326,6 +341,8 @@ async def admin_ui(
         ("Visit orders", str(visit["orders"])),
         ("Visit join", str(visit["join"])),
         ("Visit questions", str(visit["questions"])),
+        ("UI spam errors", str(ui.get("ui_spam_errors_total", 0))),
+        ("UI spam users", str(ui.get("ui_spam_users_count", 0))),
     ]
     cards_html = "\n".join(
         f'<div class="card"><div class="title">{title}</div><div class="value">{value}</div></div>'

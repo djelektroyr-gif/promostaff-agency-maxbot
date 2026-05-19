@@ -185,11 +185,11 @@ def _extract_phone_from_incoming(
     if message_body:
         raw, _verified = contact_from_message_body(message_body)
         if raw:
-            v = visit_join_validators.validate_join_phone(raw) or validate_phone(raw)
+            v = visit_join_validators.validate_join_phone_mobile_rf(raw)
             if v:
                 return v
     if text:
-        return visit_join_validators.validate_join_phone(text) or validate_phone(text)
+        return visit_join_validators.validate_join_phone_mobile_rf(text)
     return None
 
 
@@ -3387,9 +3387,7 @@ async def process_text(
                 }
             if not visit_join_validators.validate_join_full_name(text):
                 return {
-                    "text": (
-                        "💡 *Укажите полные фамилию, имя и отчество — это нужно для оформления документов.*"
-                    ),
+                    "text": f"💡 {visit_join_validators.join_validation_error_text('full_name_invalid')}",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -3408,10 +3406,7 @@ async def process_text(
             v = _extract_phone_from_incoming(text, message_body)
             if not v:
                 return {
-                    "text": (
-                        "💡 *Укажите номер в формате мобильного телефона РФ — "
-                        "кнопкой контакта или вручную.*"
-                    ),
+                    "text": f"💡 {visit_join_validators.join_validation_error_text('phone_mobile_ru_invalid')}",
                     "format": "markdown",
                     "attachments": phone_input_keyboard(),
                 }
@@ -3447,7 +3442,7 @@ async def process_text(
         if step == "tax_se_inn":
             if not visit_join_validators.validate_inn_digits(text):
                 return {
-                    "text": "ИНН: введите 10 или 12 цифр.",
+                    "text": visit_join_validators.join_validation_error_text("inn_invalid"),
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -3464,12 +3459,9 @@ async def process_text(
             }
         if step == "tax_fl_inn":
             d = re.sub(r"\D", "", text.strip())
-            if len(d) != 12:
+            if len(d) != 12 or not visit_join_validators.validate_inn_digits(d):
                 return {
-                    "text": (
-                        "💡 ИНН физлица — *12 цифр*. "
-                        "Его можно посмотреть в справке из ФНС или в личном кабинете налогоплательщика."
-                    ),
+                    "text": f"💡 {visit_join_validators.join_validation_error_text('inn_invalid')}",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -3479,10 +3471,7 @@ async def process_text(
         if step == "snils":
             if not visit_join_validators.validate_join_snils(text):
                 return {
-                    "text": (
-                        "💡 Укажите *СНИЛС*: 11 цифр с верной контрольной суммой "
-                        "(как в страховом свидетельстве)."
-                    ),
+                    "text": f"💡 {visit_join_validators.join_validation_error_text('snils_invalid')}",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -3502,10 +3491,7 @@ async def process_text(
             em = visit_join_validators.validate_join_contact_email(text)
             if not em:
                 return {
-                    "text": (
-                        "💡 Введите корректный e-mail (латиница, символ @ и домен).\n\n"
-                        "_Пример: user@mail.ru_"
-                    ),
+                    "text": f"💡 {visit_join_validators.join_validation_error_text('email_invalid')}",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -3588,7 +3574,7 @@ async def process_text(
             raw = text.strip()
             if not visit_join_validators.validate_join_portfolio_https_url(raw):
                 return {
-                    "text": "Нужна ссылка, начинающаяся с https:// (не длиннее 2048 символов).",
+                    "text": visit_join_validators.join_validation_error_text("portfolio_url_invalid"),
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -3621,7 +3607,7 @@ async def process_text(
         if step == "tax_ip_inn":
             if not visit_join_validators.validate_inn_digits(text):
                 return {
-                    "text": "ИНН: введите 10 или 12 цифр.",
+                    "text": visit_join_validators.join_validation_error_text("inn_invalid"),
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -3808,7 +3794,7 @@ async def process_text(
             d = visit_join_validators.validate_medbook_expiry(text)
             if not d:
                 return {
-                    "text": "Формат ДД.ММ.ГГГГ, например 31.12.2026",
+                    "text": visit_join_validators.join_validation_error_text("medbook_expiry_invalid"),
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -3870,9 +3856,7 @@ async def process_text(
             raw = text.strip()
             if not visit_join_validators.validate_passport_series_number(raw):
                 return {
-                    "text": (
-                        "💡 *Укажите серию и номер паспорта — 10 цифр (можно с пробелом после 4-й цифры).*"
-                    ),
+                    "text": f"💡 {visit_join_validators.join_validation_error_text('passport_sn_invalid')}",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -3892,10 +3876,7 @@ async def process_text(
             raw = text.strip()
             if not visit_join_validators.validate_passport_issued_by(raw):
                 return {
-                    "text": (
-                        "💡 Укажите подразделение, выдавшее паспорт "
-                        "(не короче нескольких слов, без шуток и шаблонов)."
-                    ),
+                    "text": f"💡 {visit_join_validators.join_validation_error_text('passport_issued_by_invalid')}",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -3919,10 +3900,7 @@ async def process_text(
                 issue_d, birth=bd_join, today=today
             ):
                 return {
-                    "text": (
-                        "💡 Дата выдачи в формате ДД.ММ.ГГГГ; "
-                        "не раньше даты рождения и не в будущем."
-                    ),
+                    "text": f"💡 {visit_join_validators.join_validation_error_text('passport_issue_date_invalid')}",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -3962,10 +3940,7 @@ async def process_text(
             raw = text.strip()
             if not visit_join_validators.validate_registration_address(raw):
                 return {
-                    "text": (
-                        "💡 Укажите полный адрес регистрации текстом "
-                        "(несколько слов, без аббревиатур-заглушек)."
-                    ),
+                    "text": f"💡 {visit_join_validators.join_validation_error_text('registration_address_invalid')}",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -4005,7 +3980,7 @@ async def process_text(
             raw = text.strip()
             if not visit_join_validators.validate_join_work_city(raw):
                 return {
-                    "text": "💡 Укажите название города текстом (2–120 символов).",
+                    "text": f"💡 {visit_join_validators.join_validation_error_text('work_city_invalid')}",
                     "format": "markdown",
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
@@ -4029,7 +4004,7 @@ async def process_text(
             ok_m, err_m = visit_join_validators.validate_join_metro_station_text(text)
             if not ok_m:
                 return {
-                    "text": err_m or "Проверьте текст.",
+                    "text": err_m or visit_join_validators.join_validation_error_text("metro_invalid"),
                     "format": "markdown",
                     "attachments": visit_card.work_metro_keyboard(),
                 }

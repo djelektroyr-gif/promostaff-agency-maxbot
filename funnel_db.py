@@ -49,6 +49,16 @@ def resolve_tg_id_for_max_user(max_user_id: int) -> int:
     return _synthetic_tg_for_max(uid)
 
 
+def _worker_lookup_ids_for_max(max_user_id: int) -> tuple[int, ...]:
+    """Кандидаты user_id для MAX-исполнителя: canonical tg_id и synthetic fallback."""
+    uid = int(max_user_id)
+    canonical = resolve_tg_id_for_max_user(uid)
+    synthetic = worker_tg_id_for_max(uid)
+    if canonical == synthetic:
+        return (canonical,)
+    return (canonical, synthetic)
+
+
 WORKER_STATUS_PENDING_REVIEW = "pending_review"
 WORKER_STATUS_CLARIFICATION = "clarification_needed"
 WORKER_STATUS_REJECTED = "rejected"
@@ -515,19 +525,29 @@ def is_max_visit_client_verified(max_user_id: int) -> bool:
 
 def is_max_visit_worker_verified(max_user_id: int) -> bool:
     """Исполнитель одобрен в панели (workers.status = approved), как is_visit_worker_verified."""
-    tg = worker_tg_id_for_max(int(max_user_id))
+    ids = _worker_lookup_ids_for_max(int(max_user_id))
     if DATABASE_URL:
         try:
             with connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        SELECT 1 FROM workers
-                        WHERE user_id = %s AND COALESCE(status, 'new') = %s
-                        LIMIT 1
-                        """,
-                        (tg, WORKER_STATUS_APPROVED),
-                    )
+                    if len(ids) == 1:
+                        cur.execute(
+                            """
+                            SELECT 1 FROM workers
+                            WHERE user_id = %s AND COALESCE(status, 'new') = %s
+                            LIMIT 1
+                            """,
+                            (ids[0], WORKER_STATUS_APPROVED),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            SELECT 1 FROM workers
+                            WHERE user_id IN (%s, %s) AND COALESCE(status, 'new') = %s
+                            LIMIT 1
+                            """,
+                            (ids[0], ids[1], WORKER_STATUS_APPROVED),
+                        )
                     return bool(cur.fetchone())
         except Exception:
             logger.exception("is_max_visit_worker_verified pg")
@@ -536,41 +556,79 @@ def is_max_visit_worker_verified(max_user_id: int) -> bool:
 
 def has_max_active_executor_profile(max_user_id: int) -> bool:
     """Профиль исполнителя в работе (не rejected), как has_active_executor_profile."""
-    tg = worker_tg_id_for_max(int(max_user_id))
+    ids = _worker_lookup_ids_for_max(int(max_user_id))
     if not DATABASE_URL:
         return False
     try:
         with connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COALESCE(status, 'new') FROM workers WHERE user_id = %s LIMIT 1",
-                    (tg,),
-                )
-                row = cur.fetchone()
-                if not row:
-                    return False
-                st = str(row[0] or "new").strip().lower()
-                return st != WORKER_STATUS_REJECTED
+                if len(ids) == 1:
+                    cur.execute(
+                        """
+                        SELECT 1 FROM workers
+                        WHERE user_id = %s AND COALESCE(status, 'new') <> %s
+                        LIMIT 1
+                        """,
+                        (ids[0], WORKER_STATUS_REJECTED),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT 1 FROM workers
+                        WHERE user_id IN (%s, %s) AND COALESCE(status, 'new') <> %s
+                        LIMIT 1
+                        """,
+                        (ids[0], ids[1], WORKER_STATUS_REJECTED),
+                    )
+                return bool(cur.fetchone())
     except Exception:
         logger.exception("has_max_active_executor_profile max_uid=%s", max_user_id)
     return False
 
 
 def get_max_worker_display_name(max_user_id: int) -> str:
-    tg = worker_tg_id_for_max(int(max_user_id))
+    ids = _worker_lookup_ids_for_max(int(max_user_id))
+    preferred = ids[0]
     if not DATABASE_URL:
         return ""
     try:
         with connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT full_name FROM workers WHERE user_id = %s LIMIT 1",
-                    (tg,),
-                )
+                if len(ids) == 1:
+                    cur.execute(
+                        "SELECT full_name FROM workers WHERE user_id = %s LIMIT 1",
+                        (ids[0],),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT full_name
+                        FROM workers
+                        WHERE user_id IN (%s, %s)
+                        ORDER BY CASE WHEN user_id = %s THEN 0 ELSE 1 END
+                        LIMIT 1
+                        """,
+                        (ids[0], ids[1], preferred),
+                    )
                 row = cur.fetchone()
                 if row and row[0]:
                     return str(row[0]).strip()
-                cur.execute("SELECT full_name FROM users WHERE tg_id = %s LIMIT 1", (tg,))
+                if len(ids) == 1:
+                    cur.execute(
+                        "SELECT full_name FROM users WHERE tg_id = %s LIMIT 1",
+                        (ids[0],),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT full_name
+                        FROM users
+                        WHERE tg_id IN (%s, %s)
+                        ORDER BY CASE WHEN tg_id = %s THEN 0 ELSE 1 END
+                        LIMIT 1
+                        """,
+                        (ids[0], ids[1], preferred),
+                    )
                 row = cur.fetchone()
                 return str(row[0]).strip() if row and row[0] else ""
     except Exception:

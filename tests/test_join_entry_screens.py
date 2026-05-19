@@ -41,3 +41,11 @@ def test_role_not_found_keyboard():
     buttons = kb[0]["payload"]["buttons"]
     assert buttons[0][0]["payload"] == "visit_entry_new:client"
     assert buttons[1][0]["payload"] == "visit_entry_returning:client"
+
+
+def test_join_anketa_invite_keyboard_matches_telegram():
+    kb = visit_card.join_anketa_invite_keyboard()
+    buttons = kb[0]["payload"]["buttons"]
+    assert len(buttons) == 1
+    assert buttons[0][0]["text"] == "📝 Заполнить анкету"
+    assert buttons[0][0]["payload"] == "join_proceed_anketa"

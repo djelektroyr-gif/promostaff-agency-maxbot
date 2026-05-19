@@ -159,9 +159,9 @@ def process_clarification_text(
         err = {
             "photo": "Нужно отправить фото.",
             "empty": "Сообщение пустое — пришлите данные ещё раз.",
-            "inn": "ИНН должен содержать 10 или 12 цифр.",
-            "phone": "Укажите корректный номер телефона (минимум 10 цифр).",
-            "name": "Проверьте ФИО (минимум 2 слова).",
+            "inn": visit_join_validators.join_validation_error_text("inn_invalid"),
+            "phone": visit_join_validators.join_validation_error_text("phone_mobile_ru_invalid"),
+            "name": visit_join_validators.join_validation_error_text("full_name_invalid"),
         }.get(arg, "Проверьте формат и отправьте снова.")
         return {
             "text": err,

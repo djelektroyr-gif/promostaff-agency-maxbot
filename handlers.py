@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
+from collections import defaultdict
 from typing import Any
 
 from config import MAX_TOKEN
@@ -17,6 +19,81 @@ import visit_card
 import visit_flows
 
 logger = logging.getLogger(__name__)
+_UI_DUPLICATE_MIN_INTERVAL_SEC = 6.0
+_UI_SPAM_ERRORS_TOTAL = 0
+_UI_SPAM_ERRORS_BY_USER: dict[int, int] = defaultdict(int)
+
+
+def _text_reply_dedupe_key(max_uid: int, reply: dict[str, Any]) -> str | None:
+    """Ключ анти-спама для text-ответов: одинаковый шаг + одинаковый текст не шлём повторно."""
+    txt = str(reply.get("text") or "").strip()
+    if not txt:
+        return None
+    s = visit_flows.SESSIONS.get(max_uid) or {}
+    flow = str(s.get("flow") or "")
+    step = str(s.get("step") or "")
+    return f"{flow}|{step}|{txt}"
+
+
+def _is_error_like_reply_text(text: str) -> bool:
+    s = (text or "").strip().lower()
+    if not s:
+        return False
+    return any(
+        x in s
+        for x in (
+            "ошиб",
+            "сначала",
+            "проверьте",
+            "нужно",
+            "некоррект",
+            "не найден",
+            "недоступно",
+        )
+    )
+
+
+def _is_duplicate_text_reply(max_uid: int, reply: dict[str, Any]) -> bool:
+    global _UI_SPAM_ERRORS_TOTAL
+    key = _text_reply_dedupe_key(max_uid, reply)
+    if not key:
+        return False
+    s = visit_flows.SESSIONS.get(max_uid)
+    if not isinstance(s, dict):
+        return False
+    last = str(s.get("_ui_last_text_reply_key") or "")
+    now = time.time()
+    try:
+        last_ts = float(s.get("_ui_last_text_reply_at") or 0.0)
+    except (TypeError, ValueError):
+        last_ts = 0.0
+    if last == key:
+        if now - last_ts < _UI_DUPLICATE_MIN_INTERVAL_SEC:
+            if _is_error_like_reply_text(str(reply.get("text") or "")):
+                _UI_SPAM_ERRORS_TOTAL += 1
+                _UI_SPAM_ERRORS_BY_USER[int(max_uid)] += 1
+            return True
+    s["_ui_last_text_reply_key"] = key
+    s["_ui_last_text_reply_at"] = now
+    return False
+
+
+def get_ui_spam_metrics() -> dict[str, int]:
+    return {
+        "ui_spam_errors_total": int(_UI_SPAM_ERRORS_TOTAL),
+        "ui_spam_users_count": int(len(_UI_SPAM_ERRORS_BY_USER)),
+    }
+
+
+def _short_notification_from_text(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return " "
+    # Убираем markdown-шум для короткой всплывашки MAX.
+    one_line = re.sub(r"[*_`#>\[\]\(\)]", "", raw).splitlines()[0].strip()
+    if len(one_line) > 90:
+        one_line = one_line[:87].rstrip() + "..."
+    return one_line or " "
 
 
 async def _sync_funnel(max_uid: int) -> None:
@@ -67,6 +144,10 @@ async def _answer_message(callback_id: str, max_uid: int, msg: dict[str, Any]) -
     msg = dict(msg)
     raw = msg.pop("notification", None)
     notif = (raw if isinstance(raw, str) else None) or " "
+    if notif.strip() == "":
+        notif = " "
+    if notif == " " and _is_error_like_reply_text(str(msg.get("text") or "")):
+        notif = _short_notification_from_text(str(msg.get("text") or ""))
     notif = notif.strip() or " "
     api_msg = {k: v for k, v in msg.items()}
     ok = await post_answer(
@@ -110,6 +191,9 @@ async def process_update(body: dict[str, Any]) -> None:
         reply = await visit_flows.process_text(max_uid, text, sender, inner)
         await _sync_funnel(max_uid)
         if reply is not None:
+            if _is_duplicate_text_reply(max_uid, reply):
+                logger.debug("skip duplicate text reply uid=%s", max_uid)
+                return
             await _send_message(max_uid, reply)
         return
 

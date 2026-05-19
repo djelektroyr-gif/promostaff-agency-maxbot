@@ -395,7 +395,6 @@ def join_anketa_invite_keyboard() -> list[dict]:
     return inline_keyboard(
         [
             [cb_btn("📝 Заполнить анкету", "join_proceed_anketa")],
-            [cb_btn("🏠 Главное меню", "main_menu")],
         ]
     )
 

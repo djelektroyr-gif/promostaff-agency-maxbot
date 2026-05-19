@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import os
 import re
+from collections import Counter
 from datetime import date
+from datetime import timedelta
+from urllib.parse import urlparse
 
 JOIN_ANKETA_AGE_TEST_REFERENCE_TODAY = date(2026, 4, 17)
 
@@ -45,11 +48,50 @@ _PROFANITY_SUBSTRINGS = frozenset(
     )
 )
 
+JOIN_VALIDATION_ERROR_TEXTS: dict[str, str] = {
+    "full_name_invalid": "ФИО не прошло проверку: укажите фамилию, имя и отчество без цифр и недопустимых выражений.",
+    "phone_mobile_ru_invalid": "Нужен корректный мобильный номер РФ (+7 9XX ...).",
+    "inn_invalid": "ИНН указан некорректно. Проверьте цифры и контрольную сумму.",
+    "snils_invalid": "СНИЛС указан некорректно (11 цифр и верная контрольная сумма).",
+    "email_invalid": "Укажите корректный e-mail (латиница, символ @ и домен).",
+    "medbook_number_invalid": "Номер медкнижки не прошёл проверку.",
+    "medbook_expiry_invalid": "Срок действия медкнижки указан неверно или в прошлом.",
+    "passport_sn_invalid": "Серия и номер паспорта указаны некорректно.",
+    "passport_issued_by_invalid": "Укажите, кем выдан паспорт, как в документе.",
+    "passport_issue_date_invalid": "Дата выдачи паспорта указана неверно.",
+    "registration_address_invalid": "Укажите полный адрес регистрации текстом.",
+    "work_city_invalid": "Укажите город для подбора смен (2–120 символов).",
+    "metro_invalid": "Укажите станцию/линию метро или нажмите «Пропустить».",
+    "portfolio_url_invalid": "Ссылка на портфолио должна начинаться с https://.",
+}
+
+
+JOIN_FULL_NAME_MAX_LEN = 120
+_MEDBOOK_EXPIRY_MAX_AHEAD = timedelta(days=365 * 10)
+
+
+def join_validation_error_text(code: str) -> str:
+    return JOIN_VALIDATION_ERROR_TEXTS.get(code, "Проверьте заполнение поля и попробуйте снова.")
+
+
+def _has_cyrillic_letters(s: str) -> bool:
+    return bool(re.search(r"[\u0410-\u042f\u0430-\u044f\u0401\u0451]", s))
+
+
+def _name_char_spam_ratio(s: str) -> float:
+    letters = [c.lower() for c in s if c.isalpha()]
+    if len(letters) < 12:
+        return 0.0
+    top = Counter(letters).most_common(1)[0][1]
+    return top / len(letters)
+
 
 def validate_join_full_name(name: str) -> bool:
     if not name or not str(name).strip():
         return False
     s = str(name).strip()
+    if len(s) > JOIN_FULL_NAME_MAX_LEN:
+        return False
     if re.search(r"\d", s):
         return False
     low = s.lower()
@@ -60,7 +102,18 @@ def validate_join_full_name(name: str) -> bool:
     if not re.match(pattern, s):
         return False
     words = s.split()
-    return len(words) >= 2
+    if _has_cyrillic_letters(s):
+        if len(words) < 3:
+            return False
+    elif len(words) < 2:
+        return False
+    for w in words:
+        core = w.strip("-'")
+        if len(core) < 2:
+            return False
+    if _name_char_spam_ratio(s) > 0.65:
+        return False
+    return True
 
 
 def validate_join_phone(phone: str) -> str | None:
@@ -72,9 +125,37 @@ def validate_join_phone(phone: str) -> str | None:
     return None
 
 
+def validate_join_phone_mobile_rf(phone: str) -> str | None:
+    v = validate_join_phone(phone)
+    if not v:
+        return None
+    d = re.sub(r"\D", "", v)
+    if len(d) == 11 and d[0] == "7" and d[1] == "9":
+        return v
+    return None
+
+
+def _inn_checksum_valid(digits: str) -> bool:
+    if not digits.isdigit():
+        return False
+    if len(digits) == 10:
+        c = [2, 4, 10, 3, 5, 9, 4, 6, 8]
+        n9 = sum(int(digits[i]) * c[i] for i in range(9)) % 11 % 10
+        return n9 == int(digits[9])
+    if len(digits) == 12:
+        c1 = [7, 2, 4, 10, 3, 5, 9, 4, 6, 8]
+        n11 = sum(int(digits[i]) * c1[i] for i in range(10)) % 11 % 10
+        if n11 != int(digits[10]):
+            return False
+        c2 = [3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8]
+        n12 = sum(int(digits[i]) * c2[i] for i in range(11)) % 11 % 10
+        return n12 == int(digits[11])
+    return False
+
+
 def validate_inn_digits(text: str) -> bool:
     d = re.sub(r"\D", "", (text or "").strip())
-    return len(d) in (10, 12)
+    return len(d) in (10, 12) and _inn_checksum_valid(d)
 
 
 def validate_height_cm(text: str) -> int | None:
@@ -132,7 +213,15 @@ def normalize_passport_series_number(text: str) -> str:
 
 
 def validate_medbook_expiry(text: str) -> date | None:
-    return parse_birth_date(text)
+    d = parse_birth_date(text)
+    if not d:
+        return None
+    tday = date.today()
+    if d < tday:
+        return None
+    if d > tday + _MEDBOOK_EXPIRY_MAX_AHEAD:
+        return None
+    return d
 
 
 def experience_stars_from_choice(callback_data: str) -> tuple[str, int]:
@@ -308,7 +397,13 @@ def validate_join_metro_station_text(text: str) -> tuple[bool, str]:
 
 
 def validate_join_portfolio_https_url(url: str) -> bool:
-    s = (url or "").strip()
-    if not s.lower().startswith("https://"):
+    raw = (url or "").strip()
+    if not raw or len(raw) > 2048:
         return False
-    return len(s) <= 2048
+    u = urlparse(raw)
+    if u.scheme != "https":
+        return False
+    host = (u.netloc or "").strip().lower()
+    if not host or ".." in host:
+        return False
+    return True

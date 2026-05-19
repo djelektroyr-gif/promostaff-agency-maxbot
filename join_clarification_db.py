@@ -12,6 +12,7 @@ from funnel_db import (
     _HRM_JOIN_SOURCE,
     _sync_hrm_crm_card_for_join_request,
     connection,
+    resolve_tg_id_for_max_user,
     worker_tg_id_for_max,
 )
 
@@ -28,6 +29,15 @@ CLARIFICATION_FLAG_LABELS_RU: dict[str, str] = {
     "mb": "медкнижка",
 }
 VALID_CLARIFICATION_FLAG_CODES = frozenset(CLARIFICATION_FLAG_LABELS_RU.keys())
+
+
+def _worker_lookup_ids_for_max(max_user_id: int) -> tuple[int, ...]:
+    uid = int(max_user_id)
+    canonical = resolve_tg_id_for_max_user(uid)
+    synthetic = worker_tg_id_for_max(uid)
+    if canonical == synthetic:
+        return (canonical,)
+    return (canonical, synthetic)
 
 
 def _json_loads(raw: Any) -> dict[str, Any]:
@@ -66,14 +76,27 @@ def _flag_satisfied(code: str, pl: dict[str, Any]) -> bool:
 
 
 def get_max_worker_status(max_user_id: int) -> str:
-    tg = worker_tg_id_for_max(int(max_user_id))
+    ids = _worker_lookup_ids_for_max(int(max_user_id))
+    preferred = ids[0]
     try:
         with connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COALESCE(status, 'new') FROM workers WHERE user_id = %s LIMIT 1",
-                    (tg,),
-                )
+                if len(ids) == 1:
+                    cur.execute(
+                        "SELECT COALESCE(status, 'new') FROM workers WHERE user_id = %s LIMIT 1",
+                        (ids[0],),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT COALESCE(status, 'new')
+                        FROM workers
+                        WHERE user_id IN (%s, %s)
+                        ORDER BY CASE WHEN user_id = %s THEN 0 ELSE 1 END
+                        LIMIT 1
+                        """,
+                        (ids[0], ids[1], preferred),
+                    )
                 row = cur.fetchone()
                 return str(row[0] or "new").strip().lower() if row else ""
     except Exception:
@@ -83,20 +106,33 @@ def get_max_worker_status(max_user_id: int) -> str:
 
 def get_max_join_clarification_context(max_user_id: int) -> dict[str, Any]:
     """Флаги и комментарий из последней заявки, если статус clarification_needed."""
-    tg = worker_tg_id_for_max(int(max_user_id))
+    ids = _worker_lookup_ids_for_max(int(max_user_id))
+    preferred = ids[0]
     st = get_max_worker_status(max_user_id)
     if st != WORKER_STATUS_CLARIFICATION:
         return {"status": st, "flags": [], "note": ""}
     try:
         with connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT payload FROM agency_visit_join_requests
-                    WHERE user_id = %s ORDER BY id DESC LIMIT 1
-                    """,
-                    (tg,),
-                )
+                if len(ids) == 1:
+                    cur.execute(
+                        """
+                        SELECT payload FROM agency_visit_join_requests
+                        WHERE user_id = %s ORDER BY id DESC LIMIT 1
+                        """,
+                        (ids[0],),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT payload
+                        FROM agency_visit_join_requests
+                        WHERE user_id IN (%s, %s)
+                        ORDER BY CASE WHEN user_id = %s THEN 0 ELSE 1 END, id DESC
+                        LIMIT 1
+                        """,
+                        (ids[0], ids[1], preferred),
+                    )
                 row = cur.fetchone()
         pl = _json_loads(row[0]) if row else {}
         flags = pl.get("clarification_flags") if isinstance(pl.get("clarification_flags"), list) else []
@@ -109,19 +145,33 @@ def get_max_join_clarification_context(max_user_id: int) -> dict[str, Any]:
 
 
 def apply_join_clarification_patch(max_user_id: int, patch: dict[str, Any]) -> dict[str, Any] | None:
-    tg = worker_tg_id_for_max(int(max_user_id))
+    ids = _worker_lookup_ids_for_max(int(max_user_id))
+    preferred = ids[0]
     patch = dict(patch or {})
     try:
         with connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COALESCE(status, '') FROM workers WHERE user_id = %s LIMIT 1",
-                    (tg,),
-                )
+                if len(ids) == 1:
+                    cur.execute(
+                        "SELECT user_id, COALESCE(status, '') FROM workers WHERE user_id = %s LIMIT 1",
+                        (ids[0],),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT user_id, COALESCE(status, '')
+                        FROM workers
+                        WHERE user_id IN (%s, %s)
+                        ORDER BY CASE WHEN user_id = %s THEN 0 ELSE 1 END
+                        LIMIT 1
+                        """,
+                        (ids[0], ids[1], preferred),
+                    )
                 wrow = cur.fetchone()
                 if not wrow:
                     return None
-                if str(wrow[0] or "").strip().lower() != WORKER_STATUS_CLARIFICATION:
+                tg = int(wrow[0])
+                if str(wrow[1] or "").strip().lower() != WORKER_STATUS_CLARIFICATION:
                     return {"error": "not_in_clarification", "user_id": tg}
 
                 cur.execute(
@@ -181,16 +231,32 @@ def apply_join_clarification_patch(max_user_id: int, patch: dict[str, Any]) -> d
 
 
 def acknowledge_join_clarification_note_only(max_user_id: int) -> dict[str, Any] | None:
-    tg = worker_tg_id_for_max(int(max_user_id))
+    ids = _worker_lookup_ids_for_max(int(max_user_id))
+    preferred = ids[0]
     try:
         with connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COALESCE(status, '') FROM workers WHERE user_id = %s LIMIT 1",
-                    (tg,),
-                )
+                if len(ids) == 1:
+                    cur.execute(
+                        "SELECT user_id, COALESCE(status, '') FROM workers WHERE user_id = %s LIMIT 1",
+                        (ids[0],),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT user_id, COALESCE(status, '')
+                        FROM workers
+                        WHERE user_id IN (%s, %s)
+                        ORDER BY CASE WHEN user_id = %s THEN 0 ELSE 1 END
+                        LIMIT 1
+                        """,
+                        (ids[0], ids[1], preferred),
+                    )
                 wrow = cur.fetchone()
-                if not wrow or str(wrow[0] or "").strip().lower() != WORKER_STATUS_CLARIFICATION:
+                if not wrow:
+                    return {"error": "not_in_clarification", "user_id": preferred}
+                tg = int(wrow[0])
+                if str(wrow[1] or "").strip().lower() != WORKER_STATUS_CLARIFICATION:
                     return {"error": "not_in_clarification", "user_id": tg}
 
                 cur.execute(
