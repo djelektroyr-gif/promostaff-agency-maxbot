@@ -44,3 +44,16 @@ def test_legacy_client_cabinet_alias_uses_same_flow():
     assert attachments and attachments[0].get("type") == "inline_keyboard"
     first_row = attachments[0]["payload"]["buttons"][0]
     assert "cabinet/enter?token=legacy" in first_row[0]["url"]
+
+
+def test_open_web_cabinet_error_shows_retry_button():
+    with patch("funnel_db.is_max_visit_client_verified", return_value=True), patch(
+        "funnel_db.is_max_visit_worker_verified", return_value=False
+    ), patch(
+        "cabinet_web_login_token.build_cabinet_web_login_url",
+        return_value=(None, "Кабинет временно недоступен"),
+    ):
+        out = vf.registered_menu_static_reply(101, "open_web_cabinet")
+    assert out is not None
+    assert "временно недоступен" in (out.get("text") or "").lower()
+    assert "open_web_cabinet" in str(out.get("attachments"))

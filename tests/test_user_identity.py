@@ -85,7 +85,7 @@ def test_collapse_does_not_merge_two_real_tg_ids_without_synthetic():
 
 def test_resolve_ignores_admin_phone_row():
     rows = [
-        {"tg_id": 8545518666, "max_user_id": None, "role": "admin", "phone": "79685337332"},
+        {"tg_id": 8545518666, "max_user_id": None, "role": "администратор", "phone": "79685337332"},
         {"tg_id": 335505123, "max_user_id": None, "role": "worker", "phone": "79685337332"},
     ]
     with patch.object(ui, "find_users_by_phone", return_value=rows):

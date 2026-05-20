@@ -182,6 +182,25 @@ async def process_update(body: dict[str, Any]) -> None:
             await _send_message(max_uid, visit_card.message_role_home(max_uid))
             await _sync_funnel(max_uid)
             return
+        if re.match(r"^/admin\b", text, re.I):
+            visit_flows.clear_session(max_uid)
+            if visit_card.is_admin_user(max_uid):
+                msg = await visit_flows.process_callback(max_uid, "admin_agency_hub", sender)
+                if msg is not None:
+                    await _send_message(max_uid, msg)
+                else:
+                    await _send_message(max_uid, visit_card.message_role_home(max_uid))
+            else:
+                await _send_message(
+                    max_uid,
+                    {
+                        "text": "Раздел /admin доступен только администраторам агентства.",
+                        "format": "markdown",
+                        "attachments": visit_card.main_menu_keyboard(max_uid),
+                    },
+                )
+            await _sync_funnel(max_uid)
+            return
         if re.match(r"^(меню|menu)\b", text, re.I):
             visit_flows.clear_session(max_uid)
             await _send_message(max_uid, visit_card.message_role_home(max_uid))

@@ -417,6 +417,21 @@ def init_schema() -> None:
             )
             cur.execute(
                 """
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = 'agency_visit_orders'
+                          AND column_name = 'status'
+                    ) THEN
+                        ALTER TABLE agency_visit_orders
+                        ADD COLUMN status TEXT NOT NULL DEFAULT 'new';
+                    END IF;
+                END $$;
+                """
+            )
+            cur.execute(
+                """
                 CREATE TABLE IF NOT EXISTS agency_visit_join_requests (
                     id BIGSERIAL PRIMARY KEY,
                     source TEXT NOT NULL DEFAULT 'max',
@@ -486,6 +501,28 @@ def init_schema() -> None:
                 """
                 CREATE INDEX IF NOT EXISTS idx_visit_phone_login_log_created
                 ON visit_phone_login_log (created_at DESC)
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS company_subscriptions (
+                    company_id BIGINT PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+                    plan_code TEXT NOT NULL DEFAULT 'legacy',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    projects_limit INTEGER,
+                    starts_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    ends_at TIMESTAMP,
+                    auto_renew BOOLEAN NOT NULL DEFAULT FALSE,
+                    notes TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_company_subscriptions_status_end
+                ON company_subscriptions (status, ends_at)
                 """
             )
             cur.execute(
@@ -985,6 +1022,313 @@ def list_agency_visit_orders_for_user(max_user_id: int, limit: int = 20) -> list
     return out
 
 
+_KP_STAGES_ADMIN = frozenset(
+    {"new", "kp_prep", "client_review", "invoice_issued", "invoice_paid", "approved_project", "closed_lost"}
+)
+_URGENT_STAGES_ADMIN = frozenset(
+    {"new", "manager_work", "invoice_issued", "invoice_paid", "project_active", "done", "cancelled"}
+)
+
+
+def _map_urgent_crm_stage_to_visit_order_status(crm_stage: str | None) -> str | None:
+    key = (crm_stage or "").strip().lower()
+    return {
+        "new": "new",
+        "manager_work": "processing",
+        "invoice_issued": "awaiting_payment",
+        "invoice_paid": "paid",
+        "project_active": "project_created",
+        "done": "project_created",
+        "cancelled": "cancelled",
+    }.get(key)
+
+
+def _map_kp_crm_stage_to_visit_order_status(crm_stage: str | None) -> str | None:
+    key = (crm_stage or "").strip().lower()
+    return {
+        "new": "new",
+        "kp_prep": "processing",
+        "client_review": "processing",
+        "invoice_issued": "awaiting_payment",
+        "invoice_paid": "paid",
+        "approved_project": "project_created",
+        "closed_lost": "cancelled",
+    }.get(key)
+
+
+def _status_column_exists() -> bool:
+    if not DATABASE_URL:
+        return False
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'agency_visit_orders'
+                      AND column_name = 'status'
+                    LIMIT 1
+                    """
+                )
+                return bool(cur.fetchone())
+    except Exception:
+        logger.debug("_status_column_exists failed", exc_info=True)
+        return False
+
+
+def count_agency_visit_orders_funnel_excluding(
+    *,
+    exclude_statuses: tuple[str, ...] = ("project_created",),
+    order_kind: str | None = None,
+    stage: str | None = None,
+) -> int:
+    if not DATABASE_URL:
+        return 0
+    kind = (order_kind or "").strip()
+    stage_filter = (stage or "").strip().lower()
+    statuses = [str(s or "").strip() for s in exclude_statuses if str(s or "").strip()]
+    has_status = _status_column_exists()
+    where_parts: list[str] = []
+    params: list[Any] = []
+    if kind == "__urgent__":
+        where_parts.append("COALESCE(payload->>'order_kind', 'quick_estimate') <> 'cp_request'")
+    elif kind:
+        where_parts.append("COALESCE(payload->>'order_kind', 'quick_estimate') = %s")
+        params.append(kind)
+    if has_status and statuses:
+        where_parts.append("NOT (COALESCE(status, 'new') = ANY(%s))")
+        params.append(statuses)
+    if stage_filter and stage_filter != "all":
+        where_parts.append("COALESCE(card.stage, 'new') = %s")
+        params.append(stage_filter)
+    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT COUNT(*)::int
+                    FROM agency_visit_orders o
+                    LEFT JOIN agency_crm_cards card
+                      ON card.source_kind = 'agency_visit_order' AND card.source_id = o.id
+                    {where_sql}
+                    """,
+                    tuple(params),
+                )
+                row = cur.fetchone()
+                return int((row or [0])[0] or 0)
+    except Exception:
+        logger.exception("count_agency_visit_orders_funnel_excluding failed")
+        return 0
+
+
+def list_agency_visit_orders_funnel_page(
+    *,
+    exclude_statuses: tuple[str, ...] = ("project_created",),
+    order_kind: str | None = None,
+    stage: str | None = None,
+    limit: int = 15,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    lim = max(1, min(int(limit), 50))
+    off = max(0, int(offset))
+    kind = (order_kind or "").strip()
+    stage_filter = (stage or "").strip().lower()
+    statuses = [str(s or "").strip() for s in exclude_statuses if str(s or "").strip()]
+    has_status = _status_column_exists()
+    where_parts: list[str] = []
+    params: list[Any] = []
+    if kind == "__urgent__":
+        where_parts.append("COALESCE(payload->>'order_kind', 'quick_estimate') <> 'cp_request'")
+    elif kind:
+        where_parts.append("COALESCE(payload->>'order_kind', 'quick_estimate') = %s")
+        params.append(kind)
+    if has_status and statuses:
+        where_parts.append("NOT (COALESCE(status, 'new') = ANY(%s))")
+        params.append(statuses)
+    if stage_filter and stage_filter != "all":
+        where_parts.append("COALESCE(card.stage, 'new') = %s")
+        params.append(stage_filter)
+    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    select_status = "COALESCE(o.status, 'new')" if has_status else "'new'"
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT o.id, o.user_id, o.username, o.payload, {select_status} AS status, o.created_at
+                    FROM agency_visit_orders o
+                    LEFT JOIN agency_crm_cards card
+                      ON card.source_kind = 'agency_visit_order' AND card.source_id = o.id
+                    {where_sql}
+                    ORDER BY o.created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    tuple(params + [lim, off]),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_agency_visit_orders_funnel_page failed")
+        return []
+    out: list[dict[str, Any]] = []
+    for rid, user_id, username, payload, status, created_at in rows:
+        p = payload if isinstance(payload, dict) else {}
+        if not isinstance(p, dict):
+            p = {}
+        out.append(
+            {
+                "id": int(rid or 0),
+                "user_id": int(user_id or 0) if user_id is not None else 0,
+                "username": str(username or ""),
+                "payload": p,
+                "status": str(status or "new").strip() or "new",
+                "created_at": created_at,
+            }
+        )
+    return out
+
+
+def get_agency_visit_order_for_admin(order_id: int) -> dict[str, Any] | None:
+    if not DATABASE_URL:
+        return None
+    oid = int(order_id)
+    if oid <= 0:
+        return None
+    has_status = _status_column_exists()
+    select_status = "COALESCE(status, 'new')" if has_status else "'new'"
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, user_id, username, payload, {select_status} AS status, created_at
+                    FROM agency_visit_orders
+                    WHERE id = %s
+                    LIMIT 1
+                    """,
+                    (oid,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                rid, user_id, username, payload, status, created_at = row
+    except Exception:
+        logger.exception("get_agency_visit_order_for_admin failed order_id=%s", oid)
+        return None
+    p = payload if isinstance(payload, dict) else {}
+    if not isinstance(p, dict):
+        p = {}
+    return {
+        "id": int(rid or 0),
+        "user_id": int(user_id or 0) if user_id is not None else 0,
+        "username": str(username or ""),
+        "payload": p,
+        "status": str(status or "new").strip() or "new",
+        "created_at": created_at,
+    }
+
+
+def get_agency_crm_card_pipeline_stage(order_id: int) -> tuple[str, str] | None:
+    oid = int(order_id)
+    if oid <= 0 or not DATABASE_URL:
+        return None
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT pipeline, stage
+                    FROM agency_crm_cards
+                    WHERE source_kind = 'agency_visit_order' AND source_id = %s
+                    LIMIT 1
+                    """,
+                    (oid,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                pl = str(row[0] or "").strip()
+                st = str(row[1] or "").strip()
+                if not pl or not st:
+                    return None
+                return pl, st
+    except Exception:
+        logger.debug("get_agency_crm_card_pipeline_stage failed order_id=%s", oid, exc_info=True)
+        return None
+
+
+def apply_visit_order_crm_stage_from_admin(order_id: int, target_stage: str) -> tuple[bool, str]:
+    oid = int(order_id)
+    ts = (target_stage or "").strip().lower()
+    if oid <= 0 or not ts:
+        return False, "Некорректные параметры."
+    if not DATABASE_URL:
+        return False, "Нужен PostgreSQL."
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_id, payload
+                    FROM agency_visit_orders
+                    WHERE id = %s
+                    LIMIT 1
+                    """,
+                    (oid,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return False, "Заявка не найдена."
+                user_id, payload = row
+                data = payload if isinstance(payload, dict) else {}
+                if not isinstance(data, dict):
+                    data = {}
+                kind = (data.get("order_kind") or "").strip()
+                pipeline = "kp" if kind == "cp_request" else "urgent"
+                allowed = _KP_STAGES_ADMIN if pipeline == "kp" else _URGENT_STAGES_ADMIN
+                if ts not in allowed:
+                    return False, f"Стадия «{ts}» недопустима для воронки {pipeline}."
+                visit_status = (
+                    _map_kp_crm_stage_to_visit_order_status(ts)
+                    if pipeline == "kp"
+                    else _map_urgent_crm_stage_to_visit_order_status(ts)
+                )
+                if not visit_status:
+                    return False, "Не удалось сопоставить стадию со статусом заявки."
+                has_status = _status_column_exists()
+                if has_status:
+                    cur.execute(
+                        "UPDATE agency_visit_orders SET status = %s WHERE id = %s",
+                        (visit_status, oid),
+                    )
+                et = (data.get("event_type") or "").strip()
+                city = (data.get("city") or "").strip()
+                title = (f"{et} · {city}" if et and city else (et or f"Заявка #{oid}"))[:2000]
+                cur.execute(
+                    """
+                    INSERT INTO agency_crm_cards (
+                        pipeline, stage, source_kind, source_id, client_tg_id, title, created_at, updated_at
+                    )
+                    VALUES (%s, %s, 'agency_visit_order', %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (source_kind, source_id) DO UPDATE SET
+                        pipeline = EXCLUDED.pipeline,
+                        stage = EXCLUDED.stage,
+                        client_tg_id = COALESCE(EXCLUDED.client_tg_id, agency_crm_cards.client_tg_id),
+                        title = COALESCE(NULLIF(EXCLUDED.title, ''), agency_crm_cards.title),
+                        updated_at = NOW()
+                    """,
+                    (pipeline, ts, oid, int(user_id or 0), title),
+                )
+                return True, f"{pipeline}: {ts} · статус заявки: {visit_status}"
+    except Exception:
+        logger.exception("apply_visit_order_crm_stage_from_admin failed order_id=%s stage=%s", oid, ts)
+        return False, "Ошибка записи в БД."
+
+
 def _hrm_card_title_from_join_payload(data: dict[str, Any], join_id: int) -> str:
     fn = (data.get("full_name") or "").strip()
     pos = (data.get("position") or "").strip()
@@ -1352,3 +1696,936 @@ def list_max_join_broadcast_targets(
         for r in rows
         if int(r[0] or 0) > 0
     ]
+
+
+def list_open_shifts_admin_max(limit: int = 30) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    lim = max(1, min(int(limit), 100))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT s.id, s.shift_date, s.start_time, s.end_time, p.name, s.status,
+                           COALESCE(s.workers_needed, 0), COALESCE(s.rate, 0), COALESCE(s.location, '')
+                    FROM shifts s
+                    JOIN projects p ON s.project_id = p.id
+                    WHERE s.status IN ('open', 'in_progress')
+                    ORDER BY s.shift_date DESC, s.id DESC
+                    LIMIT %s
+                    """,
+                    (lim,),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_open_shifts_admin_max failed")
+        return []
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        out.append(
+            {
+                "id": int(r[0] or 0),
+                "shift_date": str(r[1] or ""),
+                "start_time": str(r[2] or ""),
+                "end_time": str(r[3] or ""),
+                "project_name": str(r[4] or ""),
+                "status": str(r[5] or ""),
+                "workers_needed": int(r[6] or 0),
+                "rate": int(r[7] or 0),
+                "location": str(r[8] or ""),
+            }
+        )
+    return out
+
+
+def get_shift_admin_max(shift_id: int) -> dict[str, Any] | None:
+    if not DATABASE_URL:
+        return None
+    sid = int(shift_id)
+    if sid <= 0:
+        return None
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT s.id, s.project_id, p.name, s.shift_date, s.start_time, s.end_time,
+                           COALESCE(s.location, ''), COALESCE(s.rate, 0), COALESCE(s.workers_needed, 0),
+                           COALESCE(s.status, ''), COALESCE(COUNT(sa.id), 0)
+                    FROM shifts s
+                    JOIN projects p ON p.id = s.project_id
+                    LEFT JOIN shift_assignments sa ON sa.shift_id = s.id
+                    WHERE s.id = %s
+                    GROUP BY s.id, s.project_id, p.name, s.shift_date, s.start_time, s.end_time, s.location, s.rate, s.workers_needed, s.status
+                    LIMIT 1
+                    """,
+                    (sid,),
+                )
+                row = cur.fetchone()
+    except Exception:
+        logger.exception("get_shift_admin_max failed shift_id=%s", sid)
+        return None
+    if not row:
+        return None
+    return {
+        "id": int(row[0] or 0),
+        "project_id": int(row[1] or 0),
+        "project_name": str(row[2] or ""),
+        "shift_date": str(row[3] or ""),
+        "start_time": str(row[4] or ""),
+        "end_time": str(row[5] or ""),
+        "location": str(row[6] or ""),
+        "rate": int(row[7] or 0),
+        "workers_needed": int(row[8] or 0),
+        "status": str(row[9] or ""),
+        "assignments_total": int(row[10] or 0),
+    }
+
+
+def list_projects_admin_max(limit: int = 30) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    lim = max(1, min(int(limit), 120))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT p.id, p.name, p.company_id, COALESCE(c.name, '')
+                    FROM projects p
+                    LEFT JOIN companies c ON c.id = p.company_id
+                    ORDER BY p.created_at DESC
+                    LIMIT %s
+                    """,
+                    (lim,),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_projects_admin_max failed")
+        return []
+    return [
+        {
+            "id": int(r[0] or 0),
+            "name": str(r[1] or ""),
+            "company_id": int(r[2] or 0) if r[2] is not None else 0,
+            "company_name": str(r[3] or ""),
+        }
+        for r in rows
+    ]
+
+
+def get_project_admin_max(project_id: int) -> dict[str, Any] | None:
+    if not DATABASE_URL:
+        return None
+    pid = int(project_id)
+    if pid <= 0:
+        return None
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT p.id, p.name, p.company_id, COALESCE(c.name, ''),
+                           COALESCE(COUNT(s.id), 0) AS shifts_total,
+                           COALESCE(SUM(CASE WHEN s.status IN ('open', 'in_progress') THEN 1 ELSE 0 END), 0) AS shifts_open
+                    FROM projects p
+                    LEFT JOIN companies c ON c.id = p.company_id
+                    LEFT JOIN shifts s ON s.project_id = p.id
+                    WHERE p.id = %s
+                    GROUP BY p.id, p.name, p.company_id, c.name
+                    LIMIT 1
+                    """,
+                    (pid,),
+                )
+                row = cur.fetchone()
+    except Exception:
+        logger.exception("get_project_admin_max failed project_id=%s", pid)
+        return None
+    if not row:
+        return None
+    return {
+        "id": int(row[0] or 0),
+        "name": str(row[1] or ""),
+        "company_id": int(row[2] or 0) if row[2] is not None else 0,
+        "company_name": str(row[3] or ""),
+        "shifts_total": int(row[4] or 0),
+        "shifts_open": int(row[5] or 0),
+    }
+
+
+def list_shift_assignments_recent_max(limit: int = 30) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    lim = max(1, min(int(limit), 200))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT sa.id, sa.shift_id, sa.worker_tg_id, COALESCE(sa.status, ''),
+                           COALESCE(w.full_name, ''), s.shift_date, s.start_time, s.end_time
+                    FROM shift_assignments sa
+                    LEFT JOIN workers w ON w.user_id = sa.worker_tg_id
+                    LEFT JOIN shifts s ON s.id = sa.shift_id
+                    ORDER BY sa.id DESC
+                    LIMIT %s
+                    """,
+                    (lim,),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_shift_assignments_recent_max failed")
+        return []
+    return [
+        {
+            "id": int(r[0] or 0),
+            "shift_id": int(r[1] or 0),
+            "worker_tg_id": int(r[2] or 0),
+            "status": str(r[3] or ""),
+            "worker_name": str(r[4] or ""),
+            "shift_date": str(r[5] or ""),
+            "start_time": str(r[6] or ""),
+            "end_time": str(r[7] or ""),
+        }
+        for r in rows
+    ]
+
+
+def list_worker_payments_recent_max(limit: int = 30) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    lim = max(1, min(int(limit), 200))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT wp.id, wp.worker_tg_id, wp.amount_rub, COALESCE(wp.currency, 'RUB'),
+                           COALESCE(wp.status, ''), COALESCE(wp.title, ''), wp.shift_id, wp.created_at,
+                           COALESCE(w.full_name, '')
+                    FROM worker_payments wp
+                    LEFT JOIN workers w ON w.user_id = wp.worker_tg_id
+                    ORDER BY wp.created_at DESC, wp.id DESC
+                    LIMIT %s
+                    """,
+                    (lim,),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_worker_payments_recent_max failed")
+        return []
+    return [
+        {
+            "id": int(r[0] or 0),
+            "worker_tg_id": int(r[1] or 0),
+            "amount_rub": float(r[2] or 0),
+            "currency": str(r[3] or "RUB"),
+            "status": str(r[4] or ""),
+            "title": str(r[5] or ""),
+            "shift_id": int(r[6] or 0) if r[6] is not None else None,
+            "created_at": r[7],
+            "worker_name": str(r[8] or ""),
+        }
+        for r in rows
+    ]
+
+
+def get_worker_payment_admin_max(payment_id: int) -> dict[str, Any] | None:
+    if not DATABASE_URL:
+        return None
+    pid = int(payment_id)
+    if pid <= 0:
+        return None
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT wp.id, wp.worker_tg_id, wp.amount_rub, COALESCE(wp.currency, 'RUB'),
+                           COALESCE(wp.status, ''), COALESCE(wp.title, ''), COALESCE(wp.period_label, ''),
+                           wp.shift_id, wp.paid_at, wp.created_at, COALESCE(wp.notes, ''),
+                           COALESCE(w.full_name, '')
+                    FROM worker_payments wp
+                    LEFT JOIN workers w ON w.user_id = wp.worker_tg_id
+                    WHERE wp.id = %s
+                    LIMIT 1
+                    """,
+                    (pid,),
+                )
+                row = cur.fetchone()
+    except Exception:
+        logger.exception("get_worker_payment_admin_max failed payment_id=%s", pid)
+        return None
+    if not row:
+        return None
+    return {
+        "id": int(row[0] or 0),
+        "worker_tg_id": int(row[1] or 0),
+        "amount_rub": float(row[2] or 0),
+        "currency": str(row[3] or "RUB"),
+        "status": str(row[4] or ""),
+        "title": str(row[5] or ""),
+        "period_label": str(row[6] or ""),
+        "shift_id": int(row[7] or 0) if row[7] is not None else None,
+        "paid_at": row[8],
+        "created_at": row[9],
+        "notes": str(row[10] or ""),
+        "worker_name": str(row[11] or ""),
+    }
+
+
+def list_workers_admin_max(limit: int = 30) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    lim = max(1, min(int(limit), 200))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_id, COALESCE(full_name, ''), COALESCE(phone, ''), COALESCE(profession, ''),
+                           COALESCE(status, 'new'), COALESCE(cooperation_mode, 'agency'),
+                           COALESCE(rating, 0), COALESCE(registered_at, NOW())
+                    FROM workers
+                    ORDER BY registered_at DESC
+                    LIMIT %s
+                    """,
+                    (lim,),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_workers_admin_max failed")
+        return []
+    return [
+        {
+            "user_id": int(r[0] or 0),
+            "full_name": str(r[1] or ""),
+            "phone": str(r[2] or ""),
+            "profession": str(r[3] or ""),
+            "status": str(r[4] or "new"),
+            "cooperation_mode": str(r[5] or "agency"),
+            "rating": float(r[6] or 0),
+            "registered_at": r[7],
+        }
+        for r in rows
+    ]
+
+
+def search_workers_admin_max(query: str, limit: int = 20) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    raw = (query or "").strip()
+    if not raw:
+        return []
+    lim = max(1, min(int(limit), 100))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                if raw.isdigit():
+                    cur.execute(
+                        """
+                        SELECT user_id, COALESCE(full_name, ''), COALESCE(phone, ''), COALESCE(profession, ''),
+                               COALESCE(status, 'new'), COALESCE(cooperation_mode, 'agency'),
+                               COALESCE(rating, 0), COALESCE(registered_at, NOW())
+                        FROM workers
+                        WHERE user_id = %s
+                        LIMIT %s
+                        """,
+                        (int(raw), lim),
+                    )
+                else:
+                    pat = f"%{raw}%"
+                    cur.execute(
+                        """
+                        SELECT user_id, COALESCE(full_name, ''), COALESCE(phone, ''), COALESCE(profession, ''),
+                               COALESCE(status, 'new'), COALESCE(cooperation_mode, 'agency'),
+                               COALESCE(rating, 0), COALESCE(registered_at, NOW())
+                        FROM workers
+                        WHERE full_name ILIKE %s OR COALESCE(phone, '') ILIKE %s OR COALESCE(profession, '') ILIKE %s
+                        ORDER BY registered_at DESC
+                        LIMIT %s
+                        """,
+                        (pat, pat, pat, lim),
+                    )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("search_workers_admin_max failed query=%r", raw)
+        return []
+    return [
+        {
+            "user_id": int(r[0] or 0),
+            "full_name": str(r[1] or ""),
+            "phone": str(r[2] or ""),
+            "profession": str(r[3] or ""),
+            "status": str(r[4] or "new"),
+            "cooperation_mode": str(r[5] or "agency"),
+            "rating": float(r[6] or 0),
+            "registered_at": r[7],
+        }
+        for r in rows
+    ]
+
+
+def get_worker_admin_max(worker_id: int) -> dict[str, Any] | None:
+    if not DATABASE_URL:
+        return None
+    wid = int(worker_id)
+    if wid <= 0:
+        return None
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_id, COALESCE(full_name, ''), COALESCE(phone, ''), COALESCE(profession, ''),
+                           COALESCE(status, 'new'), COALESCE(cooperation_mode, 'agency'),
+                           COALESCE(rating, 0), COALESCE(registered_at, NOW())
+                    FROM workers
+                    WHERE user_id = %s
+                    LIMIT 1
+                    """,
+                    (wid,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+    except Exception:
+        logger.exception("get_worker_admin_max failed worker_id=%s", wid)
+        return None
+    return {
+        "user_id": int(row[0] or 0),
+        "full_name": str(row[1] or ""),
+        "phone": str(row[2] or ""),
+        "profession": str(row[3] or ""),
+        "status": str(row[4] or "new"),
+        "cooperation_mode": str(row[5] or "agency"),
+        "rating": float(row[6] or 0),
+        "registered_at": row[7],
+    }
+
+
+def get_worker_assignment_stats_max(worker_id: int) -> dict[str, int]:
+    if not DATABASE_URL:
+        return {"assignments_total": 0, "open_tasks": 0}
+    wid = int(worker_id)
+    if wid <= 0:
+        return {"assignments_total": 0, "open_tasks": 0}
+    assignments_total = 0
+    open_tasks = 0
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM shift_assignments WHERE worker_tg_id = %s", (wid,))
+                assignments_total = int((cur.fetchone() or [0])[0] or 0)
+                try:
+                    cur.execute("SELECT COUNT(*) FROM tasks WHERE assigned_to = %s AND status <> 'completed'", (wid,))
+                    open_tasks = int((cur.fetchone() or [0])[0] or 0)
+                except Exception:
+                    open_tasks = 0
+    except Exception:
+        logger.exception("get_worker_assignment_stats_max failed worker_id=%s", wid)
+    return {"assignments_total": assignments_total, "open_tasks": open_tasks}
+
+
+def list_worker_payments_for_worker_max(worker_tg_id: int, limit: int = 10) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    wid = int(worker_tg_id)
+    lim = max(1, min(int(limit), 100))
+    if wid <= 0:
+        return []
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, amount_rub, COALESCE(currency, 'RUB'), COALESCE(status, ''),
+                           COALESCE(title, ''), COALESCE(period_label, ''), shift_id, paid_at, created_at
+                    FROM worker_payments
+                    WHERE worker_tg_id = %s
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT %s
+                    """,
+                    (wid, lim),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_worker_payments_for_worker_max failed worker_id=%s", wid)
+        return []
+    return [
+        {
+            "id": int(r[0] or 0),
+            "amount_rub": float(r[1] or 0),
+            "currency": str(r[2] or "RUB"),
+            "status": str(r[3] or ""),
+            "title": str(r[4] or ""),
+            "period_label": str(r[5] or ""),
+            "shift_id": int(r[6] or 0) if r[6] is not None else None,
+            "paid_at": r[7],
+            "created_at": r[8],
+        }
+        for r in rows
+    ]
+
+
+def update_worker_payment_status_max(payment_id: int, status: str) -> tuple[bool, str]:
+    if not DATABASE_URL:
+        return False, "Нужен PostgreSQL."
+    pid = int(payment_id)
+    st = (status or "").strip().lower()
+    if pid <= 0 or st not in {"pending", "approved", "paid", "cancelled"}:
+        return False, "Некорректные параметры."
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                if st == "paid":
+                    cur.execute(
+                        "UPDATE worker_payments SET status = %s, paid_at = NOW() WHERE id = %s",
+                        (st, pid),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE worker_payments SET status = %s, paid_at = NULL WHERE id = %s",
+                        (st, pid),
+                    )
+                if int(cur.rowcount or 0) <= 0:
+                    return False, "Выплата не найдена."
+    except Exception:
+        logger.exception("update_worker_payment_status_max failed payment_id=%s status=%s", pid, st)
+        return False, "Ошибка записи в БД."
+    return True, "Статус обновлён."
+
+
+def _ensure_admin_logs_table_max(cur) -> None:
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS admin_logs (
+            id BIGSERIAL PRIMARY KEY,
+            admin_user_id BIGINT NOT NULL,
+            action TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id BIGINT,
+            details TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+        """
+    )
+
+
+def log_admin_action_max(
+    admin_user_id: int, action: str, entity_type: str, entity_id: int | None, details: str = ""
+) -> None:
+    if not DATABASE_URL:
+        return
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                _ensure_admin_logs_table_max(cur)
+                cur.execute(
+                    """
+                    INSERT INTO admin_logs (admin_user_id, action, entity_type, entity_id, details, created_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    """,
+                    (
+                        int(admin_user_id),
+                        (action or "").strip()[:120],
+                        (entity_type or "").strip()[:80],
+                        int(entity_id) if entity_id is not None else None,
+                        (details or "").strip()[:1000],
+                    ),
+                )
+    except Exception:
+        logger.exception("log_admin_action_max failed action=%s entity=%s", action, entity_type)
+
+
+def list_admin_logs_max(limit: int = 30) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    lim = max(1, min(int(limit), 200))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                _ensure_admin_logs_table_max(cur)
+                cur.execute(
+                    """
+                    SELECT admin_user_id, action, entity_type, entity_id, details, created_at
+                    FROM admin_logs
+                    ORDER BY id DESC
+                    LIMIT %s
+                    """,
+                    (lim,),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_admin_logs_max failed")
+        return []
+    return [
+        {
+            "admin_user_id": int(r[0] or 0),
+            "action": str(r[1] or ""),
+            "entity_type": str(r[2] or ""),
+            "entity_id": int(r[3] or 0) if r[3] is not None else None,
+            "details": str(r[4] or ""),
+            "created_at": r[5],
+        }
+        for r in rows
+    ]
+
+
+def get_admin_hub_counters_max() -> dict[str, int]:
+    out = {
+        "open_shifts": 0,
+        "projects_total": 0,
+        "payments_pending": 0,
+        "crm_all": 0,
+        "crm_kp": 0,
+        "crm_urgent": 0,
+        "workers_total": 0,
+    }
+    if not DATABASE_URL:
+        return out
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM shifts WHERE status IN ('open', 'in_progress')")
+                out["open_shifts"] = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute("SELECT COUNT(*) FROM projects")
+                out["projects_total"] = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute("SELECT COUNT(*) FROM worker_payments WHERE COALESCE(status, 'pending') = 'pending'")
+                out["payments_pending"] = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute("SELECT COUNT(*) FROM workers")
+                out["workers_total"] = int((cur.fetchone() or [0])[0] or 0)
+    except Exception:
+        logger.exception("get_admin_hub_counters_max failed basic counters")
+    try:
+        out["crm_all"] = count_agency_visit_orders_funnel_excluding(order_kind=None)
+        out["crm_kp"] = count_agency_visit_orders_funnel_excluding(order_kind="cp_request")
+        out["crm_urgent"] = count_agency_visit_orders_funnel_excluding(order_kind="__urgent__")
+    except Exception:
+        logger.exception("get_admin_hub_counters_max failed crm counters")
+    return out
+
+
+def get_company_subscription_metrics_max(days: int = 7) -> dict[str, int]:
+    out = {
+        "active_total": 0,
+        "expiring_soon": 0,
+        "expired_total": 0,
+        "without_subscription": 0,
+    }
+    if not DATABASE_URL:
+        return out
+    d = max(1, min(90, int(days or 7)))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM company_subscriptions
+                    WHERE LOWER(COALESCE(status, '')) IN ('active', 'trial', 'grace')
+                      AND (ends_at IS NULL OR ends_at > NOW())
+                    """
+                )
+                out["active_total"] = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM company_subscriptions
+                    WHERE LOWER(COALESCE(status, '')) IN ('active', 'trial', 'grace')
+                      AND ends_at IS NOT NULL
+                      AND ends_at > NOW()
+                      AND ends_at <= (NOW() + (%s || ' days')::interval)
+                    """,
+                    (d,),
+                )
+                out["expiring_soon"] = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM company_subscriptions
+                    WHERE ends_at IS NOT NULL
+                      AND ends_at <= NOW()
+                    """
+                )
+                out["expired_total"] = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM companies c
+                    LEFT JOIN company_subscriptions s ON s.company_id = c.id
+                    WHERE s.company_id IS NULL
+                    """
+                )
+                out["without_subscription"] = int((cur.fetchone() or [0])[0] or 0)
+    except Exception:
+        logger.exception("get_company_subscription_metrics_max failed")
+    return out
+
+
+def list_expiring_company_subscriptions_max(days: int = 7, limit: int = 30) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    d = max(1, min(90, int(days or 7)))
+    lim = max(1, min(200, int(limit or 30)))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.id,
+                           COALESCE(c.name, '') AS company_name,
+                           COALESCE(s.plan_code, 'legacy') AS plan_code,
+                           COALESCE(s.status, 'active') AS status,
+                           s.projects_limit,
+                           s.ends_at,
+                           COUNT(p.id)::int AS projects_used
+                    FROM company_subscriptions s
+                    JOIN companies c ON c.id = s.company_id
+                    LEFT JOIN projects p ON p.company_id = c.id
+                    WHERE s.ends_at IS NOT NULL
+                      AND s.ends_at > NOW()
+                      AND s.ends_at <= (NOW() + (%s || ' days')::interval)
+                    GROUP BY c.id, c.name, s.plan_code, s.status, s.projects_limit, s.ends_at
+                    ORDER BY s.ends_at ASC, c.id ASC
+                    LIMIT %s
+                    """,
+                    (d, lim),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_expiring_company_subscriptions_max failed")
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "company_id": int(row[0]),
+                "company_name": str(row[1] or ""),
+                "plan_code": str(row[2] or "legacy"),
+                "status": str(row[3] or "active"),
+                "projects_limit": int(row[4]) if row[4] is not None else None,
+                "ends_at": row[5],
+                "projects_used": int(row[6] or 0),
+            }
+        )
+    return out
+
+
+def list_expired_company_subscriptions_max(limit: int = 30) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    lim = max(1, min(200, int(limit or 30)))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.id,
+                           COALESCE(c.name, '') AS company_name,
+                           COALESCE(s.plan_code, 'legacy') AS plan_code,
+                           COALESCE(s.status, 'active') AS status,
+                           s.projects_limit,
+                           s.ends_at,
+                           COUNT(p.id)::int AS projects_used
+                    FROM company_subscriptions s
+                    JOIN companies c ON c.id = s.company_id
+                    LEFT JOIN projects p ON p.company_id = c.id
+                    WHERE s.ends_at IS NOT NULL
+                      AND s.ends_at <= NOW()
+                    GROUP BY c.id, c.name, s.plan_code, s.status, s.projects_limit, s.ends_at
+                    ORDER BY s.ends_at DESC, c.id ASC
+                    LIMIT %s
+                    """,
+                    (lim,),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_expired_company_subscriptions_max failed")
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "company_id": int(row[0]),
+                "company_name": str(row[1] or ""),
+                "plan_code": str(row[2] or "legacy"),
+                "status": str(row[3] or "active"),
+                "projects_limit": int(row[4]) if row[4] is not None else None,
+                "ends_at": row[5],
+                "projects_used": int(row[6] or 0),
+            }
+        )
+    return out
+
+
+def get_company_subscription_max(company_id: int) -> dict[str, Any] | None:
+    if not DATABASE_URL:
+        return None
+    cid = int(company_id)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT company_id, plan_code, status, projects_limit, starts_at, ends_at, auto_renew, notes
+                    FROM company_subscriptions
+                    WHERE company_id = %s
+                    LIMIT 1
+                    """,
+                    (cid,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "company_id": int(row[0]),
+                    "plan_code": str(row[1] or "legacy"),
+                    "status": str(row[2] or "active"),
+                    "projects_limit": int(row[3]) if row[3] is not None else None,
+                    "starts_at": row[4],
+                    "ends_at": row[5],
+                    "auto_renew": bool(row[6]),
+                    "notes": str(row[7] or ""),
+                }
+    except Exception:
+        logger.exception("get_company_subscription_max failed company_id=%s", cid)
+        return None
+
+
+def count_projects_for_company_max(company_id: int) -> int:
+    if not DATABASE_URL:
+        return 0
+    cid = int(company_id)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM projects WHERE company_id = %s", (cid,))
+                return int((cur.fetchone() or [0])[0] or 0)
+    except Exception:
+        logger.exception("count_projects_for_company_max failed company_id=%s", cid)
+        return 0
+
+
+def _upsert_company_subscription_max(
+    company_id: int,
+    *,
+    plan_code: str,
+    status: str,
+    projects_limit: int | None,
+    starts_at: Any,
+    ends_at: Any,
+    auto_renew: bool,
+    notes: str,
+) -> bool:
+    cid = int(company_id)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO company_subscriptions (
+                        company_id, plan_code, status, projects_limit, starts_at, ends_at,
+                        auto_renew, notes, created_at, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (company_id) DO UPDATE SET
+                        plan_code = EXCLUDED.plan_code,
+                        status = EXCLUDED.status,
+                        projects_limit = EXCLUDED.projects_limit,
+                        starts_at = EXCLUDED.starts_at,
+                        ends_at = EXCLUDED.ends_at,
+                        auto_renew = EXCLUDED.auto_renew,
+                        notes = EXCLUDED.notes,
+                        updated_at = NOW()
+                    """,
+                    (
+                        cid,
+                        (plan_code or "manual").strip() or "manual",
+                        (status or "active").strip().lower() or "active",
+                        int(projects_limit) if projects_limit is not None else None,
+                        starts_at,
+                        ends_at,
+                        bool(auto_renew),
+                        (notes or "").strip(),
+                    ),
+                )
+        return True
+    except Exception:
+        logger.exception("_upsert_company_subscription_max failed company_id=%s", cid)
+        return False
+
+
+def admin_extend_company_subscription_days_max(company_id: int, days: int = 30) -> bool:
+    if not DATABASE_URL:
+        return False
+    cid = int(company_id)
+    dd = max(1, min(3650, int(days or 30)))
+    sub = get_company_subscription_max(cid) or {}
+    ends_at = sub.get("ends_at")
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM companies WHERE id = %s", (cid,))
+                if not cur.fetchone():
+                    return False
+    except Exception:
+        logger.exception("admin_extend_company_subscription_days_max company check failed company_id=%s", cid)
+        return False
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    base = now
+    if ends_at is not None:
+        try:
+            base = ends_at if ends_at > now else now
+        except Exception:
+            base = now
+    return _upsert_company_subscription_max(
+        cid,
+        plan_code=str(sub.get("plan_code") or "manual"),
+        status="active",
+        projects_limit=int(sub.get("projects_limit")) if sub.get("projects_limit") is not None else None,
+        starts_at=sub.get("starts_at") or now,
+        ends_at=base + timedelta(days=dd),
+        auto_renew=bool(sub.get("auto_renew")),
+        notes=str(sub.get("notes") or "admin_extend"),
+    )
+
+
+def admin_set_company_subscription_grace_max(company_id: int, days: int = 7) -> bool:
+    if not DATABASE_URL:
+        return False
+    cid = int(company_id)
+    dd = max(1, min(365, int(days or 7)))
+    sub = get_company_subscription_max(cid) or {}
+    ends_at = sub.get("ends_at")
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM companies WHERE id = %s", (cid,))
+                if not cur.fetchone():
+                    return False
+    except Exception:
+        logger.exception("admin_set_company_subscription_grace_max company check failed company_id=%s", cid)
+        return False
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    base = now
+    if ends_at is not None:
+        try:
+            base = ends_at if ends_at > now else now
+        except Exception:
+            base = now
+    return _upsert_company_subscription_max(
+        cid,
+        plan_code=str(sub.get("plan_code") or "manual"),
+        status="grace",
+        projects_limit=int(sub.get("projects_limit")) if sub.get("projects_limit") is not None else None,
+        starts_at=sub.get("starts_at") or now,
+        ends_at=base + timedelta(days=dd),
+        auto_renew=bool(sub.get("auto_renew")),
+        notes=str(sub.get("notes") or "admin_grace"),
+    )

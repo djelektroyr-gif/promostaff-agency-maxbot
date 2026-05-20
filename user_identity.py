@@ -17,7 +17,7 @@ from funnel_db import (
 logger = logging.getLogger(__name__)
 
 MAX_TG_SYNTHETIC_LEAST = 10**15
-SERVICE_ROLES = frozenset({"admin", "manager"})
+SERVICE_ROLES = frozenset({"admin", "manager", "администратор", "менеджер"})
 
 ROLE_SWITCH_VIA_ADMIN_FOOTER_RU = (
     "\n\nВторая роль возможна только после удаления текущего профиля администратором в базе."

@@ -43,6 +43,11 @@ def build_cabinet_web_login_url(max_user_id: int) -> tuple[str | None, str | Non
     Возвращает `(url, error_message)`.
     """
     max_uid = int(max_user_id)
+    base = (CABINET_WEB_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        return None, "Кабинет временно недоступен: не настроен адрес веб-сайта."
+    if not (base.startswith("http://") or base.startswith("https://")):
+        return None, "Кабинет временно недоступен: адрес сайта настроен некорректно."
     tg_id = resolve_tg_id_for_max_user(max_uid)
     token_raw = secrets.token_urlsafe(32)
     token_digest = _token_hash(token_raw)
@@ -57,6 +62,9 @@ def build_cabinet_web_login_url(max_user_id: int) -> tuple[str | None, str | Non
                     (tg_id,),
                 )
                 cur.execute(
+                    "DELETE FROM cabinet_web_login_tokens WHERE expires_at < NOW()",
+                )
+                cur.execute(
                     """
                     INSERT INTO cabinet_web_login_tokens (token_hash, tg_id, expires_at)
                     VALUES (%s, %s, %s)
@@ -67,5 +75,5 @@ def build_cabinet_web_login_url(max_user_id: int) -> tuple[str | None, str | Non
         logger.exception("build_cabinet_web_login_url max_uid=%s tg_id=%s", max_uid, tg_id)
         return None, "Не удалось подготовить ссылку. Попробуйте позже."
 
-    url = f"{CABINET_WEB_BASE_URL}/cabinet/enter?token={quote(token_raw, safe='')}"
+    url = f"{base}/cabinet/enter?token={quote(token_raw, safe='')}"
     return url, None

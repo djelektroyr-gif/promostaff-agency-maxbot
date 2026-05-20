@@ -243,13 +243,63 @@ def is_admin_user(max_uid: int | None) -> bool:
 
 
 def admin_agency_hub_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("⚙️ Операции", "admin_hub_ops")],
+            [cb_btn("👥 HRM", "admin_hub_hrm")],
+            [cb_btn("💼 CRM", "admin_hub_crm")],
+            [cb_btn("🧰 Система", "admin_hub_system")],
+            [cb_btn("🏠 В главное меню", "main_menu")],
+        ]
+    )
+
+
+def admin_hub_ops_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("📋 Активные смены", "admin_ops_shifts_active")],
+            [cb_btn("📦 Проекты", "admin_ops_projects")],
+            [cb_btn("🧾 Отчеты по сменам", "admin_ops_reports")],
+            [cb_btn("🔙 В админ-меню", "admin_agency_hub")],
+        ]
+    )
+
+
+def admin_hub_hrm_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("👷 Исполнители", "admin_hrm_workers")],
+            [cb_btn("🔎 Найти исполнителя", "admin_hrm_worker_find")],
+            [cb_btn("📥 Последние анкеты", "admin_hrm_join_recent")],
+            [cb_btn("💳 Выплаты (контроль)", "admin_hrm_payments")],
+            [cb_btn("📥 CSV выплат", "admin_hrm_payments_export")],
+            [cb_btn("🔙 В админ-меню", "admin_agency_hub")],
+        ]
+    )
+
+
+def admin_hub_crm_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("📥 Воронка заказов (все)", "admin_orders_funnel")],
+            [cb_btn("📄 KPI/KP", "admin_orders_funnel_kp")],
+            [cb_btn("⚡ Urgent", "admin_orders_funnel_urgent")],
+            [cb_btn("🔙 В админ-меню", "admin_agency_hub")],
+        ]
+    )
+
+
+def admin_hub_system_keyboard() -> list[dict]:
     base = CABINET_WEB_BASE_URL.rstrip("/")
     return inline_keyboard(
         [
-            [link_btn("🌐 Панель агентства", f"{base}/dashboard")],
-            [link_btn("📂 Проекты", f"{base}/agency/projects")],
-            [link_btn("📅 Смены", f"{base}/agency/ops/shifts")],
-            [cb_btn("🏠 В главное меню", "main_menu")],
+            [cb_btn("📊 Мониторинг", "admin_sys_monitor")],
+            [cb_btn("⏳ Подписки: истекают 7 дней", "admin_sys_subscriptions_expiring")],
+            [cb_btn("📝 Лог админ-действий", "admin_sys_admin_logs")],
+            [cb_btn("📞 Вход по телефону", "admin_phone_login_btn")],
+            [cb_btn("🧬 Дубли телефонов users", "admin_identity_dupes")],
+            [link_btn("🌐 Web admin", f"{base}/dashboard")],
+            [cb_btn("🔙 В админ-меню", "admin_agency_hub")],
         ]
     )
 

@@ -18,7 +18,6 @@ from typing import Any
 
 from config import (
     ADMIN_MAX_USER_IDS,
-    CABINET_WEB_BASE_URL,
     CLIENT_POSITIONS,
     COMPANY_NAME,
     LISTING_PUBLICATION_FEE_RUB,
@@ -39,6 +38,38 @@ from visit_join_anketa_catalog import (
 )
 from funnel_store import funnel_touch_complete
 from funnel_db import (
+    count_agency_visit_orders_funnel_excluding,
+    list_agency_visit_orders_funnel_page,
+    get_agency_visit_order_for_admin,
+    apply_visit_order_crm_stage_from_admin,
+    get_agency_crm_card_pipeline_stage,
+    get_users_phone_duplicates_metrics,
+    get_visitcard_stats,
+    get_worker_cooperation_mode_metrics,
+    list_visit_rows,
+    list_open_shifts_admin_max,
+    get_shift_admin_max,
+    list_projects_admin_max,
+    get_project_admin_max,
+    list_shift_assignments_recent_max,
+    list_worker_payments_recent_max,
+    get_worker_payment_admin_max,
+    list_workers_admin_max,
+    search_workers_admin_max,
+    get_worker_admin_max,
+    get_worker_assignment_stats_max,
+    list_worker_payments_for_worker_max,
+    update_worker_payment_status_max,
+    log_admin_action_max,
+    list_admin_logs_max,
+    get_admin_hub_counters_max,
+    get_company_subscription_metrics_max,
+    list_expiring_company_subscriptions_max,
+    list_expired_company_subscriptions_max,
+    get_company_subscription_max,
+    count_projects_for_company_max,
+    admin_extend_company_subscription_days_max,
+    admin_set_company_subscription_grace_max,
     COOPERATION_MODE_PLATFORM,
     get_max_worker_cooperation_mode,
     has_max_active_executor_profile,
@@ -54,6 +85,7 @@ from funnel_db import (
 )
 from notify import notify_agency_admins
 from shift_pricing import calculate_order_cost, parse_shift_interval
+from visit_phone_login_log import OUTCOME_LABELS_RU, list_visit_phone_login_log
 
 logger = logging.getLogger(__name__)
 
@@ -1531,6 +1563,381 @@ def _supervisor_offer_text(total: int, rec: int) -> str:
     )
 
 
+FUNNEL_PAGE_SIZE = 10
+VISIT_ORDER_KIND_LABELS = {
+    "cp_request": "КП",
+    "quick_estimate": "Срочный",
+    "vacancy_listing": "Объявление",
+}
+CRM_STAGE_LABELS: dict[str, str] = {
+    "new": "Новая",
+    "kp_prep": "Готовим КП",
+    "client_review": "Клиент рассматривает",
+    "invoice_issued": "Счёт выставлен",
+    "invoice_paid": "Счёт оплачен",
+    "approved_project": "В работу",
+    "closed_lost": "Закрыто (проиграно)",
+    "manager_work": "В работе менеджера",
+    "project_active": "Проект активен",
+    "done": "Завершено",
+    "cancelled": "Отменено",
+}
+KP_STAGES_MAX: tuple[str, ...] = (
+    "new",
+    "kp_prep",
+    "client_review",
+    "invoice_issued",
+    "invoice_paid",
+    "approved_project",
+    "closed_lost",
+)
+URGENT_STAGES_MAX: tuple[str, ...] = (
+    "new",
+    "manager_work",
+    "invoice_issued",
+    "invoice_paid",
+    "project_active",
+    "done",
+    "cancelled",
+)
+PAYMENT_STATUS_LABELS_RU: dict[str, str] = {
+    "pending": "⏳ Ожидает",
+    "approved": "✅ Согласована",
+    "paid": "💵 Выплачена",
+    "cancelled": "🚫 Отменена",
+}
+
+
+def _is_admin_max_uid(max_uid: int) -> bool:
+    return int(max_uid) in set(ADMIN_MAX_USER_IDS or [])
+
+
+def _admin_denied_reply(max_uid: int) -> dict[str, Any]:
+    return {
+        "notification": "Недоступно",
+        "text": "Этот раздел доступен только администраторам агентства.",
+        "format": "markdown",
+        "attachments": visit_card.main_menu_keyboard(max_uid),
+    }
+
+
+def _funnel_kind_title(kind: str) -> str:
+    return {
+        "all": "Воронка заказов",
+        "kp": "Воронка KPI/KP",
+        "urgent": "Воронка срочных заказов",
+    }.get(kind, "Воронка заказов")
+
+
+def _funnel_order_kind_for_tab(kind: str) -> str | None:
+    if kind == "kp":
+        return "cp_request"
+    if kind == "urgent":
+        return "__urgent__"
+    return None
+
+
+def _order_stage_callback(order_id: int, stage: str) -> str:
+    return f"admin_order_stage_{int(order_id)}_{(stage or '').strip()}"
+
+
+def _parse_order_stage_callback(payload: str) -> tuple[int, str] | None:
+    m = re.match(r"^admin_order_stage_(\d+)_(.+)$", payload or "")
+    if not m:
+        return None
+    return int(m.group(1)), m.group(2).strip().lower()
+
+
+def _parse_funnel_nav_callback(payload: str) -> tuple[str, int, str] | None:
+    m = re.match(r"^admin_funnel__([a-z_]+)__(-?\d+)(?:__([a-z_]+))?$", payload or "")
+    if not m:
+        return None
+    kind = (m.group(1) or "").strip().lower()
+    if kind not in ("all", "kp", "urgent"):
+        return None
+    stage = (m.group(3) or "all").strip().lower()
+    return kind, max(0, int(m.group(2))), (stage or "all")
+
+
+def _parse_order_detail_callback(payload: str) -> int | None:
+    m = re.match(r"^admin_order_detail_(\d+)$", payload or "")
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def _parse_worker_detail_callback(payload: str) -> int | None:
+    m = re.match(r"^admin_hrm_worker_detail_(\d+)$", payload or "")
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def _parse_payment_status_callback(payload: str) -> tuple[int, str] | None:
+    m = re.match(r"^admin_hrm_paystatus_(\d+)_([a-z_]+)$", payload or "")
+    if not m:
+        return None
+    return int(m.group(1)), (m.group(2) or "").strip().lower()
+
+
+def _subs_rows_by_mode_max(mode: str) -> list[dict[str, Any]]:
+    m = (mode or "expiring").strip().lower()
+    if m == "expired":
+        return list_expired_company_subscriptions_max(limit=30)
+    return list_expiring_company_subscriptions_max(days=7, limit=30)
+
+
+def _subs_list_keyboard_max(mode: str, rows: list[dict[str, Any]]) -> list[dict]:
+    m = (mode or "expiring").strip().lower()
+    toggle_text = "⚠️ Только истекшие" if m == "expiring" else "⏳ Истекают 7 дней"
+    toggle_mode = "expired" if m == "expiring" else "expiring"
+    kb_rows: list[list[dict]] = [[cb_btn(toggle_text, f"admin_sys_subs_mode_{toggle_mode}")]]
+    for row in rows[:20]:
+        cid = int(row.get("company_id") or 0)
+        cname = (row.get("company_name") or f"Компания #{cid}").strip()
+        kb_rows.append([cb_btn(f"🏢 {cname[:42]}", f"admin_sys_subs_company_{cid}_{m}")])
+    kb_rows.append([cb_btn("🔙 System", "admin_hub_system")])
+    return inline_keyboard(kb_rows)
+
+
+def _subs_list_text_max(mode: str, rows: list[dict[str, Any]]) -> str:
+    m = (mode or "expiring").strip().lower()
+    if m == "expired":
+        title = "*Подписки (только истекшие)*"
+        empty = "Истекших подписок нет."
+        until_label = "истекла"
+    else:
+        title = "*Подписки (истекают 7 дней)*"
+        empty = "На горизонте 7 дней истекающих подписок нет."
+        until_label = "до"
+    if not rows:
+        return f"{title}\n\n{empty}"
+    lines = [title, ""]
+    for row in rows[:30]:
+        cid = int(row.get("company_id") or 0)
+        cname = (row.get("company_name") or f"Компания #{cid}").strip()
+        plan = (row.get("plan_code") or "legacy").strip() or "legacy"
+        ends_at = row.get("ends_at") or "—"
+        used = int(row.get("projects_used") or 0)
+        limit = row.get("projects_limit")
+        quota = f"{used}/∞" if limit is None else f"{used}/{int(limit)}"
+        lines.append(
+            f"• #{cid} · {cname}\n"
+            f"  план: {plan} · проекты: {quota}\n"
+            f"  {until_label}: {ends_at}"
+        )
+    return "\n".join(lines)[:3900]
+
+
+def _parse_subs_company_cb_max(payload: str) -> tuple[int, str] | None:
+    m = re.match(r"^admin_sys_subs_company_(\d+)_(expiring|expired)$", payload or "")
+    if not m:
+        return None
+    return int(m.group(1)), str(m.group(2))
+
+
+def _parse_subs_action_cb_max(payload: str) -> tuple[int, str, str] | None:
+    m = re.match(r"^admin_sys_subs_act_(\d+)_(extend|grace)_(expiring|expired)$", payload or "")
+    if not m:
+        return None
+    return int(m.group(1)), str(m.group(2)), str(m.group(3))
+
+
+def _parse_subs_confirm_cb_max(payload: str) -> tuple[int, str, str] | None:
+    m = re.match(r"^admin_sys_subs_confirm_(\d+)_(extend|grace)_(expiring|expired)$", payload or "")
+    if not m:
+        return None
+    return int(m.group(1)), str(m.group(2)), str(m.group(3))
+
+
+def _subs_company_detail_text_max(company_id: int) -> str:
+    cid = int(company_id)
+    sub = get_company_subscription_max(cid)
+    if not sub:
+        return (
+            f"*Подписка компании #{cid}*\n\n"
+            "Строка подписки не создана. Можно выдать grace или продлить +30 дней."
+        )
+    used = int(count_projects_for_company_max(cid))
+    limit = sub.get("projects_limit")
+    quota = f"{used}/∞" if limit is None else f"{used}/{int(limit)}"
+    return (
+        f"*Подписка компании #{cid}*\n\n"
+        f"План: {sub.get('plan_code') or 'legacy'}\n"
+        f"Статус: {sub.get('status') or 'active'}\n"
+        f"Проекты: {quota}\n"
+        f"Начало: {sub.get('starts_at') or '—'}\n"
+        f"Окончание: {sub.get('ends_at') or '—'}"
+    )
+
+
+def _subs_company_detail_keyboard_max(company_id: int, mode: str) -> list[dict]:
+    cid = int(company_id)
+    m = (mode or "expiring").strip().lower()
+    return inline_keyboard(
+        [
+            [cb_btn("➕ Продлить +30 дней", f"admin_sys_subs_confirm_{cid}_extend_{m}")],
+            [cb_btn("🟡 Выдать grace (7д)", f"admin_sys_subs_confirm_{cid}_grace_{m}")],
+            [cb_btn("🔙 К списку", f"admin_sys_subs_mode_{m}")],
+            [cb_btn("🔙 System", "admin_hub_system")],
+        ]
+    )
+
+
+def _subs_confirm_text_max(company_id: int, action: str) -> str:
+    cid = int(company_id)
+    act = (action or "").strip().lower()
+    label = "Продлить +30 дней" if act == "extend" else "Выдать grace (7 дней)"
+    return (
+        "*Подтвердите действие*\n\n"
+        f"Компания: #{cid}\n"
+        f"Действие: {label}\n\n"
+        "После подтверждения подписка будет изменена сразу."
+    )
+
+
+def _subs_confirm_keyboard_max(company_id: int, action: str, mode: str) -> list[dict]:
+    cid = int(company_id)
+    act = (action or "").strip().lower()
+    m = (mode or "expiring").strip().lower()
+    return inline_keyboard(
+        [
+            [cb_btn("✅ Подтвердить", f"admin_sys_subs_act_{cid}_{act}_{m}")],
+            [cb_btn("❌ Отмена", f"admin_sys_subs_company_{cid}_{m}")],
+        ]
+    )
+
+
+def _order_stage_buttons(order_id: int, order_kind: str) -> list[list[dict]]:
+    stages = KP_STAGES_MAX if (order_kind or "").strip() == "cp_request" else URGENT_STAGES_MAX
+    rows: list[list[dict]] = []
+    row: list[dict] = []
+    for stage in stages:
+        row.append(cb_btn(CRM_STAGE_LABELS.get(stage, stage), _order_stage_callback(order_id, stage)))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return rows
+
+
+def _stage_presets_for_kind(kind: str) -> tuple[str, ...]:
+    if kind == "kp":
+        return ("all", "new", "kp_prep", "invoice_issued", "invoice_paid")
+    if kind == "urgent":
+        return ("all", "new", "manager_work", "invoice_issued", "invoice_paid")
+    return ("all", "new", "invoice_issued", "invoice_paid")
+
+
+def _render_admin_funnel_message(*, kind: str, page: int, stage: str = "all") -> dict[str, Any]:
+    order_kind = _funnel_order_kind_for_tab(kind)
+    stage_filter = (stage or "all").strip().lower()
+    total = count_agency_visit_orders_funnel_excluding(order_kind=order_kind, stage=stage_filter)
+    if total <= 0:
+        return {
+            "notification": "Пусто",
+            "text": f"*{_funnel_kind_title(kind)}*\n\nФильтр стадии: `{stage_filter}`\n\nПока заявок нет.",
+            "format": "markdown",
+            "attachments": inline_keyboard(
+                [
+                    [cb_btn("🔙 CRM", "admin_hub_crm")],
+                ]
+            ),
+        }
+    max_page = max(0, (total - 1) // FUNNEL_PAGE_SIZE)
+    current_page = max(0, min(int(page), max_page))
+    rows = list_agency_visit_orders_funnel_page(
+        order_kind=order_kind,
+        stage=stage_filter,
+        limit=FUNNEL_PAGE_SIZE,
+        offset=current_page * FUNNEL_PAGE_SIZE,
+    )
+    lines = [
+        f"*{_funnel_kind_title(kind)}*",
+        f"Стадия: `{stage_filter}`",
+        f"Страница {current_page + 1}/{max_page + 1} · всего {total}",
+        "",
+    ]
+    kb_rows: list[list[dict]] = []
+    for row in rows:
+        oid = int(row.get("id") or 0)
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        if not isinstance(payload, dict):
+            payload = {}
+        kind_label = VISIT_ORDER_KIND_LABELS.get(
+            (payload.get("order_kind") or "quick_estimate").strip(),
+            "Заявка",
+        )
+        event_type = (payload.get("event_type") or "—").strip()
+        city = (payload.get("city") or "—").strip()
+        status = (row.get("status") or "new").strip()
+        lines.append(f"• #{oid} · {kind_label} · {event_type}, {city} · `{status}`")
+        kb_rows.append([cb_btn(f"⚙️ Заявка #{oid}", f"admin_order_detail_{oid}")])
+    nav_row: list[dict] = []
+    if current_page > 0:
+        nav_row.append(cb_btn("◀️", f"admin_funnel__{kind}__{current_page - 1}__{stage_filter}"))
+    if current_page < max_page:
+        nav_row.append(cb_btn("▶️", f"admin_funnel__{kind}__{current_page + 1}__{stage_filter}"))
+    if nav_row:
+        kb_rows.append(nav_row)
+    stage_buttons: list[dict] = []
+    for st in _stage_presets_for_kind(kind):
+        label = "Все" if st == "all" else CRM_STAGE_LABELS.get(st, st)
+        if st == stage_filter:
+            label = f"• {label}"
+        stage_buttons.append(cb_btn(label, f"admin_funnel__{kind}__0__{st}"))
+    kb_rows.append(stage_buttons)
+    kb_rows.append([cb_btn("🔙 CRM", "admin_hub_crm")])
+    return {
+        "notification": " ",
+        "text": "\n".join(lines)[:3900],
+        "format": "markdown",
+        "attachments": inline_keyboard(kb_rows),
+    }
+
+
+def _render_admin_order_detail(order_id: int) -> dict[str, Any]:
+    row = get_agency_visit_order_for_admin(int(order_id))
+    if not row:
+        return {
+            "notification": "Не найдено",
+            "text": "Заявка не найдена.",
+            "format": "markdown",
+            "attachments": visit_card.admin_hub_crm_keyboard(),
+        }
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    oid = int(row.get("id") or 0)
+    status = (row.get("status") or "new").strip()
+    order_kind = (payload.get("order_kind") or "quick_estimate").strip()
+    crm_stage = get_agency_crm_card_pipeline_stage(oid)
+    stage_line = "—"
+    if crm_stage:
+        stage_line = f"{crm_stage[0]} · {CRM_STAGE_LABELS.get(crm_stage[1], crm_stage[1])}"
+    text = (
+        f"*Заявка #{oid}*\n\n"
+        f"Статус заявки: `{status}`\n"
+        f"CRM стадия: {stage_line}\n"
+        f"Тип: {(payload.get('event_type') or '—')}\n"
+        f"Город: {(payload.get('city') or '—')}\n"
+        f"Дата: {(payload.get('event_date') or '—')}\n"
+        f"Смена: {(payload.get('shift_time') or '—')}\n"
+        f"Бюджет: {(payload.get('total_cost') or 0)} ₽"
+    )
+    kb_rows = _order_stage_buttons(oid, order_kind)
+    back_kind = "kp" if order_kind == "cp_request" else "urgent"
+    kb_rows.append([cb_btn("🔙 К воронке", f"admin_orders_funnel_{back_kind}")])
+    kb_rows.append([cb_btn("🔙 CRM", "admin_hub_crm")])
+    return {
+        "notification": " ",
+        "text": text[:3900],
+        "format": "markdown",
+        "attachments": inline_keyboard(kb_rows),
+    }
+
+
 def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] | None:
     """Меню заказчика/исполнителя без активной SESSION (после clear_session)."""
     from funnel_db import (
@@ -1541,32 +1948,719 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
         list_agency_visit_orders_for_user,
     )
 
-    if payload == "admin_agency_hub":
-        if int(max_uid) not in set(ADMIN_MAX_USER_IDS or []):
+    admin_payloads = {
+        "admin_agency_hub",
+        "admin_hub_ops",
+        "admin_hub_hrm",
+        "admin_hub_crm",
+        "admin_hub_system",
+        "admin_orders_funnel",
+        "admin_orders_funnel_kp",
+        "admin_orders_funnel_urgent",
+        "admin_ops_shifts_active",
+        "admin_ops_projects",
+        "admin_ops_reports",
+        "admin_hrm_join_recent",
+        "admin_hrm_workers",
+        "admin_hrm_worker_find",
+        "admin_hrm_payments",
+        "admin_hrm_payments_export",
+        "admin_sys_admin_logs",
+        "admin_sys_monitor",
+        "admin_sys_subscriptions_expiring",
+        "admin_phone_login_btn",
+        "admin_identity_dupes",
+    }
+    if payload in admin_payloads or payload.startswith(
+        (
+            "admin_funnel__",
+            "admin_order_detail_",
+            "admin_order_stage_",
+            "admin_ops_shift_detail_",
+            "admin_ops_project_detail_",
+            "admin_hrm_payment_",
+            "admin_hrm_paystatus_",
+            "admin_hrm_worker_detail_",
+            "admin_sys_subs_mode_",
+            "admin_sys_subs_company_",
+            "admin_sys_subs_confirm_",
+            "admin_sys_subs_act_",
+        )
+    ):
+        if not _is_admin_max_uid(max_uid):
+            return _admin_denied_reply(max_uid)
+        counters = get_admin_hub_counters_max()
+        if payload == "admin_agency_hub":
             return {
-                "notification": "Недоступно",
-                "text": "Этот раздел доступен только администраторам агентства.",
+                "notification": " ",
+                "text": (
+                    "*Админ-меню MAX*\n\n"
+                    "Хабы совпадают с Telegram: OPS, HRM, CRM, System.\n"
+                    "Выберите раздел ниже.\n\n"
+                    f"OPS: {int(counters.get('open_shifts', 0))} открытых смен\n"
+                    f"HRM: {int(counters.get('workers_total', 0))} исполнителей · "
+                    f"{int(counters.get('payments_pending', 0))} выплат pending\n"
+                    f"CRM: {int(counters.get('crm_all', 0))} заявок в воронке"
+                ),
                 "format": "markdown",
-                "attachments": visit_card.main_menu_keyboard(max_uid),
+                "attachments": visit_card.admin_agency_hub_keyboard(),
             }
-        base = CABINET_WEB_BASE_URL.rstrip("/")
-        return {
-            "notification": " ",
-            "text": (
-                "*Управление агентством*\n\n"
-                "Откройте веб-панель: проекты, смены, операционные задачи и отчёты.\n\n"
-                "Это отдельный админ-контур и не зависит от публичной регистрации заказчика/исполнителя."
-            ),
-            "format": "markdown",
-            "attachments": inline_keyboard(
-                [
-                    [link_btn("🌐 Панель агентства", f"{base}/dashboard")],
-                    [link_btn("📂 Проекты", f"{base}/agency/projects")],
-                    [link_btn("📅 Смены", f"{base}/agency/ops/shifts")],
-                    [cb_btn("🏠 В главное меню", "main_menu")],
-                ]
-            ),
-        }
+        if payload == "admin_hub_ops":
+            return {
+                "notification": " ",
+                "text": (
+                    "*OPS (Операции)*\n\n"
+                    "Контур операционного управления: смены, проекты, отчёты.\n\n"
+                    f"Открытых смен: {int(counters.get('open_shifts', 0))}\n"
+                    f"Проектов: {int(counters.get('projects_total', 0))}"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_ops_keyboard(),
+            }
+        if payload == "admin_hub_hrm":
+            return {
+                "notification": " ",
+                "text": (
+                    "*HRM*\n\n"
+                    "Управление анкетами исполнителей и контроль выплат.\n\n"
+                    f"Исполнителей: {int(counters.get('workers_total', 0))}\n"
+                    f"Выплат pending: {int(counters.get('payments_pending', 0))}"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_hrm_keyboard(),
+            }
+        if payload == "admin_hub_crm":
+            return {
+                "notification": " ",
+                "text": (
+                    "*CRM*\n\n"
+                    "Воронка заказов в MAX: общий поток, KPI/KP и urgent.\n\n"
+                    f"Всего: {int(counters.get('crm_all', 0))}\n"
+                    f"KP: {int(counters.get('crm_kp', 0))}\n"
+                    f"Urgent: {int(counters.get('crm_urgent', 0))}"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_crm_keyboard(),
+            }
+        if payload == "admin_hub_system":
+            return {
+                "notification": " ",
+                "text": (
+                    "*System*\n\n"
+                    "Мониторинг и сервисные инструменты для поддержки.\n\n"
+                    f"Открытых смен: {int(counters.get('open_shifts', 0))}\n"
+                    f"Pending выплат: {int(counters.get('payments_pending', 0))}\n"
+                    f"CRM заявок: {int(counters.get('crm_all', 0))}"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_system_keyboard(),
+            }
+        if payload == "admin_orders_funnel":
+            return _render_admin_funnel_message(kind="all", page=0, stage="all")
+        if payload == "admin_orders_funnel_kp":
+            return _render_admin_funnel_message(kind="kp", page=0, stage="all")
+        if payload == "admin_orders_funnel_urgent":
+            return _render_admin_funnel_message(kind="urgent", page=0, stage="all")
+        if payload.startswith("admin_funnel__"):
+            parsed_nav = _parse_funnel_nav_callback(payload)
+            if not parsed_nav:
+                return {
+                    "notification": "Ошибка",
+                    "text": "Некорректная страница воронки.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_crm_keyboard(),
+                }
+            return _render_admin_funnel_message(kind=parsed_nav[0], page=parsed_nav[1], stage=parsed_nav[2])
+        if payload.startswith("admin_order_detail_"):
+            oid = _parse_order_detail_callback(payload)
+            if not oid:
+                return {
+                    "notification": "Ошибка",
+                    "text": "Некорректный идентификатор заявки.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_crm_keyboard(),
+                }
+            return _render_admin_order_detail(oid)
+        if payload.startswith("admin_order_stage_"):
+            parsed_stage = _parse_order_stage_callback(payload)
+            if not parsed_stage:
+                return {
+                    "notification": "Ошибка",
+                    "text": "Некорректные данные кнопки стадии.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_crm_keyboard(),
+                }
+            oid, stage = parsed_stage
+            ok, msg = apply_visit_order_crm_stage_from_admin(oid, stage)
+            if ok:
+                log_admin_action_max(
+                    int(max_uid),
+                    "crm.stage.max",
+                    "agency_visit_order",
+                    oid,
+                    (stage or "").strip(),
+                )
+            detail = _render_admin_order_detail(oid)
+            detail["notification"] = "Обновлено" if ok else "Ошибка"
+            if not ok:
+                detail["text"] = (
+                    f"{detail.get('text', '')}\n\n⚠️ {msg or 'Не удалось обновить стадию.'}"
+                )[:3900]
+            return detail
+        if payload == "admin_sys_monitor":
+            visit_stats = get_visitcard_stats()
+            coop = get_worker_cooperation_mode_metrics()
+            dup = get_users_phone_duplicates_metrics(limit=5)
+            subs = get_company_subscription_metrics_max(days=7)
+            return {
+                "notification": " ",
+                "text": (
+                    "*Мониторинг*\n\n"
+                    f"Заявки: {int(visit_stats.get('orders', 0))}\n"
+                    f"Анкеты: {int(visit_stats.get('join', 0))}\n"
+                    f"Вопросы: {int(visit_stats.get('questions', 0))}\n"
+                    f"Агентские исполнители: {int(coop.get('agency_workers', 0))}\n"
+                    f"Платформенные исполнители: {int(coop.get('platform_workers', 0))}\n"
+                    f"Дубли телефонов users: {int(dup.get('duplicate_phones_total', 0))}\n\n"
+                    "*Подписки компаний*\n"
+                    f"Активные: {int(subs.get('active_total', 0))}\n"
+                    f"Истекают 7 дней: {int(subs.get('expiring_soon', 0))}\n"
+                    f"Истекли: {int(subs.get('expired_total', 0))}\n"
+                    f"Без подписки: {int(subs.get('without_subscription', 0))}"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_system_keyboard(),
+            }
+        if payload == "admin_sys_subscriptions_expiring":
+            mode = "expiring"
+            rows = list_expiring_company_subscriptions_max(days=7, limit=30)
+            text = _subs_list_text_max(mode, rows)
+            return {
+                "notification": " ",
+                "text": text,
+                "format": "markdown",
+                "attachments": _subs_list_keyboard_max(mode, rows),
+            }
+        if payload.startswith("admin_sys_subs_mode_"):
+            mode = payload.replace("admin_sys_subs_mode_", "", 1).strip().lower() or "expiring"
+            rows = _subs_rows_by_mode_max(mode)
+            return {
+                "notification": " ",
+                "text": _subs_list_text_max(mode, rows),
+                "format": "markdown",
+                "attachments": _subs_list_keyboard_max(mode, rows),
+            }
+        if payload.startswith("admin_sys_subs_company_"):
+            parsed = _parse_subs_company_cb_max(payload)
+            if not parsed:
+                return {
+                    "notification": "Ошибка",
+                    "text": "Некорректные данные компании.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_system_keyboard(),
+                }
+            cid, mode = parsed
+            return {
+                "notification": " ",
+                "text": _subs_company_detail_text_max(cid),
+                "format": "markdown",
+                "attachments": _subs_company_detail_keyboard_max(cid, mode),
+            }
+        if payload.startswith("admin_sys_subs_confirm_"):
+            parsed = _parse_subs_confirm_cb_max(payload)
+            if not parsed:
+                return {
+                    "notification": "Ошибка",
+                    "text": "Некорректные данные подтверждения.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_system_keyboard(),
+                }
+            cid, action, mode = parsed
+            return {
+                "notification": "Подтвердите",
+                "text": _subs_confirm_text_max(cid, action),
+                "format": "markdown",
+                "attachments": _subs_confirm_keyboard_max(cid, action, mode),
+            }
+        if payload.startswith("admin_sys_subs_act_"):
+            parsed = _parse_subs_action_cb_max(payload)
+            if not parsed:
+                return {
+                    "notification": "Ошибка",
+                    "text": "Некорректные данные действия.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_system_keyboard(),
+                }
+            cid, action, mode = parsed
+            ok = False
+            if action == "extend":
+                ok = admin_extend_company_subscription_days_max(cid, days=30)
+                if ok:
+                    log_admin_action_max(int(max_uid), "subscription_extend_30d", "company_subscription", cid, "via_max_admin")
+            elif action == "grace":
+                ok = admin_set_company_subscription_grace_max(cid, days=7)
+                if ok:
+                    log_admin_action_max(int(max_uid), "subscription_grace_7d", "company_subscription", cid, "via_max_admin")
+            if not ok:
+                return {
+                    "notification": "Ошибка",
+                    "text": "Не удалось обновить подписку компании.",
+                    "format": "markdown",
+                    "attachments": _subs_company_detail_keyboard_max(cid, mode),
+                }
+            return {
+                "notification": "Обновлено",
+                "text": _subs_company_detail_text_max(cid),
+                "format": "markdown",
+                "attachments": _subs_company_detail_keyboard_max(cid, mode),
+            }
+        if payload == "admin_sys_admin_logs":
+            rows = list_admin_logs_max(limit=30)
+            if not rows:
+                text = "*Лог админ-действий*\n\nЗаписей пока нет."
+            else:
+                lines = ["*Лог админ-действий (последние 30)*", ""]
+                for row in rows:
+                    lines.append(
+                        "• "
+                        f"{(row.get('created_at') or '—')} · "
+                        f"uid={int(row.get('admin_user_id') or 0)} · "
+                        f"{(row.get('action') or '—')} · "
+                        f"{(row.get('entity_type') or '—')}:{(row.get('entity_id') or '—')}"
+                    )
+                text = "\n".join(lines)[:3900]
+            return {
+                "notification": " ",
+                "text": text,
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_system_keyboard(),
+            }
+        if payload == "admin_phone_login_btn":
+            rows = list_visit_phone_login_log(25)
+            if not rows:
+                text = "*Вход по телефону*\n\nЗаписей пока нет."
+            else:
+                lines = ["*Вход по телефону (MAX/TG)*", ""]
+                for src, uid, un, role, phone, outcome, created_at in rows:
+                    who = f"@{un}" if un else str(uid)
+                    out_ru = OUTCOME_LABELS_RU.get(str(outcome), str(outcome))
+                    lines.append(f"• {src} · {who} · {role} · {phone} · {out_ru} · {created_at}")
+                text = "\n".join(lines)[:3900]
+            return {
+                "notification": " ",
+                "text": text,
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_system_keyboard(),
+            }
+        if payload == "admin_identity_dupes":
+            dup = get_users_phone_duplicates_metrics(limit=10)
+            sample = dup.get("sample") or []
+            lines = [
+                "*Дубли по users.phone*",
+                "",
+                f"Номеров с дублями: {int(dup.get('duplicate_phones_total', 0))}",
+                f"Строк в дублях: {int(dup.get('duplicate_rows_total', 0))}",
+            ]
+            if sample:
+                lines.append("")
+                lines.append("Примеры:")
+                for row in sample[:10]:
+                    lines.append(
+                        f"• {row.get('phone_norm')} · {row.get('cnt')} шт · tg_id={row.get('tg_ids')}"
+                    )
+            return {
+                "notification": " ",
+                "text": "\n".join(lines)[:3900],
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_system_keyboard(),
+            }
+        if payload == "admin_hrm_join_recent":
+            rows = list_visit_rows("join", limit=12)
+            if not rows:
+                text = "*HRM: последние анкеты*\n\nПока нет заявок."
+            else:
+                lines = ["*HRM: последние анкеты*", ""]
+                for row in rows:
+                    payload_row = row.get("payload")
+                    data = {}
+                    if isinstance(payload_row, str):
+                        try:
+                            data = json.loads(payload_row)
+                        except Exception:
+                            data = {}
+                    elif isinstance(payload_row, dict):
+                        data = payload_row
+                    full_name = (data.get("full_name") or "—") if isinstance(data, dict) else "—"
+                    position = (data.get("position") or "—") if isinstance(data, dict) else "—"
+                    lines.append(f"• #{row.get('id')} · {full_name} · {position}")
+                text = "\n".join(lines)[:3900]
+            return {
+                "notification": " ",
+                "text": text,
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_hrm_keyboard(),
+            }
+        if payload == "admin_hrm_worker_find":
+            clear_session(max_uid)
+            SESSIONS[max_uid] = {"flow": "admin_hrm_find_worker", "step": "query", "data": {}}
+            return {
+                "notification": "Поиск",
+                "text": (
+                    "*Найти исполнителя*\n\n"
+                    "Введите ФИО, телефон или `user_id` исполнителя.\n\n"
+                    "Пример: `Иванов` или `7968...`."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_hrm_keyboard(),
+            }
+        if payload.startswith("admin_hrm_worker_detail_"):
+            wid = _parse_worker_detail_callback(payload) or 0
+            worker = get_worker_admin_max(wid)
+            if not worker:
+                return {
+                    "notification": "Не найдено",
+                    "text": "Исполнитель не найден.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_hrm_keyboard(),
+                }
+            stats = get_worker_assignment_stats_max(wid)
+            pays = list_worker_payments_for_worker_max(wid, limit=5)
+            lines = [
+                f"*Исполнитель {int(worker.get('user_id') or 0)}*",
+                "",
+                f"ФИО: {(worker.get('full_name') or '—')}",
+                f"Телефон: {(worker.get('phone') or '—')}",
+                f"Профессия: {(worker.get('profession') or '—')}",
+                f"Статус: `{(worker.get('status') or 'new')}`",
+                f"Режим: {(worker.get('cooperation_mode') or 'agency')}",
+                f"Рейтинг: {float(worker.get('rating') or 0):.2f}",
+                f"Назначений: {int(stats.get('assignments_total') or 0)}",
+                f"Открытых задач: {int(stats.get('open_tasks') or 0)}",
+            ]
+            if pays:
+                lines.append("")
+                lines.append("*Последние выплаты:*")
+                for p in pays[:5]:
+                    st_pay = str(p.get("status") or "").strip().lower()
+                    lines.append(
+                        "• "
+                        f"#{int(p.get('id') or 0)} · "
+                        f"{float(p.get('amount_rub') or 0):.2f} ₽ · "
+                        f"{PAYMENT_STATUS_LABELS_RU.get(st_pay, st_pay or '—')} · "
+                        f"{(p.get('title') or '—')}"
+                    )
+            return {
+                "notification": " ",
+                "text": "\n".join(lines)[:3900],
+                "format": "markdown",
+                "attachments": inline_keyboard(
+                    [
+                        [cb_btn("🔙 Поиск исполнителя", "admin_hrm_worker_find")],
+                        [cb_btn("🔙 HRM", "admin_hub_hrm")],
+                    ]
+                ),
+            }
+        if payload == "admin_hrm_workers":
+            rows = list_workers_admin_max(limit=25)
+            if not rows:
+                text = "*HRM: исполнители*\n\nЗаписей пока нет."
+            else:
+                lines = ["*HRM: исполнители (последние 25)*", ""]
+                for row in rows:
+                    lines.append(
+                        "• "
+                        f"{(row.get('full_name') or '—')} ({int(row.get('user_id') or 0)})"
+                        f" · {(row.get('profession') or '—')}"
+                        f" · `{(row.get('status') or 'new')}`"
+                        f" · mode={(row.get('cooperation_mode') or 'agency')}"
+                    )
+                text = "\n".join(lines)[:3900]
+            return {
+                "notification": " ",
+                "text": text,
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_hrm_keyboard(),
+            }
+        if payload.startswith("admin_hrm_payment_"):
+            m = re.match(r"^admin_hrm_payment_(\d+)$", payload)
+            pid = int(m.group(1)) if m else 0
+            row = get_worker_payment_admin_max(pid)
+            if not row:
+                return {
+                    "notification": "Не найдено",
+                    "text": "Выплата не найдена.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_hrm_keyboard(),
+                }
+            text = (
+                f"*Выплата #{int(row.get('id') or 0)}*\n\n"
+                f"Исполнитель: {(row.get('worker_name') or '—')} ({int(row.get('worker_tg_id') or 0)})\n"
+                f"Сумма: {float(row.get('amount_rub') or 0):.2f} {row.get('currency') or 'RUB'}\n"
+                f"Статус: {PAYMENT_STATUS_LABELS_RU.get(str(row.get('status') or ''), str(row.get('status') or '—'))}\n"
+                f"Основание: {(row.get('title') or '—')}\n"
+                f"Период: {(row.get('period_label') or '—')}\n"
+                f"Смена: {(row.get('shift_id') or '—')}\n"
+                f"Создано: {(row.get('created_at') or '—')}\n"
+                f"Оплачено: {(row.get('paid_at') or '—')}"
+            )
+            notes = (row.get("notes") or "").strip()
+            if notes:
+                text += f"\n\nКомментарий:\n{notes}"
+            return {
+                "notification": " ",
+                "text": text[:3900],
+                "format": "markdown",
+                "attachments": inline_keyboard(
+                    [
+                        [
+                            cb_btn("⏳ Ожидает", f"admin_hrm_paystatus_{pid}_pending"),
+                            cb_btn("✅ Согласована", f"admin_hrm_paystatus_{pid}_approved"),
+                        ],
+                        [
+                            cb_btn("💵 Выплачена", f"admin_hrm_paystatus_{pid}_paid"),
+                            cb_btn("🚫 Отменена", f"admin_hrm_paystatus_{pid}_cancelled"),
+                        ],
+                        [cb_btn("🔙 К выплатам", "admin_hrm_payments")],
+                        [cb_btn("🔙 HRM", "admin_hub_hrm")],
+                    ]
+                ),
+            }
+        if payload.startswith("admin_hrm_paystatus_"):
+            parsed_payment = _parse_payment_status_callback(payload)
+            if not parsed_payment:
+                return {
+                    "notification": "Ошибка",
+                    "text": "Некорректные данные статуса выплаты.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_hrm_keyboard(),
+                }
+            pid, new_status = parsed_payment
+            ok, msg = update_worker_payment_status_max(pid, new_status)
+            if ok:
+                log_admin_action_max(
+                    int(max_uid),
+                    "worker_payment.status.max",
+                    "worker_payment",
+                    pid,
+                    new_status,
+                )
+            detail = registered_menu_static_reply(max_uid, f"admin_hrm_payment_{pid}") or {
+                "notification": " ",
+                "text": "*HRM выплаты*",
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_hrm_keyboard(),
+            }
+            detail["notification"] = "Обновлено" if ok else "Ошибка"
+            if not ok:
+                detail["text"] = (str(detail.get("text") or "") + f"\n\n⚠️ {msg}")[:3900]
+            return detail
+        if payload == "admin_hrm_payments":
+            rows = list_worker_payments_recent_max(limit=20)
+            if not rows:
+                return {
+                    "notification": "Пусто",
+                    "text": "*HRM выплаты*\n\nЗаписей выплат пока нет.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_hrm_keyboard(),
+                }
+            lines = ["*HRM выплаты (последние 20)*", ""]
+            kb_rows: list[list[dict]] = []
+            for row in rows:
+                pid = int(row.get("id") or 0)
+                title = (row.get("title") or "").strip() or "Выплата"
+                worker = (row.get("worker_name") or "").strip() or str(int(row.get("worker_tg_id") or 0))
+                amount = float(row.get("amount_rub") or 0)
+                st = (row.get("status") or "—").strip()
+                st_ru = PAYMENT_STATUS_LABELS_RU.get(st, st)
+                lines.append(f"• #{pid} · {worker} · {amount:.2f} ₽ · {st_ru} · {title}")
+                kb_rows.append([cb_btn(f"💳 Выплата #{pid}", f"admin_hrm_payment_{pid}")])
+            return {
+                "notification": " ",
+                "text": "\n".join(lines)[:3900],
+                "format": "markdown",
+                "attachments": inline_keyboard(
+                    kb_rows + [[cb_btn("🔙 HRM", "admin_hub_hrm")]]
+                ),
+            }
+        if payload == "admin_hrm_payments_export":
+            rows = list_worker_payments_recent_max(limit=120)
+            if not rows:
+                return {
+                    "notification": "Пусто",
+                    "text": "*CSV выплат*\n\nНет данных для экспорта.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_hrm_keyboard(),
+                }
+            header = "id,worker_tg_id,worker_name,amount_rub,currency,status,title,shift_id,created_at,paid_at"
+            csv_lines = [header]
+            for row in rows:
+                def _cell(v: object) -> str:
+                    s = str(v or "").replace('"', '""')
+                    return f"\"{s}\""
+                csv_lines.append(
+                    ",".join(
+                        [
+                            _cell(row.get("id")),
+                            _cell(row.get("worker_tg_id")),
+                            _cell(row.get("worker_name")),
+                            _cell(row.get("amount_rub")),
+                            _cell(row.get("currency")),
+                            _cell(row.get("status")),
+                            _cell(row.get("title")),
+                            _cell(row.get("shift_id")),
+                            _cell(row.get("created_at")),
+                            _cell(row.get("paid_at")),
+                        ]
+                    )
+                )
+            body = "\n".join(csv_lines)
+            max_len = 3600
+            if len(body) > max_len:
+                body = body[:max_len] + "\n...truncated..."
+            return {
+                "notification": "Готово",
+                "text": f"*CSV выплат (preview)*\n\n```csv\n{body}\n```",
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_hrm_keyboard(),
+            }
+        if payload.startswith("admin_ops_shift_detail_"):
+            m = re.match(r"^admin_ops_shift_detail_(\d+)$", payload)
+            sid = int(m.group(1)) if m else 0
+            row = get_shift_admin_max(sid)
+            if not row:
+                return {
+                    "notification": "Не найдено",
+                    "text": "Смена не найдена.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_ops_keyboard(),
+                }
+            text = (
+                f"*Смена #{int(row.get('id') or 0)}*\n\n"
+                f"Проект: {(row.get('project_name') or '—')}\n"
+                f"Дата: {(row.get('shift_date') or '—')}\n"
+                f"Время: {(row.get('start_time') or '—')} - {(row.get('end_time') or '—')}\n"
+                f"Локация: {(row.get('location') or '—')}\n"
+                f"Ставка: {int(row.get('rate') or 0)} ₽/ч\n"
+                f"Нужно: {int(row.get('workers_needed') or 0)}\n"
+                f"Назначено: {int(row.get('assignments_total') or 0)}\n"
+                f"Статус: `{row.get('status') or '—'}`"
+            )
+            return {
+                "notification": " ",
+                "text": text[:3900],
+                "format": "markdown",
+                "attachments": inline_keyboard(
+                    [
+                        [cb_btn("🔙 К сменам", "admin_ops_shifts_active")],
+                        [cb_btn("🔙 OPS", "admin_hub_ops")],
+                    ]
+                ),
+            }
+        if payload.startswith("admin_ops_project_detail_"):
+            m = re.match(r"^admin_ops_project_detail_(\d+)$", payload)
+            pid = int(m.group(1)) if m else 0
+            row = get_project_admin_max(pid)
+            if not row:
+                return {
+                    "notification": "Не найдено",
+                    "text": "Проект не найден.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_ops_keyboard(),
+                }
+            text = (
+                f"*Проект #{int(row.get('id') or 0)}*\n\n"
+                f"Название: {(row.get('name') or '—')}\n"
+                f"Компания: {(row.get('company_name') or '—')} (ID {int(row.get('company_id') or 0)})\n"
+                f"Всего смен: {int(row.get('shifts_total') or 0)}\n"
+                f"Открытых смен: {int(row.get('shifts_open') or 0)}"
+            )
+            return {
+                "notification": " ",
+                "text": text[:3900],
+                "format": "markdown",
+                "attachments": inline_keyboard(
+                    [
+                        [cb_btn("🔙 К проектам", "admin_ops_projects")],
+                        [cb_btn("🔙 OPS", "admin_hub_ops")],
+                    ]
+                ),
+            }
+        if payload == "admin_ops_shifts_active":
+            rows = list_open_shifts_admin_max(limit=20)
+            if not rows:
+                text = "*OPS: активные смены*\n\nПока нет открытых смен."
+            else:
+                lines = ["*OPS: активные смены*", ""]
+                kb_rows: list[list[dict]] = []
+                for row in rows:
+                    sid = int(row.get("id") or 0)
+                    date = (row.get("shift_date") or "—").strip()
+                    project = (row.get("project_name") or "—").strip()
+                    time_range = f"{(row.get('start_time') or '—')} - {(row.get('end_time') or '—')}"
+                    status = (row.get("status") or "—").strip()
+                    lines.append(f"• #{sid} · {date} · {project} · {time_range} · `{status}`")
+                    kb_rows.append([cb_btn(f"📅 Смена #{sid}", f"admin_ops_shift_detail_{sid}")])
+                text = "\n".join(lines)[:3900]
+                return {
+                    "notification": " ",
+                    "text": text,
+                    "format": "markdown",
+                    "attachments": inline_keyboard(
+                        kb_rows + [[cb_btn("🔙 OPS", "admin_hub_ops")]]
+                    ),
+                }
+            return {
+                "notification": " ",
+                "text": text,
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_ops_keyboard(),
+            }
+        if payload == "admin_ops_projects":
+            rows = list_projects_admin_max(limit=20)
+            if not rows:
+                return {
+                    "notification": "Пусто",
+                    "text": "*OPS: проекты*\n\nПроекты не найдены.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_ops_keyboard(),
+                }
+            lines = ["*OPS: проекты*", ""]
+            kb_rows = []
+            for row in rows:
+                pid = int(row.get("id") or 0)
+                title = (row.get("name") or "—").strip()
+                company = (row.get("company_name") or "—").strip()
+                lines.append(f"• #{pid} · {title} · {company}")
+                kb_rows.append([cb_btn(f"📦 Проект #{pid}", f"admin_ops_project_detail_{pid}")])
+            return {
+                "notification": " ",
+                "text": "\n".join(lines)[:3900],
+                "format": "markdown",
+                "attachments": inline_keyboard(
+                    kb_rows + [[cb_btn("🔙 OPS", "admin_hub_ops")]]
+                ),
+            }
+        if payload == "admin_ops_reports":
+            rows = list_shift_assignments_recent_max(limit=25)
+            if not rows:
+                text = "*OPS: отчёты / назначения*\n\nНазначений пока нет."
+            else:
+                lines = ["*OPS: последние назначения на смены*", ""]
+                for row in rows:
+                    lines.append(
+                        "• "
+                        f"#{int(row.get('id') or 0)} · "
+                        f"смена {int(row.get('shift_id') or 0)} · "
+                        f"{(row.get('worker_name') or row.get('worker_tg_id') or '—')} · "
+                        f"`{(row.get('status') or '—')}`"
+                    )
+                text = "\n".join(lines)[:3900]
+            return {
+                "notification": " ",
+                "text": text,
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_ops_keyboard(),
+            }
 
     if payload == "client_reg_projects":
         if is_max_visit_client_registered(max_uid) and not is_max_visit_client_verified(max_uid):
@@ -1668,15 +2762,27 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
 
         url, err = build_cabinet_web_login_url(max_uid)
         if not url:
+            base_kb = (
+                visit_card.client_registered_main_menu_keyboard()
+                if cl_ok
+                else visit_card.worker_registered_main_menu_keyboard()
+            )
+            retry_kb = inline_keyboard(
+                [
+                    [cb_btn("🔁 Повторить вход в кабинет", "open_web_cabinet")],
+                    [cb_btn("📞 Связаться с менеджером", "contact_manager")],
+                    [cb_btn("🏠 Меню визитки", "visit_public_menu")],
+                ]
+            )
             return {
                 "notification": "Ошибка",
-                "text": err or "Не удалось подготовить ссылку. Попробуйте позже.",
-                "format": "markdown",
-                "attachments": (
-                    visit_card.client_registered_main_menu_keyboard()
-                    if cl_ok
-                    else visit_card.worker_registered_main_menu_keyboard()
+                "text": (
+                    "*Кабинет на сайте*\n\n"
+                    f"{(err or 'Не удалось подготовить ссылку. Попробуйте позже.')}\n\n"
+                    "Можно повторить попытку кнопкой ниже."
                 ),
+                "format": "markdown",
+                "attachments": retry_kb if err else base_kb,
             }
         return {
             "notification": " ",
@@ -1792,6 +2898,25 @@ async def process_callback(
     _reg_payloads = frozenset(
         {
             "admin_agency_hub",
+            "admin_hub_ops",
+            "admin_hub_hrm",
+            "admin_hub_crm",
+            "admin_hub_system",
+            "admin_orders_funnel",
+            "admin_orders_funnel_kp",
+            "admin_orders_funnel_urgent",
+            "admin_ops_shifts_active",
+            "admin_ops_projects",
+            "admin_ops_reports",
+            "admin_hrm_join_recent",
+            "admin_hrm_workers",
+            "admin_hrm_worker_find",
+            "admin_hrm_payments",
+            "admin_hrm_payments_export",
+            "admin_sys_admin_logs",
+            "admin_sys_monitor",
+            "admin_phone_login_btn",
+            "admin_identity_dupes",
             "client_reg_projects",
             "client_reg_orders",
             "client_reg_settings",
@@ -1804,7 +2929,18 @@ async def process_callback(
             "worker_reg_beacon",
         }
     )
-    if payload in _reg_payloads:
+    if payload in _reg_payloads or payload.startswith(
+        (
+            "admin_funnel__",
+            "admin_order_detail_",
+            "admin_order_stage_",
+            "admin_ops_shift_detail_",
+            "admin_ops_project_detail_",
+            "admin_hrm_payment_",
+            "admin_hrm_paystatus_",
+            "admin_hrm_worker_detail_",
+        )
+    ):
         return registered_menu_static_reply(max_uid, payload)
     if payload == "clrf:ack":
         import visit_clarification_flows as vcf
@@ -2896,6 +4032,49 @@ async def process_text(
 
         ref = _image_ref_from_body(message_body) or ""
         return vcf.process_clarification_text(max_uid, s, text, file_ref=ref)
+
+    if flow == "admin_hrm_find_worker" and step == "query":
+        q = (text or "").strip()
+        if not q:
+            return {
+                "text": "Введите ФИО, телефон или user_id.",
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_hrm_keyboard(),
+            }
+        rows = search_workers_admin_max(q, limit=20)
+        clear_session(max_uid)
+        if not rows:
+            return {
+                "notification": "Не найдено",
+                "text": (
+                    "*Найти исполнителя*\n\n"
+                    "Совпадений нет. Проверьте запрос и попробуйте снова."
+                ),
+                "format": "markdown",
+                "attachments": inline_keyboard(
+                    [
+                        [cb_btn("🔁 Новый поиск", "admin_hrm_worker_find")],
+                        [cb_btn("🔙 HRM", "admin_hub_hrm")],
+                    ]
+                ),
+            }
+        lines = ["*Результаты поиска исполнителей*", ""]
+        kb_rows: list[list[dict]] = []
+        for row in rows:
+            wid = int(row.get("user_id") or 0)
+            fio = (row.get("full_name") or "—").strip()
+            prof = (row.get("profession") or "—").strip()
+            st = (row.get("status") or "new").strip()
+            lines.append(f"• {fio} ({wid}) · {prof} · `{st}`")
+            kb_rows.append([cb_btn(f"👷 {fio[:40]}", f"admin_hrm_worker_detail_{wid}")])
+        kb_rows.append([cb_btn("🔁 Новый поиск", "admin_hrm_worker_find")])
+        kb_rows.append([cb_btn("🔙 HRM", "admin_hub_hrm")])
+        return {
+            "notification": " ",
+            "text": "\n".join(lines)[:3900],
+            "format": "markdown",
+            "attachments": inline_keyboard(kb_rows),
+        }
 
     if flow == "role_entry" and step == "phone":
         role = str(data.get("intended_role") or "client")
