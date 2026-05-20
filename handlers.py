@@ -219,7 +219,7 @@ async def process_update(body: dict[str, Any]) -> None:
 
         if payload == "visit_public_menu":
             visit_flows.clear_session(max_uid)
-            await _answer_message(callback_id, max_uid, visit_card.message_main_menu())
+            await _answer_message(callback_id, max_uid, visit_card.message_main_menu(max_uid))
             await _sync_funnel(max_uid)
             return
 

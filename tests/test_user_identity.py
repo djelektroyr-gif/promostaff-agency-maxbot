@@ -68,3 +68,32 @@ def test_resolve_duplicates_with_conflict_stays_ambiguous():
         with patch.object(ui, "_collapse_phone_rows_if_safe", return_value=None):
             res = ui.resolve_registration_by_phone(99, "79160000000", "worker")
     assert res.action == "ambiguous"
+
+
+def test_collapse_does_not_merge_two_real_tg_ids_without_synthetic():
+    rows = [
+        {"tg_id": 8545518666, "max_user_id": None, "role": "admin", "phone": "79685337332"},
+        {"tg_id": 335505123, "max_user_id": None, "role": "worker", "phone": "79685337332"},
+    ]
+    with patch.object(ui, "_merge_users_rows") as merge_rows:
+        with patch.object(ui, "link_max_user_id") as link:
+            collapsed = ui._collapse_phone_rows_if_safe(123, rows)
+    assert collapsed is None
+    merge_rows.assert_not_called()
+    link.assert_not_called()
+
+
+def test_resolve_ignores_admin_phone_row():
+    rows = [
+        {"tg_id": 8545518666, "max_user_id": None, "role": "admin", "phone": "79685337332"},
+        {"tg_id": 335505123, "max_user_id": None, "role": "worker", "phone": "79685337332"},
+    ]
+    with patch.object(ui, "find_users_by_phone", return_value=rows):
+        with patch.object(ui, "_user_is_client", return_value=False):
+            with patch.object(ui, "_user_is_active_worker", return_value=True):
+                with patch.object(ui, "_user_worker_status", return_value=ui.WORKER_STATUS_APPROVED):
+                    with patch.object(ui, "link_max_user_id") as link:
+                        res = ui.resolve_registration_by_phone(500, "+7 968 533 73 32", "worker")
+    link.assert_called_once_with(335505123, 500)
+    assert res.action == "resume_worker_verified"
+    assert res.canonical_tg_id == 335505123

@@ -7,8 +7,10 @@ from __future__ import annotations
 from typing import Any
 
 from config import (
+    ADMIN_MAX_USER_IDS,
     APPLICANT_POSITIONS,
     BRAND_LOGO_URL,
+    CABINET_WEB_BASE_URL,
     CLIENT_POSITIONS,
     COMPANY_NAME,
     CONTACT_EMAIL,
@@ -234,16 +236,36 @@ def join_terms_keyboard() -> list[dict]:
     )
 
 
-def main_menu_keyboard() -> list[dict]:
+def is_admin_user(max_uid: int | None) -> bool:
+    if max_uid is None:
+        return False
+    return int(max_uid) in set(ADMIN_MAX_USER_IDS or [])
+
+
+def admin_agency_hub_keyboard() -> list[dict]:
+    base = CABINET_WEB_BASE_URL.rstrip("/")
+    return inline_keyboard(
+        [
+            [link_btn("🌐 Панель агентства", f"{base}/dashboard")],
+            [link_btn("📂 Проекты", f"{base}/agency/projects")],
+            [link_btn("📅 Смены", f"{base}/agency/ops/shifts")],
+            [cb_btn("🏠 В главное меню", "main_menu")],
+        ]
+    )
+
+
+def main_menu_keyboard(max_uid: int | None = None) -> list[dict]:
     # Паритет с Telegram keyboards.visit_card_keyboard: компактное корневое меню;
     # преимущества, кейсы, вакансии и расчёт — внутри «О нас» (about_keyboard).
     rows: list[list[dict]] = [
         [cb_btn("📋 О нас", "about")],
         [cb_btn("💼 Меню заказчика", "client_visit_menu")],
         [cb_btn("🛠 Меню исполнителя", "join_team")],
+        [cb_btn("🧭 Управление агентством", "admin_agency_hub")] if is_admin_user(max_uid) else [],
         [cb_btn("❓ FAQ", "faq")],
         [cb_btn("📞 Связаться с менеджером", "contact_manager")],
     ]
+    rows = [r for r in rows if r]
     return inline_keyboard(rows)
 
 
@@ -1210,11 +1232,11 @@ def text_case_retail() -> str:
     )
 
 
-def message_main_menu() -> dict[str, Any]:
+def message_main_menu(max_uid: int | None = None) -> dict[str, Any]:
     return {
         "text": text_welcome(),
         "format": "markdown",
-        "attachments": main_menu_keyboard(),
+        "attachments": main_menu_keyboard(max_uid),
     }
 
 
@@ -1237,6 +1259,22 @@ def message_role_home(max_uid: int | None) -> dict[str, Any]:
     if not max_uid:
         return message_main_menu()
     uid = int(max_uid)
+    if is_admin_user(uid):
+        return {
+            "text": (
+                "*Контур управления агентством*\n\n"
+                "Вы вошли как администратор. Ниже быстрый вход в веб-панель для проектов, смен и операционных задач.\n\n"
+                "Публичные меню заказчика/исполнителя доступны отдельно и не требуются для админ-доступа."
+            ),
+            "format": "markdown",
+            "attachments": inline_keyboard(
+                [
+                    [cb_btn("🧭 Управление агентством", "admin_agency_hub")],
+                    [cb_btn("📋 О нас", "about")],
+                    [cb_btn("📞 Связаться с менеджером", "contact_manager")],
+                ]
+            ),
+        }
     wk = is_max_visit_worker_verified(uid)
     if get_max_worker_status(uid) == WORKER_STATUS_CLARIFICATION:
         ctx = get_max_join_clarification_context(uid)
@@ -1307,7 +1345,7 @@ def message_role_home(max_uid: int | None) -> dict[str, Any]:
             )
             kb = client_pre_erp_pending_keyboard()
         return {"text": cap, "format": "markdown", "attachments": kb}
-    return message_main_menu()
+    return message_main_menu(uid)
 
 
 def message_for_static_payload(payload: str) -> dict[str, Any] | None:

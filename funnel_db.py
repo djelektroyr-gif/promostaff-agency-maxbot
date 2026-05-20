@@ -240,6 +240,95 @@ def _sync_cp_request_from_max_visit_order(
         )
         return None
 
+def _sync_urgent_crm_card_from_max_visit_order(
+    max_user_id: int,
+    payload: dict[str, Any],
+    agency_order_pg_id: int,
+) -> None:
+    if not DATABASE_URL:
+        return
+    order_kind = (payload.get("order_kind") or "").strip().lower()
+    if order_kind == "cp_request":
+        return
+    client_tg_id = _client_tg_id_for_max_cp(
+        max_user_id,
+        phone=(payload.get("contact_phone") or payload.get("phone") or "").strip() or None,
+        data=payload if isinstance(payload, dict) else None,
+    )
+    et = (payload.get("event_type") or "").strip()
+    city = (payload.get("city") or "").strip()
+    title = f"{et} · {city}" if et and city else (et or city or "Срочный расчёт")
+    title = title[:500]
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO agency_crm_cards (
+                        pipeline, stage, source_kind, source_id, client_tg_id, title, created_at, updated_at
+                    )
+                    VALUES ('urgent', 'new', 'agency_visit_order', %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (source_kind, source_id) DO UPDATE SET
+                        pipeline = EXCLUDED.pipeline,
+                        stage = EXCLUDED.stage,
+                        client_tg_id = COALESCE(EXCLUDED.client_tg_id, agency_crm_cards.client_tg_id),
+                        title = COALESCE(NULLIF(EXCLUDED.title, ''), agency_crm_cards.title),
+                        updated_at = NOW()
+                    """,
+                    (int(agency_order_pg_id), int(client_tg_id), title),
+                )
+    except Exception:
+        logger.warning(
+            "_sync_urgent_crm_card_from_max_visit_order failed max_uid=%s order_id=%s",
+            max_user_id,
+            agency_order_pg_id,
+            exc_info=True,
+        )
+
+
+def _sync_kp_crm_card_for_visit_order(
+    max_user_id: int,
+    payload: dict[str, Any],
+    agency_order_pg_id: int,
+) -> None:
+    if not DATABASE_URL:
+        return
+    if (payload.get("order_kind") or "").strip().lower() != "cp_request":
+        return
+    client_tg_id = _client_tg_id_for_max_cp(
+        max_user_id,
+        phone=(payload.get("contact_phone") or payload.get("phone") or "").strip() or None,
+        data=payload if isinstance(payload, dict) else None,
+    )
+    et = (payload.get("event_type") or "").strip()
+    title = (et or f"Запрос КП #{int(agency_order_pg_id)}")[:500]
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO agency_crm_cards (
+                        pipeline, stage, source_kind, source_id, client_tg_id, title, created_at, updated_at
+                    )
+                    VALUES ('kp', 'new', 'agency_visit_order', %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (source_kind, source_id) DO UPDATE SET
+                        pipeline = EXCLUDED.pipeline,
+                        stage = EXCLUDED.stage,
+                        client_tg_id = COALESCE(EXCLUDED.client_tg_id, agency_crm_cards.client_tg_id),
+                        title = COALESCE(NULLIF(EXCLUDED.title, ''), agency_crm_cards.title),
+                        updated_at = NOW()
+                    """,
+                    (int(agency_order_pg_id), int(client_tg_id), title),
+                )
+    except Exception:
+        logger.warning(
+            "_sync_kp_crm_card_for_visit_order failed max_uid=%s order_id=%s",
+            max_user_id,
+            agency_order_pg_id,
+            exc_info=True,
+        )
+
+
 _LOCAL_CLIENT_DB = Path(__file__).resolve().parent / "data" / "max_visit_clients.sqlite"
 
 
@@ -786,31 +875,10 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
             return
         except Exception:
             logger.exception("save_max_visit_client_verified pg")
-    try:
-        _ensure_local_client_db()
-        conn = sqlite3.connect(_LOCAL_CLIENT_DB)
-        try:
-            conn.execute(
-                """
-                INSERT INTO max_visit_clients (
-                    max_user_id, username, company_name, contact_name, position_in_org, phone, inn, contact_email
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(max_user_id) DO UPDATE SET
-                    username = excluded.username,
-                    company_name = excluded.company_name,
-                    contact_name = excluded.contact_name,
-                    position_in_org = excluded.position_in_org,
-                    phone = excluded.phone,
-                    inn = excluded.inn,
-                    contact_email = excluded.contact_email
-                """,
-                (uid, un, cn, contact, pos, phone, inn, cemail),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception:
-        logger.exception("save_max_visit_client_verified local")
+    logger.error(
+        "save_max_visit_client_verified aborted: postgres write failed max_uid=%s (local sqlite fallback disabled)",
+        uid,
+    )
 
 
 def save_visit_order(max_user_id: int, username: str, payload_json: str) -> int | None:
@@ -860,6 +928,8 @@ def save_visit_order_payload(max_user_id: int, username: str, data: dict[str, An
                     "UPDATE agency_visit_orders SET payload = %s::jsonb WHERE id = %s",
                     (_json.dumps(base, ensure_ascii=False), pg_id),
                 )
+        _sync_urgent_crm_card_from_max_visit_order(int(max_user_id), base, int(pg_id))
+        _sync_kp_crm_card_for_visit_order(int(max_user_id), base, int(pg_id))
         if (base.get("order_kind") or "").strip() == "cp_request":
             cp_rid = _sync_cp_request_from_max_visit_order(
                 int(max_user_id), (username or "").strip(), base, int(pg_id)
@@ -886,7 +956,7 @@ def list_agency_visit_orders_for_user(max_user_id: int, limit: int = 20) -> list
                 """
                 SELECT id, payload, created_at
                 FROM agency_visit_orders
-                WHERE source = 'max' AND user_id IN (%s, %s)
+                WHERE user_id IN (%s, %s)
                 ORDER BY id DESC
                 LIMIT %s
                 """,
@@ -1108,6 +1178,81 @@ def get_worker_cooperation_mode_metrics() -> dict[str, int]:
         else:
             out["agency_workers"] += int(cnt or 0)
     return out
+
+
+def get_users_phone_duplicates_metrics(limit: int = 20) -> dict[str, Any]:
+    """
+    Диагностика дублей users.phone (по нормализованному номеру).
+    Нужна для admin UI и безопасной ручной чистки хвостов.
+    """
+    safe_limit = max(1, min(int(limit or 20), 100))
+    if not DATABASE_URL:
+        return {"duplicate_phones_total": 0, "duplicate_rows_total": 0, "sample": []}
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH norm AS (
+                    SELECT
+                        tg_id,
+                        regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') AS phone_norm
+                    FROM users
+                    WHERE COALESCE(btrim(phone), '') <> ''
+                ),
+                grouped AS (
+                    SELECT
+                        phone_norm,
+                        COUNT(*)::int AS cnt,
+                        array_agg(tg_id ORDER BY tg_id) AS tg_ids
+                    FROM norm
+                    WHERE phone_norm <> ''
+                    GROUP BY phone_norm
+                    HAVING COUNT(*) > 1
+                )
+                SELECT
+                    (SELECT COUNT(*)::int FROM grouped) AS duplicate_phones_total,
+                    (SELECT COALESCE(SUM(cnt), 0)::int FROM grouped) AS duplicate_rows_total
+                """
+            )
+            row = cur.fetchone()
+            duplicate_phones_total = int(row[0] or 0) if row else 0
+            duplicate_rows_total = int(row[1] or 0) if row else 0
+            cur.execute(
+                """
+                WITH norm AS (
+                    SELECT
+                        tg_id,
+                        regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') AS phone_norm
+                    FROM users
+                    WHERE COALESCE(btrim(phone), '') <> ''
+                )
+                SELECT
+                    phone_norm,
+                    COUNT(*)::int AS cnt,
+                    array_agg(tg_id ORDER BY tg_id) AS tg_ids
+                FROM norm
+                WHERE phone_norm <> ''
+                GROUP BY phone_norm
+                HAVING COUNT(*) > 1
+                ORDER BY cnt DESC, phone_norm
+                LIMIT %s
+                """,
+                (safe_limit,),
+            )
+            rows = cur.fetchall() or []
+    sample = [
+        {
+            "phone_norm": str(r[0] or ""),
+            "cnt": int(r[1] or 0),
+            "tg_ids": [int(v) for v in (r[2] or [])],
+        }
+        for r in rows
+    ]
+    return {
+        "duplicate_phones_total": duplicate_phones_total,
+        "duplicate_rows_total": duplicate_rows_total,
+        "sample": sample,
+    }
 
 
 def list_visit_rows(kind: str, limit: int = 100, date_from: str = "", date_to: str = "") -> list[dict]:

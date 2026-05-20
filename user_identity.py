@@ -17,6 +17,7 @@ from funnel_db import (
 logger = logging.getLogger(__name__)
 
 MAX_TG_SYNTHETIC_LEAST = 10**15
+SERVICE_ROLES = frozenset({"admin", "manager"})
 
 ROLE_SWITCH_VIA_ADMIN_FOOTER_RU = (
     "\n\nВторая роль возможна только после удаления текущего профиля администратором в базе."
@@ -36,6 +37,16 @@ class PhoneResolveResult:
 
 def is_synthetic_tg_id(tg_id: int | None) -> bool:
     return tg_id is not None and int(tg_id) >= MAX_TG_SYNTHETIC_LEAST
+
+
+def _public_identity_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        role = str(row.get("role") or "").strip().lower()
+        if role in SERVICE_ROLES:
+            continue
+        out.append(row)
+    return out
 
 
 def normalize_phone_ru(raw: str | None) -> str:
@@ -262,19 +273,32 @@ def _collapse_phone_rows_if_safe(max_user_id: int, rows: list[dict[str, Any]]) -
     uid = int(max_user_id)
     normalized: list[dict[str, Any]] = []
     max_ids: set[int] = set()
+    real_rows = 0
+    synthetic_rows = 0
     for row in rows:
         tg_id = int(row.get("tg_id"))
         mx = row.get("max_user_id")
         max_id = int(mx) if mx is not None else None
         if max_id is not None:
             max_ids.add(max_id)
+        is_syn = is_synthetic_tg_id(tg_id)
+        if is_syn:
+            synthetic_rows += 1
+        else:
+            real_rows += 1
         normalized.append(
             {
                 "tg_id": tg_id,
                 "max_user_id": max_id,
-                "is_synthetic": is_synthetic_tg_id(tg_id),
+                "is_synthetic": is_syn,
             }
         )
+    # Без синтетических строк auto-merge рискован: это могут быть разные реальные люди.
+    if synthetic_rows == 0:
+        return None
+    # Больше одного реального tg_id автоматически не склеиваем.
+    if real_rows > 1:
+        return None
     if len(max_ids) > 1:
         # Если среди дублей есть max_user_id другого MAX-аккаунта — это реальный конфликт.
         if any(mid != uid for mid in max_ids):
@@ -312,12 +336,12 @@ def resolve_registration_by_phone(
     uid = int(max_user_id)
     norm_phone = normalize_phone_ru(phone)
     synthetic = worker_tg_id_for_max(uid)
-    rows = find_users_by_phone(phone) if norm_phone else []
+    rows = _public_identity_rows(find_users_by_phone(phone)) if norm_phone else []
 
     if len(rows) > 1:
         collapsed_tg = _collapse_phone_rows_if_safe(uid, rows)
         if collapsed_tg:
-            rows = find_users_by_phone(phone) if norm_phone else []
+            rows = _public_identity_rows(find_users_by_phone(phone)) if norm_phone else []
             if len(rows) > 1:
                 rows = [r for r in rows if int(r.get("tg_id", 0)) == int(collapsed_tg)] or rows
         if len(rows) > 1:

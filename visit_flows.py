@@ -17,6 +17,8 @@ from datetime import date
 from typing import Any
 
 from config import (
+    ADMIN_MAX_USER_IDS,
+    CABINET_WEB_BASE_URL,
     CLIENT_POSITIONS,
     COMPANY_NAME,
     LISTING_PUBLICATION_FEE_RUB,
@@ -1539,6 +1541,33 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
         list_agency_visit_orders_for_user,
     )
 
+    if payload == "admin_agency_hub":
+        if int(max_uid) not in set(ADMIN_MAX_USER_IDS or []):
+            return {
+                "notification": "Недоступно",
+                "text": "Этот раздел доступен только администраторам агентства.",
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(max_uid),
+            }
+        base = CABINET_WEB_BASE_URL.rstrip("/")
+        return {
+            "notification": " ",
+            "text": (
+                "*Управление агентством*\n\n"
+                "Откройте веб-панель: проекты, смены, операционные задачи и отчёты.\n\n"
+                "Это отдельный админ-контур и не зависит от публичной регистрации заказчика/исполнителя."
+            ),
+            "format": "markdown",
+            "attachments": inline_keyboard(
+                [
+                    [link_btn("🌐 Панель агентства", f"{base}/dashboard")],
+                    [link_btn("📂 Проекты", f"{base}/agency/projects")],
+                    [link_btn("📅 Смены", f"{base}/agency/ops/shifts")],
+                    [cb_btn("🏠 В главное меню", "main_menu")],
+                ]
+            ),
+        }
+
     if payload == "client_reg_projects":
         if is_max_visit_client_registered(max_uid) and not is_max_visit_client_verified(max_uid):
             return {
@@ -1762,6 +1791,7 @@ async def process_callback(
     s = SESSIONS.get(max_uid)
     _reg_payloads = frozenset(
         {
+            "admin_agency_hub",
             "client_reg_projects",
             "client_reg_orders",
             "client_reg_settings",

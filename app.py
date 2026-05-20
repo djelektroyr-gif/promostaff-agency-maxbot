@@ -200,6 +200,26 @@ def _cooperation_metrics() -> dict:
         return out
 
 
+def _phone_duplicates_metrics() -> dict:
+    out = {
+        "duplicate_phones_total": 0,
+        "duplicate_rows_total": 0,
+        "sample": [],
+        "phone_duplicates_error": "",
+    }
+    if not DATABASE_URL:
+        return out
+    try:
+        from funnel_db import get_users_phone_duplicates_metrics
+
+        stats = get_users_phone_duplicates_metrics(limit=20)
+        stats["phone_duplicates_error"] = ""
+        return stats
+    except Exception as e:
+        out["phone_duplicates_error"] = str(e)
+        return out
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if DATABASE_URL:
@@ -275,6 +295,7 @@ async def admin():
     visit = _visitcard_metrics()
     ui = _ui_metrics()
     coop = _cooperation_metrics()
+    dup = _phone_duplicates_metrics()
     gate = get_platform_gate_metrics()
     return {
         "status": "ok",
@@ -305,6 +326,8 @@ async def admin():
             "workers_platform_mode": coop.get("platform_workers", 0),
             "platform_gate_blocks_total": gate.get("platform_gate_blocks_total", 0),
             "platform_gate_users_count": gate.get("platform_gate_users_count", 0),
+            "users_phone_duplicates_total": dup.get("duplicate_phones_total", 0),
+            "users_phone_duplicate_rows_total": dup.get("duplicate_rows_total", 0),
         },
         "quick_links": {
             "ui": "/admin/ui",
@@ -342,6 +365,7 @@ async def admin_ui(
     visit = _visitcard_metrics()
     ui = _ui_metrics()
     coop = _cooperation_metrics()
+    dup = _phone_duplicates_metrics()
     gate = get_platform_gate_metrics()
     visit_rows = []
     try:
@@ -371,6 +395,8 @@ async def admin_ui(
         ("Workers platform mode", str(coop.get("platform_workers", 0))),
         ("Platform gate blocks", str(gate.get("platform_gate_blocks_total", 0))),
         ("Platform gate users", str(gate.get("platform_gate_users_count", 0))),
+        ("Phone duplicates", str(dup.get("duplicate_phones_total", 0))),
+        ("Rows in duplicates", str(dup.get("duplicate_rows_total", 0))),
     ]
     cards_html = "\n".join(
         f'<div class="card"><div class="title">{title}</div><div class="value">{value}</div></div>'
@@ -389,11 +415,21 @@ async def admin_ui(
         )
     else:
         users_rows = '<tr><td colspan="3">Нет данных</td></tr>'
+    dup_sample = dup.get("sample") or []
+    if dup_sample:
+        dup_rows = "\n".join(
+            f"<tr><td>{(r.get('phone_norm') or '—')}</td><td>{int(r.get('cnt') or 0)}</td><td>{', '.join(str(v) for v in (r.get('tg_ids') or []))}</td></tr>"
+            for r in dup_sample
+        )
+    else:
+        dup_rows = '<tr><td colspan="3">Нет дублей</td></tr>'
     db_errors = []
     if funnel.get("db_error"):
         db_errors.append(f"Funnel DB error: {funnel['db_error']}")
     if visit.get("db_error"):
         db_errors.append(f"Visitcard DB error: {visit['db_error']}")
+    if dup.get("phone_duplicates_error"):
+        db_errors.append(f"Phone duplicates error: {dup['phone_duplicates_error']}")
     db_note = "".join([f"<p class='warn'>{e}</p>" for e in db_errors])
     return f"""
     <html lang="ru">
@@ -430,6 +466,18 @@ async def admin_ui(
           <p class="muted">Для ручного прогона напоминаний используйте запущенный фоновый цикл (FUNNEL_REMINDERS_ENABLED=1).</p>
           {f"<p class='muted'>{action_note}</p>" if action_note else ""}
           {f"<p class='warn'>{action_error}</p>" if action_error else ""}
+        </div>
+
+        <div class="box">
+          <h3>Дубли телефонов в users</h3>
+          <p class="muted">
+            Мониторинг конфликтов идентичности (admin/client/worker). SQL-пакет для ручной чистки:
+            <code>docs/USERS_PHONE_DEDUP_SQL.md</code>
+          </p>
+          <table>
+            <thead><tr><th>phone_norm</th><th>count</th><th>tg_ids</th></tr></thead>
+            <tbody>{dup_rows}</tbody>
+          </table>
         </div>
 
         <div class="box">
