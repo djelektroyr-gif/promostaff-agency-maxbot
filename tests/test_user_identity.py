@@ -39,3 +39,32 @@ def test_resolve_resume_worker_links_max():
     link.assert_called_once_with(200, 55)
     assert res.action == "resume_worker_verified"
     assert res.canonical_tg_id == 200
+
+
+def test_resolve_collapses_duplicates_then_resumes_worker():
+    dup_rows = [
+        {"tg_id": 10**15 + 77, "max_user_id": 77, "role": "worker", "phone": "79169999999"},
+        {"tg_id": 777001, "max_user_id": None, "role": "worker", "phone": "79169999999"},
+    ]
+    canonical_row = {"tg_id": 777001, "max_user_id": 77, "role": "worker", "phone": "79169999999"}
+    with patch.object(ui, "find_users_by_phone", side_effect=[dup_rows, [canonical_row]]):
+        with patch.object(ui, "_collapse_phone_rows_if_safe", return_value=777001):
+            with patch.object(ui, "_user_is_client", return_value=False):
+                with patch.object(ui, "_user_is_active_worker", return_value=True):
+                    with patch.object(ui, "_user_worker_status", return_value=ui.WORKER_STATUS_APPROVED):
+                        with patch.object(ui, "link_max_user_id") as link:
+                            res = ui.resolve_registration_by_phone(77, "+7 916 999-99-99", "worker")
+    link.assert_called_once_with(777001, 77)
+    assert res.action == "resume_worker_verified"
+    assert res.canonical_tg_id == 777001
+
+
+def test_resolve_duplicates_with_conflict_stays_ambiguous():
+    dup_rows = [
+        {"tg_id": 101001, "max_user_id": 12, "role": "worker", "phone": "79160000000"},
+        {"tg_id": 101002, "max_user_id": 34, "role": "worker", "phone": "79160000000"},
+    ]
+    with patch.object(ui, "find_users_by_phone", return_value=dup_rows):
+        with patch.object(ui, "_collapse_phone_rows_if_safe", return_value=None):
+            res = ui.resolve_registration_by_phone(99, "79160000000", "worker")
+    assert res.action == "ambiguous"
