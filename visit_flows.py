@@ -1510,6 +1510,26 @@ def _cp_preview_text(data: dict[str, Any]) -> str:
     )
 
 
+def _client_visit_payload_for_save(data: dict[str, Any]) -> dict[str, Any]:
+    """Чистый payload регистрации заказчика без полей мастера заказа/КП."""
+    allowed_fields = (
+        "company_name",
+        "contact_name",
+        "position_in_org",
+        "phone",
+        "inn",
+        "contact_email",
+        "canonical_user_tg_id",
+    )
+    out: dict[str, Any] = {}
+    for key in allowed_fields:
+        val = data.get(key)
+        if val is None:
+            continue
+        out[key] = val.strip() if isinstance(val, str) else val
+    return out
+
+
 def _format_cp_plain(data: dict[str, Any], who: str) -> str:
     ref = (data.get("public_ref") or "").strip() or "—"
     brief = (data.get("cp_brief_note") or "").strip() or "—"
@@ -3008,6 +3028,11 @@ async def process_callback(
         }
 
     if flow == "client_visit" and step == "consent" and payload == "consent_client_visit_accept":
+        # Чистый контур регистрации заказчика: обнуляем хвосты возможного order/CP сценария.
+        keep = {"canonical_user_tg_id": data.get("canonical_user_tg_id")}
+        data.clear()
+        if keep.get("canonical_user_tg_id"):
+            data["canonical_user_tg_id"] = keep["canonical_user_tg_id"]
         s["step"] = "company_name"
         return {
             "notification": "Согласие принято ✅",
@@ -3022,7 +3047,11 @@ async def process_callback(
     if flow == "client_visit" and step == "confirm" and payload == "confirm_client_visit_yes":
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
         try:
-            save_max_visit_client_verified(max_uid, str(username or ""), data)
+            save_max_visit_client_verified(
+                max_uid,
+                str(username or ""),
+                _client_visit_payload_for_save(data),
+            )
         except Exception:
             logger.exception("save_max_visit_client_verified")
         clear_session(max_uid)
