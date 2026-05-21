@@ -10,13 +10,17 @@ import asyncio
 import logging
 import smtplib
 import ssl
+import urllib.parse
+import urllib.request
 from email.message import EmailMessage
 from typing import Iterable
 
 from config import (
+    ADMIN_TG_USER_IDS,
     ADMIN_MAX_USER_IDS,
     MAX_TOKEN,
     NOTIFY_EMAIL_TO,
+    TELEGRAM_BOT_TOKEN,
     SMTP_FROM,
     SMTP_HOST,
     SMTP_PASSWORD,
@@ -90,6 +94,38 @@ async def send_admin_max_messages(text: str) -> int:
     return n
 
 
+def _tg_send_sync(token: str, chat_id: int, text: str) -> bool:
+    if not token or not chat_id:
+        return False
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = urllib.parse.urlencode(
+        {"chat_id": str(int(chat_id)), "text": text, "disable_web_page_preview": "true"}
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:  # noqa: S310
+            return int(getattr(r, "status", 0) or 0) == 200
+    except Exception:
+        logger.exception("TG notify send failed chat_id=%s", chat_id)
+        return False
+
+
+async def send_admin_telegram_messages(text: str) -> int:
+    if not TELEGRAM_BOT_TOKEN or not ADMIN_TG_USER_IDS:
+        return 0
+    sent = 0
+    for uid in ADMIN_TG_USER_IDS:
+        ok = await asyncio.to_thread(_tg_send_sync, TELEGRAM_BOT_TOKEN, int(uid), text)
+        if ok:
+            sent += 1
+    return sent
+
+
 async def notify_agency_admins(subject: str, body: str) -> dict[str, int | bool]:
     """
     Дублирует текст на почту (если настроен SMTP) и в MAX указанным user_id.
@@ -98,4 +134,5 @@ async def notify_agency_admins(subject: str, body: str) -> dict[str, int | bool]
     """
     email_ok = await send_admin_email(subject, body)
     max_n = await send_admin_max_messages(f"{subject}\n\n{body}")
-    return {"email_sent": bool(email_ok), "max_messages": max_n}
+    tg_n = await send_admin_telegram_messages(f"{subject}\n\n{body}")
+    return {"email_sent": bool(email_ok), "max_messages": max_n, "tg_messages": tg_n}

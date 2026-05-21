@@ -953,7 +953,7 @@ def get_max_worker_display_name(max_user_id: int) -> str:
     return ""
 
 
-def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[str, Any]) -> None:
+def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[str, Any]) -> bool:
     uid = int(max_user_id)
     un = (username or "").strip()
     cn = (data.get("company_name") or "").strip()
@@ -1022,13 +1022,14 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                     "inn": inn,
                 },
             )
-            return
+            return True
         except Exception:
             logger.exception("save_max_visit_client_verified pg")
     logger.error(
         "save_max_visit_client_verified aborted: postgres write failed max_uid=%s (local sqlite fallback disabled)",
         uid,
     )
+    return False
 
 
 def save_visit_order(max_user_id: int, username: str, payload_json: str) -> int | None:
@@ -3279,6 +3280,220 @@ def count_projects_for_company_max(company_id: int) -> int:
     except Exception:
         logger.exception("count_projects_for_company_max failed company_id=%s", cid)
         return 0
+
+
+def get_client_company_id_max(max_user_id: int) -> int | None:
+    if not DATABASE_URL:
+        return None
+    uid = int(max_user_id)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT company_id
+                    FROM users
+                    WHERE max_user_id = %s
+                      AND role = 'client'
+                      AND company_id IS NOT NULL
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (uid,),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    return int(row[0])
+    except Exception:
+        logger.exception("get_client_company_id_max users lookup failed max_uid=%s", uid)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT company_id
+                    FROM max_visit_clients
+                    WHERE max_user_id = %s AND company_id IS NOT NULL
+                    LIMIT 1
+                    """,
+                    (uid,),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    return int(row[0])
+    except Exception:
+        logger.exception("get_client_company_id_max max_visit_clients lookup failed max_uid=%s", uid)
+    return None
+
+
+def list_projects_for_company_max(company_id: int, limit: int = 40) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    cid = int(company_id)
+    lim = max(1, min(200, int(limit or 40)))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        p.id,
+                        COALESCE(p.name, ''),
+                        COALESCE(p.status, ''),
+                        p.start_date,
+                        p.end_date,
+                        COALESCE(p.budget, 0),
+                        COUNT(s.id)::int AS shifts_count
+                    FROM projects p
+                    LEFT JOIN shifts s ON s.project_id = p.id
+                    WHERE p.company_id = %s
+                    GROUP BY p.id, p.name, p.status, p.start_date, p.end_date, p.budget
+                    ORDER BY p.id DESC
+                    LIMIT %s
+                    """,
+                    (cid, lim),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_projects_for_company_max failed company_id=%s", cid)
+        return []
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        out.append(
+            {
+                "id": int(r[0]),
+                "name": str(r[1] or ""),
+                "status": str(r[2] or ""),
+                "start_date": str(r[3] or ""),
+                "end_date": str(r[4] or ""),
+                "budget": float(r[5] or 0),
+                "shifts_count": int(r[6] or 0),
+            }
+        )
+    return out
+
+
+def get_company_project_quota_status_max(company_id: int) -> dict[str, Any]:
+    cid = int(company_id)
+    sub = get_company_subscription_max(cid)
+    used = count_projects_for_company_max(cid)
+    active_statuses = {"active", "trial", "grace"}
+    if not sub:
+        return {
+            "company_id": cid,
+            "has_subscription": False,
+            "plan_code": "legacy",
+            "status": "active",
+            "is_subscription_active": True,
+            "projects_limit": None,
+            "projects_used": used,
+            "projects_left": None,
+            "can_create_project": True,
+            "ends_at": None,
+        }
+    status = str(sub.get("status") or "active").strip().lower()
+    ends_at = sub.get("ends_at")
+    is_active = status in active_statuses
+    if is_active and ends_at is not None:
+        try:
+            is_active = bool(ends_at > datetime.now())
+        except Exception:
+            is_active = True
+    limit = sub.get("projects_limit")
+    left = None if limit is None else max(0, int(limit) - used)
+    can_create = bool(is_active) and (limit is None or used < int(limit))
+    return {
+        "company_id": cid,
+        "has_subscription": True,
+        "plan_code": str(sub.get("plan_code") or "legacy"),
+        "status": status,
+        "is_subscription_active": bool(is_active),
+        "projects_limit": int(limit) if limit is not None else None,
+        "projects_used": used,
+        "projects_left": left,
+        "can_create_project": can_create,
+        "ends_at": ends_at,
+    }
+
+
+def require_company_can_create_project_max(company_id: int) -> None:
+    q = get_company_project_quota_status_max(int(company_id))
+    if q.get("can_create_project"):
+        return
+    if not q.get("is_subscription_active"):
+        raise ValueError("Подписка компании не активна. Продлите тариф и повторите создание проекта.")
+    limit = q.get("projects_limit")
+    used = int(q.get("projects_used") or 0)
+    raise ValueError(
+        f"Достигнут лимит проектов по подписке: {used}/{int(limit)}. Закройте проект или увеличьте лимит."
+    )
+
+
+def create_project_for_company_max(company_id: int, name: str) -> int:
+    if not DATABASE_URL:
+        raise ValueError("База данных недоступна")
+    cid = int(company_id)
+    project_name = (name or "").strip()
+    if not project_name:
+        raise ValueError("Название проекта не заполнено.")
+    require_company_can_create_project_max(cid)
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO projects (name, company_id, start_date, end_date, status, created_at)
+                VALUES (%s, %s, NOW(), NOW() + INTERVAL '30 days', 'planned', NOW())
+                RETURNING id
+                """,
+                (project_name, cid),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise RuntimeError("Не удалось получить ID проекта")
+            return int(row[0])
+
+
+def list_company_team_for_client_max(company_id: int, limit: int = 40) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    cid = int(company_id)
+    lim = max(1, min(120, int(limit or 40)))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        w.tg_id,
+                        COALESCE(w.full_name, ''),
+                        COALESCE(w.profession, ''),
+                        COALESCE(w.rating, 0),
+                        COUNT(sa.id)::int AS shifts_count
+                    FROM workers w
+                    JOIN shift_assignments sa ON sa.worker_id = w.tg_id
+                    JOIN shifts s ON s.id = sa.shift_id
+                    JOIN projects p ON p.id = s.project_id
+                    WHERE p.company_id = %s
+                    GROUP BY w.tg_id, w.full_name, w.profession, w.rating
+                    ORDER BY shifts_count DESC, w.tg_id DESC
+                    LIMIT %s
+                    """,
+                    (cid, lim),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_company_team_for_client_max failed company_id=%s", cid)
+        return []
+    return [
+        {
+            "worker_tg_id": int(r[0]),
+            "full_name": str(r[1] or ""),
+            "profession": str(r[2] or ""),
+            "rating": float(r[3] or 0),
+            "shifts_count": int(r[4] or 0),
+        }
+        for r in rows
+    ]
 
 
 def _upsert_company_subscription_max(

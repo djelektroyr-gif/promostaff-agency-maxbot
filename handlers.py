@@ -172,7 +172,9 @@ def _strip_registration_escape_keyboard(max_uid: int, reply: dict[str, Any]) -> 
     out = dict(reply)
     out["attachments"] = _remove_registration_exit_buttons(out.get("attachments"))
     if _is_escape_only_keyboard(out.get("attachments")):
-        out.pop("attachments", None)
+        # В MAX при отсутствии attachments у callback-ответа старая клавиатура может остаться.
+        # Передаём пустой список, чтобы явно очистить кнопки предыдущего шага.
+        out["attachments"] = []
     return out
 
 

@@ -85,6 +85,11 @@ from funnel_db import (
     list_expired_company_subscriptions_max,
     get_company_subscription_max,
     count_projects_for_company_max,
+    get_client_company_id_max,
+    list_projects_for_company_max,
+    get_company_project_quota_status_max,
+    create_project_for_company_max,
+    list_company_team_for_client_max,
     admin_extend_company_subscription_days_max,
     admin_set_company_subscription_grace_max,
     COOPERATION_MODE_PLATFORM,
@@ -1642,6 +1647,22 @@ def _client_visit_preview_text(data: dict[str, Any]) -> str:
         f"📞 Телефон: {data.get('phone', '')}\n"
         f"✉️ Email: {data.get('contact_email', '')}\n\n"
         "Всё верно?\n\n"
+    )
+
+
+def _format_client_registration_plain(data: dict[str, Any], who: str) -> str:
+    m = "—"
+    return (
+        "НОВАЯ РЕГИСТРАЦИЯ ЗАКАЗЧИКА (MAX)\n"
+        "================================\n\n"
+        f"От: {who}\n\n"
+        "КЛИЕНТ\n"
+        f"Юрлицо: {data.get('company_name') or m}\n"
+        f"ИНН: {data.get('inn') or m}\n"
+        f"Контакт: {data.get('contact_name') or m}\n"
+        f"Должность: {data.get('position_in_org') or m}\n"
+        f"Телефон: {data.get('phone') or m}\n"
+        f"Email: {data.get('contact_email') or m}\n"
     )
 
 
@@ -3265,15 +3286,175 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
                 "format": "markdown",
                 "attachments": visit_card.main_menu_keyboard(),
             }
+        company_id = get_client_company_id_max(max_uid)
+        if not company_id:
+            return {
+                "notification": "Нет компании",
+                "text": "Компания не привязана к профилю. Напишите менеджеру для привязки.",
+                "format": "markdown",
+                "attachments": visit_card.client_registered_main_menu_keyboard(),
+            }
+        rows = list_projects_for_company_max(int(company_id), limit=40)
+        if not rows:
+            body = (
+                "*Мои проекты*\n\n"
+                "Проектов пока нет.\n"
+                "Можно создать проект кнопкой ниже."
+            )
+        else:
+            lines = ["*Мои проекты*\n"]
+            for row in rows:
+                lines.append(
+                    f"• #{int(row.get('id') or 0)} · {row.get('name') or '—'}"
+                    f"\n  _{row.get('status') or 'planned'} · смен: {int(row.get('shifts_count') or 0)}_\n"
+                )
+            body = "\n".join(lines)[:3900]
+        return {
+            "notification": " ",
+            "text": body,
+            "format": "markdown",
+            "attachments": visit_card.client_projects_hub_keyboard(),
+        }
+
+    if payload == "client_reg_create_project":
+        if not is_max_visit_client_verified(max_uid):
+            return {
+                "notification": "Нужна регистрация",
+                "text": "Сначала пройдите регистрацию заказчика.",
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
+        company_id = get_client_company_id_max(max_uid)
+        if not company_id:
+            return {
+                "notification": "Нет компании",
+                "text": "Компания не привязана к профилю. Напишите менеджеру для привязки.",
+                "format": "markdown",
+                "attachments": visit_card.client_registered_main_menu_keyboard(),
+            }
+        project_name = f"Проект клиента {datetime.now().strftime('%d.%m %H:%M')}"
+        try:
+            project_id = create_project_for_company_max(int(company_id), project_name)
+        except ValueError as e:
+            return {
+                "notification": "Блокировка",
+                "text": f"*Создание проекта заблокировано*\n\n{str(e)}",
+                "format": "markdown",
+                "attachments": visit_card.client_projects_hub_keyboard(),
+            }
+        except Exception:
+            logger.exception("client_reg_create_project failed max_uid=%s company_id=%s", max_uid, company_id)
+            return {
+                "notification": "Ошибка",
+                "text": "Не удалось создать проект. Попробуйте позже.",
+                "format": "markdown",
+                "attachments": visit_card.client_projects_hub_keyboard(),
+            }
+        return {
+            "notification": f"Проект #{project_id} создан",
+            "text": (
+                "*Проект создан*\n\n"
+                f"ID: #{int(project_id)}\n"
+                f"Название: {project_name}\n\n"
+                "Откройте «Мои проекты», чтобы увидеть обновленный список."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.client_projects_hub_keyboard(),
+        }
+
+    if payload == "client_reg_subscription":
+        if not is_max_visit_client_verified(max_uid):
+            return {
+                "notification": "Нужна регистрация",
+                "text": "Сначала пройдите регистрацию заказчика.",
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
+        company_id = get_client_company_id_max(max_uid)
+        if not company_id:
+            return {
+                "notification": "Нет компании",
+                "text": "Компания не привязана к профилю. Напишите менеджеру для привязки.",
+                "format": "markdown",
+                "attachments": visit_card.client_projects_hub_keyboard(),
+            }
+        quota = get_company_project_quota_status_max(int(company_id))
+        sub = get_company_subscription_max(int(company_id)) or {}
+        limit = quota.get("projects_limit")
+        used = int(quota.get("projects_used") or 0)
+        limit_line = "безлимит" if limit is None else f"{used}/{int(limit)}"
+        text = (
+            "*Подписка и лимиты*\n\n"
+            f"Тариф: {quota.get('plan_code') or 'legacy'}\n"
+            f"Статус: {quota.get('status') or 'active'}\n"
+            f"Проекты: {limit_line}\n"
+            f"Окончание: {quota.get('ends_at') or '—'}\n"
+        )
+        notes = str(sub.get("notes") or "").strip()
+        if notes:
+            text += f"\nКомментарий: {notes}"
+        return {
+            "notification": " ",
+            "text": text,
+            "format": "markdown",
+            "attachments": visit_card.client_projects_hub_keyboard(),
+        }
+
+    if payload == "client_reg_team":
+        if not is_max_visit_client_verified(max_uid):
+            return {
+                "notification": "Нужна регистрация",
+                "text": "Сначала пройдите регистрацию заказчика.",
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
+        company_id = get_client_company_id_max(max_uid)
+        if not company_id:
+            return {
+                "notification": "Нет компании",
+                "text": "Компания не привязана к профилю.",
+                "format": "markdown",
+                "attachments": visit_card.client_projects_hub_keyboard(),
+            }
+        team = list_company_team_for_client_max(int(company_id), limit=40)
+        if not team:
+            text = "*Команда заказчика*\n\nПока нет исполнителей по вашим проектам."
+        else:
+            lines = ["*Команда заказчика*\n"]
+            for w in team:
+                lines.append(
+                    f"• {(w.get('full_name') or ('ID ' + str(int(w.get('worker_tg_id') or 0))))}"
+                    f"\n  _{w.get('profession') or 'без профессии'} · ⭐ {w.get('rating') or 0} · смен: {int(w.get('shifts_count') or 0)}_\n"
+                )
+            text = "\n".join(lines)[:3900]
+        return {
+            "notification": " ",
+            "text": text,
+            "format": "markdown",
+            "attachments": visit_card.client_projects_hub_keyboard(),
+        }
+
+    if payload == "client_reg_reports":
+        if not is_max_visit_client_verified(max_uid):
+            return {
+                "notification": "Нужна регистрация",
+                "text": "Сначала пройдите регистрацию заказчика.",
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
         return {
             "notification": " ",
             "text": (
-                "*Мои проекты*\n\n"
-                "Раздел синхронизируется с веб-кабинетом Promostaff.\n"
-                "Пока откройте «Кабинет на сайте» в этом меню — там основной рабочий контур."
+                "*Отчёты заказчика (Excel/PDF)*\n\n"
+                "В MAX отчёты открываются в веб-кабинете по защищенной ссылке."
             ),
             "format": "markdown",
-            "attachments": visit_card.client_registered_main_menu_keyboard(),
+            "attachments": inline_keyboard(
+                [
+                    [cb_btn("📗 Открыть Excel/PDF отчёты", "open_web_cabinet")],
+                    [cb_btn("🔙 К проектам", "client_reg_projects")],
+                ]
+            ),
         }
 
     if payload == "client_reg_orders":
@@ -3755,6 +3936,10 @@ async def process_callback(
             "admin_phone_login_btn",
             "admin_identity_dupes",
             "client_reg_projects",
+            "client_reg_create_project",
+            "client_reg_subscription",
+            "client_reg_team",
+            "client_reg_reports",
             "client_reg_orders",
             "client_reg_settings",
             "client_reg_web",
@@ -3870,14 +4055,33 @@ async def process_callback(
 
     if flow == "client_visit" and step == "confirm" and payload == "confirm_client_visit_yes":
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
+        payload_for_save = _client_visit_payload_for_save(data)
+        ok_saved = False
         try:
-            save_max_visit_client_verified(
-                max_uid,
-                str(username or ""),
-                _client_visit_payload_for_save(data),
+            ok_saved = bool(
+                save_max_visit_client_verified(
+                    max_uid,
+                    str(username or ""),
+                    payload_for_save,
+                )
             )
         except Exception:
             logger.exception("save_max_visit_client_verified")
+            ok_saved = False
+        if not ok_saved:
+            return {
+                "notification": "Ошибка",
+                "text": (
+                    "❌ Не удалось сохранить регистрацию в базе.\n\n"
+                    "Данные не приняты. Попробуйте отправить ещё раз или напишите менеджеру."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.client_reg_confirm_keyboard(),
+            }
+        _schedule_notify(
+            "Новая регистрация заказчика (MAX)",
+            _format_client_registration_plain(payload_for_save, who),
+        )
         clear_session(max_uid)
         return {
             "notification": "Принято!",
@@ -4892,10 +5096,22 @@ async def process_callback(
         aligned["specialization_tags"] = _build_join_tags(aligned)
         plain = _format_join_plain(aligned, rid, who)
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
+        join_saved_id: int | None = None
         try:
-            save_visit_join(max_uid, str(username or ""), json.dumps(aligned, ensure_ascii=False))
+            join_saved_id = save_visit_join(max_uid, str(username or ""), json.dumps(aligned, ensure_ascii=False))
         except Exception:
             logger.exception("save_visit_join")
+            join_saved_id = None
+        if not join_saved_id:
+            return {
+                "notification": "Ошибка",
+                "text": (
+                    "❌ Не удалось сохранить анкету в базе.\n\n"
+                    "Заявка не отправлена. Проверьте данные и повторите отправку."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.join_review_keyboard(),
+            }
         _schedule_notify(f"Новая заявка в команду #{rid}", plain)
         funnel_touch_complete(max_uid)
         clear_session(max_uid)

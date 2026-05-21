@@ -146,6 +146,20 @@ SMTP_FROM = _env("SMTP_FROM")
 NOTIFY_EMAIL_TO = _env("NOTIFY_EMAIL_TO") or _env("EMAIL_RECEIVER")
 SMTP_USE_TLS = _env_bool("SMTP_USE_TLS", True)
 ADMIN_MAX_USER_IDS = _env_int_list("ADMIN_MAX_USER_IDS")
+# Сквозной контур: дублируем админ-уведомления также в Telegram.
+TELEGRAM_BOT_TOKEN = (
+    _env("TELEGRAM_BOT_TOKEN")
+    or _env("TELEGRAM_TOKEN")
+    or _env("BOT_TOKEN")
+    or _env("TELEGRAM_WEBAPP_BOT_TOKEN")
+    or _env("AGENCY_VISIT_TELEGRAM_TOKEN")
+)
+ADMIN_TG_USER_IDS = (
+    _env_int_list("ADMIN_TG_USER_IDS")
+    or _env_int_list("ADMIN_USER_IDS")
+    or _env_int_list("ADMIN_USER_ID")
+    or _env_int_list("YOUR_USER_ID")
+)
 
 
 def contact_phone_tel() -> str:

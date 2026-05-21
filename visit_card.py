@@ -156,6 +156,10 @@ def is_visit_flow_payload(p: str) -> bool:
         "join_portfolio_url",
         "join_metro_skip",
         "client_reg_projects",
+        "client_reg_create_project",
+        "client_reg_subscription",
+        "client_reg_team",
+        "client_reg_reports",
         "client_reg_orders",
         "client_reg_settings",
         "client_reg_web",
@@ -193,6 +197,18 @@ def client_registered_main_menu_keyboard(*, quotes_enabled: bool = True) -> list
         rows.append([cb_btn("📣 Разместить объявление", "client_quote_listing")])
     rows.append([cb_btn("🏠 Меню визитки", "visit_public_menu")])
     return inline_keyboard(rows)
+
+
+def client_projects_hub_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("➕ Создать проект", "client_reg_create_project")],
+            [cb_btn("💳 Подписка и лимиты", "client_reg_subscription")],
+            [cb_btn("👥 Команда заказчика", "client_reg_team")],
+            [cb_btn("📊 Отчёты Excel/PDF", "client_reg_reports")],
+            [cb_btn("🔙 Меню заказчика", "visit_public_menu")],
+        ]
+    )
 
 
 def worker_pending_verification_keyboard() -> list[dict]:

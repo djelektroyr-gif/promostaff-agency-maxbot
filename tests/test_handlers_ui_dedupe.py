@@ -55,7 +55,7 @@ def test_strip_registration_escape_keyboard_for_join_step():
         "attachments": visit_card.back_to_main_keyboard(),
     }
     out = handlers._strip_registration_escape_keyboard(uid, reply)
-    assert "attachments" not in out
+    assert out.get("attachments") == []
     visit_flows.SESSIONS.pop(uid, None)
 
 

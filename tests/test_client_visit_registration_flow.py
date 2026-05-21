@@ -53,8 +53,10 @@ def test_client_visit_confirm_saves_registration_fields_only(monkeypatch):
         saved["uid"] = uid
         saved["username"] = username
         saved["data"] = dict(data)
+        return True
 
     monkeypatch.setattr(visit_flows, "save_max_visit_client_verified", _fake_save)
+    monkeypatch.setattr(visit_flows, "_schedule_notify", lambda *_args, **_kwargs: None)
     out = asyncio.run(visit_flows.process_callback(max_uid, "confirm_client_visit_yes", {"username": "tester"}))
     assert out is not None
     assert saved["uid"] == max_uid
@@ -64,6 +66,58 @@ def test_client_visit_confirm_saves_registration_fields_only(monkeypatch):
     assert "order_kind" not in payload
     assert "contact_channel" not in payload
     assert "cp_contact_channel" not in payload
+
+
+def test_client_visit_confirm_notifies_admins(monkeypatch):
+    max_uid = 991007
+    calls: dict = {}
+    visit_flows.SESSIONS[max_uid] = {
+        "flow": "client_visit",
+        "step": "confirm",
+        "data": {
+            "company_name": "ООО Тест",
+            "contact_name": "Иванов Иван Иванович",
+            "position_in_org": "Руководитель отдела",
+            "phone": "+79991234567",
+            "inn": "7707083893",
+            "contact_email": "client@test.ru",
+        },
+    }
+
+    monkeypatch.setattr(visit_flows, "save_max_visit_client_verified", lambda *_a, **_k: True)
+
+    def _fake_notify(subject, plain):
+        calls["subject"] = subject
+        calls["plain"] = plain
+
+    monkeypatch.setattr(visit_flows, "_schedule_notify", _fake_notify)
+    out = asyncio.run(visit_flows.process_callback(max_uid, "confirm_client_visit_yes", {"username": "tester"}))
+    assert out is not None
+    assert "Принято" in str(out.get("notification") or "")
+    assert "регистрация заказчика" in str(calls.get("subject") or "").lower()
+    assert "ООО Тест" in str(calls.get("plain") or "")
+
+
+def test_client_visit_confirm_does_not_fake_success_when_save_failed(monkeypatch):
+    max_uid = 991008
+    visit_flows.SESSIONS[max_uid] = {
+        "flow": "client_visit",
+        "step": "confirm",
+        "data": {
+            "company_name": "ООО Тест",
+            "contact_name": "Иванов Иван Иванович",
+            "position_in_org": "Руководитель отдела",
+            "phone": "+79991234567",
+            "inn": "7707083893",
+            "contact_email": "client@test.ru",
+        },
+    }
+    monkeypatch.setattr(visit_flows, "save_max_visit_client_verified", lambda *_a, **_k: False)
+    monkeypatch.setattr(visit_flows, "_schedule_notify", lambda *_a, **_k: None)
+    out = asyncio.run(visit_flows.process_callback(max_uid, "confirm_client_visit_yes", {"username": "tester"}))
+    assert out is not None
+    assert "Не удалось сохранить" in str(out.get("text") or "")
+    assert max_uid in visit_flows.SESSIONS
 
 
 def test_client_visit_confirm_edit_opens_field_menu():
