@@ -527,6 +527,44 @@ def init_schema() -> None:
             )
             cur.execute(
                 """
+                CREATE TABLE IF NOT EXISTS worker_beacon (
+                    worker_tg_id BIGINT PRIMARY KEY,
+                    is_active INTEGER NOT NULL DEFAULT 0,
+                    enabled_at TIMESTAMP,
+                    expires_at TIMESTAMP,
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_worker_beacon_expires
+                ON worker_beacon (expires_at)
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS assignment_breaks (
+                    id BIGSERIAL PRIMARY KEY,
+                    shift_id BIGINT NOT NULL,
+                    worker_tg_id BIGINT NOT NULL,
+                    break_type TEXT NOT NULL,
+                    started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    ended_at TIMESTAMP,
+                    max_minutes INTEGER NOT NULL DEFAULT 10,
+                    notes TEXT,
+                    auto_closed BOOLEAN NOT NULL DEFAULT FALSE
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_assignment_breaks_open
+                ON assignment_breaks (shift_id, worker_tg_id, ended_at)
+                """
+            )
+            cur.execute(
+                """
                 DO $$ BEGIN
                     IF EXISTS (
                         SELECT 1 FROM information_schema.tables
@@ -1708,10 +1746,13 @@ def list_open_shifts_admin_max(limit: int = 30) -> list[dict[str, Any]]:
                 cur.execute(
                     """
                     SELECT s.id, s.shift_date, s.start_time, s.end_time, p.name, s.status,
-                           COALESCE(s.workers_needed, 0), COALESCE(s.rate, 0), COALESCE(s.location, '')
+                           COALESCE(s.workers_needed, 0), COALESCE(s.rate, 0), COALESCE(s.location, ''),
+                           COALESCE(COUNT(sa.id), 0) AS assignments_total
                     FROM shifts s
                     JOIN projects p ON s.project_id = p.id
+                    LEFT JOIN shift_assignments sa ON sa.shift_id = s.id
                     WHERE s.status IN ('open', 'in_progress')
+                    GROUP BY s.id, s.shift_date, s.start_time, s.end_time, p.name, s.status, s.workers_needed, s.rate, s.location
                     ORDER BY s.shift_date DESC, s.id DESC
                     LIMIT %s
                     """,
@@ -1734,6 +1775,7 @@ def list_open_shifts_admin_max(limit: int = 30) -> list[dict[str, Any]]:
                 "workers_needed": int(r[6] or 0),
                 "rate": int(r[7] or 0),
                 "location": str(r[8] or ""),
+                "assignments_total": int(r[9] or 0),
             }
         )
     return out
@@ -1852,6 +1894,130 @@ def get_project_admin_max(project_id: int) -> dict[str, Any] | None:
         "shifts_total": int(row[4] or 0),
         "shifts_open": int(row[5] or 0),
     }
+
+
+def list_shift_assignments_for_shift_max(shift_id: int, limit: int = 100) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    sid = int(shift_id)
+    lim = max(1, min(int(limit), 300))
+    if sid <= 0:
+        return []
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT sa.id, sa.worker_tg_id, COALESCE(w.full_name, ''), COALESCE(sa.status, ''),
+                           sa.checkin_time, sa.checkout_time, COALESCE(sa.worked_minutes, 0)
+                    FROM shift_assignments sa
+                    LEFT JOIN workers w ON w.user_id = sa.worker_tg_id
+                    WHERE sa.shift_id = %s
+                    ORDER BY sa.id DESC
+                    LIMIT %s
+                    """,
+                    (sid, lim),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_shift_assignments_for_shift_max failed shift_id=%s", sid)
+        return []
+    return [
+        {
+            "id": int(r[0] or 0),
+            "worker_tg_id": int(r[1] or 0),
+            "worker_name": str(r[2] or ""),
+            "status": str(r[3] or ""),
+            "checkin_time": r[4],
+            "checkout_time": r[5],
+            "worked_minutes": int(r[6] or 0),
+        }
+        for r in rows
+    ]
+
+
+def list_assignable_workers_for_shift_max(shift_id: int, limit: int = 20) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    sid = int(shift_id)
+    lim = max(1, min(int(limit), 100))
+    if sid <= 0:
+        return []
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT w.user_id, COALESCE(w.full_name, ''), COALESCE(w.profession, ''), COALESCE(w.phone, '')
+                    FROM workers w
+                    WHERE LOWER(COALESCE(w.status, '')) = 'approved'
+                      AND LOWER(COALESCE(w.cooperation_mode, 'agency')) = 'agency'
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM shift_assignments sa
+                        WHERE sa.shift_id = %s AND sa.worker_tg_id = w.user_id
+                      )
+                    ORDER BY COALESCE(w.registered_at, NOW()) DESC, w.user_id DESC
+                    LIMIT %s
+                    """,
+                    (sid, lim),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_assignable_workers_for_shift_max failed shift_id=%s", sid)
+        return []
+    return [
+        {
+            "user_id": int(r[0] or 0),
+            "full_name": str(r[1] or ""),
+            "profession": str(r[2] or ""),
+            "phone": str(r[3] or ""),
+        }
+        for r in rows
+        if int(r[0] or 0) > 0
+    ]
+
+
+def assign_worker_to_shift_max(shift_id: int, worker_tg_id: int) -> tuple[bool, str]:
+    if not DATABASE_URL:
+        return False, "Нужен PostgreSQL."
+    sid = int(shift_id)
+    wid = int(worker_tg_id)
+    if sid <= 0 or wid <= 0:
+        return False, "Некорректные параметры."
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM shifts WHERE id = %s LIMIT 1", (sid,))
+                if not cur.fetchone():
+                    return False, "Смена не найдена."
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM workers
+                    WHERE user_id = %s
+                      AND LOWER(COALESCE(status, '')) = 'approved'
+                      AND LOWER(COALESCE(cooperation_mode, 'agency')) = 'agency'
+                    LIMIT 1
+                    """,
+                    (wid,),
+                )
+                if not cur.fetchone():
+                    return False, "Исполнитель не готов для агентских смен."
+                cur.execute(
+                    """
+                    INSERT INTO shift_assignments (shift_id, worker_tg_id, status, created_at)
+                    VALUES (%s, %s, 'assigned', NOW())
+                    ON CONFLICT (shift_id, worker_tg_id) DO NOTHING
+                    """,
+                    (sid, wid),
+                )
+                if int(cur.rowcount or 0) <= 0:
+                    return False, "Исполнитель уже назначен на эту смену."
+        return True, "Исполнитель назначен."
+    except Exception:
+        logger.exception("assign_worker_to_shift_max failed shift_id=%s worker=%s", sid, wid)
+        return False, "Ошибка записи в БД."
 
 
 def list_shift_assignments_recent_max(limit: int = 30) -> list[dict[str, Any]]:
@@ -2169,6 +2335,445 @@ def list_worker_payments_for_worker_max(worker_tg_id: int, limit: int = 10) -> l
     ]
 
 
+def list_worker_shifts_max(worker_tg_id: int, limit: int = 20) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    wid = int(worker_tg_id)
+    lim = max(1, min(int(limit), 100))
+    if wid <= 0:
+        return []
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT s.id, s.shift_date, s.start_time, s.end_time, COALESCE(s.location, ''),
+                           COALESCE(s.status, ''), COALESCE(sa.status, ''), COALESCE(p.name, '')
+                    FROM shift_assignments sa
+                    JOIN shifts s ON s.id = sa.shift_id
+                    LEFT JOIN projects p ON p.id = s.project_id
+                    WHERE sa.worker_tg_id = %s
+                    ORDER BY s.shift_date DESC, s.id DESC
+                    LIMIT %s
+                    """,
+                    (wid, lim),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_worker_shifts_max failed worker=%s", wid)
+        return []
+    return [
+        {
+            "shift_id": int(r[0] or 0),
+            "shift_date": str(r[1] or ""),
+            "start_time": str(r[2] or ""),
+            "end_time": str(r[3] or ""),
+            "location": str(r[4] or ""),
+            "shift_status": str(r[5] or ""),
+            "assignment_status": str(r[6] or ""),
+            "project_name": str(r[7] or ""),
+        }
+        for r in rows
+    ]
+
+
+def get_worker_shift_assignment_max(shift_id: int, worker_tg_id: int) -> dict[str, Any] | None:
+    if not DATABASE_URL:
+        return None
+    sid = int(shift_id)
+    wid = int(worker_tg_id)
+    if sid <= 0 or wid <= 0:
+        return None
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT s.id, s.shift_date, s.start_time, s.end_time, COALESCE(s.location, ''),
+                           COALESCE(s.status, ''), COALESCE(p.name, ''), COALESCE(sa.status, ''),
+                           sa.checkin_time, sa.checkout_time, COALESCE(sa.worked_minutes, 0)
+                    FROM shift_assignments sa
+                    JOIN shifts s ON s.id = sa.shift_id
+                    LEFT JOIN projects p ON p.id = s.project_id
+                    WHERE sa.shift_id = %s AND sa.worker_tg_id = %s
+                    LIMIT 1
+                    """,
+                    (sid, wid),
+                )
+                row = cur.fetchone()
+    except Exception:
+        logger.exception("get_worker_shift_assignment_max failed shift=%s worker=%s", sid, wid)
+        return None
+    if not row:
+        return None
+    return {
+        "shift_id": int(row[0] or 0),
+        "shift_date": str(row[1] or ""),
+        "start_time": str(row[2] or ""),
+        "end_time": str(row[3] or ""),
+        "location": str(row[4] or ""),
+        "shift_status": str(row[5] or ""),
+        "project_name": str(row[6] or ""),
+        "assignment_status": str(row[7] or ""),
+        "checkin_time": row[8],
+        "checkout_time": row[9],
+        "worked_minutes": int(row[10] or 0),
+    }
+
+
+def confirm_worker_shift_max(shift_id: int, worker_tg_id: int) -> bool:
+    if not DATABASE_URL:
+        return False
+    sid = int(shift_id)
+    wid = int(worker_tg_id)
+    if sid <= 0 or wid <= 0:
+        return False
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE shift_assignments SET status = 'confirmed' WHERE shift_id = %s AND worker_tg_id = %s",
+                    (sid, wid),
+                )
+                return int(cur.rowcount or 0) > 0
+    except Exception:
+        logger.exception("confirm_worker_shift_max failed shift=%s worker=%s", sid, wid)
+        return False
+
+
+def checkin_worker_shift_max(
+    shift_id: int,
+    worker_tg_id: int,
+    *,
+    photo_url: str | None = None,
+    checkin_location: str | None = None,
+) -> bool:
+    if not DATABASE_URL:
+        return False
+    sid = int(shift_id)
+    wid = int(worker_tg_id)
+    if sid <= 0 or wid <= 0:
+        return False
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(
+                        """
+                        UPDATE shift_assignments
+                        SET status = 'checked_in',
+                            checkin_time = NOW(),
+                            checkin_photo_url = COALESCE(%s, checkin_photo_url),
+                            checkin_location = COALESCE(%s, checkin_location)
+                        WHERE shift_id = %s AND worker_tg_id = %s
+                        """,
+                        (photo_url, checkin_location, sid, wid),
+                    )
+                except Exception:
+                    cur.execute(
+                        """
+                        UPDATE shift_assignments
+                        SET status = 'checked_in',
+                            checkin_time = NOW()
+                        WHERE shift_id = %s AND worker_tg_id = %s
+                        """,
+                        (sid, wid),
+                    )
+                ok = int(cur.rowcount or 0) > 0
+                if ok:
+                    cur.execute("UPDATE shifts SET status = 'in_progress' WHERE id = %s AND status = 'open'", (sid,))
+                return ok
+    except Exception:
+        logger.exception("checkin_worker_shift_max failed shift=%s worker=%s", sid, wid)
+        return False
+
+
+def checkout_worker_shift_max(
+    shift_id: int,
+    worker_tg_id: int,
+    *,
+    photo_url: str | None = None,
+    checkout_location: str | None = None,
+) -> bool:
+    if not DATABASE_URL:
+        return False
+    sid = int(shift_id)
+    wid = int(worker_tg_id)
+    if sid <= 0 or wid <= 0:
+        return False
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT checkin_time FROM shift_assignments WHERE shift_id = %s AND worker_tg_id = %s",
+                    (sid, wid),
+                )
+                row = cur.fetchone()
+                if not row or row[0] is None:
+                    return False
+                try:
+                    cur.execute(
+                        """
+                        UPDATE shift_assignments
+                        SET status = 'checked_out',
+                            checkout_time = NOW(),
+                            worked_minutes = GREATEST(EXTRACT(EPOCH FROM (NOW() - checkin_time))::int / 60, 0),
+                            checkout_photo_url = COALESCE(%s, checkout_photo_url),
+                            checkout_location = COALESCE(%s, checkout_location)
+                        WHERE shift_id = %s AND worker_tg_id = %s
+                        """,
+                        (photo_url, checkout_location, sid, wid),
+                    )
+                except Exception:
+                    cur.execute(
+                        """
+                        UPDATE shift_assignments
+                        SET status = 'checked_out',
+                            checkout_time = NOW(),
+                            worked_minutes = GREATEST(EXTRACT(EPOCH FROM (NOW() - checkin_time))::int / 60, 0)
+                        WHERE shift_id = %s AND worker_tg_id = %s
+                        """,
+                        (sid, wid),
+                    )
+                ok = int(cur.rowcount or 0) > 0
+                if ok:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM shift_assignments WHERE shift_id = %s AND status NOT IN ('checked_out', 'cancelled')",
+                        (sid,),
+                    )
+                    left = int((cur.fetchone() or [0])[0] or 0)
+                    if left == 0:
+                        cur.execute("UPDATE shifts SET status = 'closed' WHERE id = %s", (sid,))
+                return ok
+    except Exception:
+        logger.exception("checkout_worker_shift_max failed shift=%s worker=%s", sid, wid)
+        return False
+
+
+def start_worker_break_max(shift_id: int, worker_tg_id: int, break_type: str) -> bool:
+    if not DATABASE_URL:
+        return False
+    sid = int(shift_id)
+    wid = int(worker_tg_id)
+    bt = (break_type or "").strip().lower()
+    if sid <= 0 or wid <= 0 or bt not in {"lunch", "smoke", "tech"}:
+        return False
+    max_minutes = 30 if bt == "lunch" else 5 if bt == "smoke" else 10
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM assignment_breaks WHERE shift_id = %s AND worker_tg_id = %s AND ended_at IS NULL LIMIT 1",
+                    (sid, wid),
+                )
+                if cur.fetchone():
+                    return False
+                cur.execute(
+                    """
+                    INSERT INTO assignment_breaks (shift_id, worker_tg_id, break_type, max_minutes)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (sid, wid, bt, max_minutes),
+                )
+                return True
+    except Exception:
+        logger.exception("start_worker_break_max failed shift=%s worker=%s", sid, wid)
+        return False
+
+
+def stop_worker_break_max(shift_id: int, worker_tg_id: int) -> bool:
+    if not DATABASE_URL:
+        return False
+    sid = int(shift_id)
+    wid = int(worker_tg_id)
+    if sid <= 0 or wid <= 0:
+        return False
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE assignment_breaks SET ended_at = NOW() WHERE shift_id = %s AND worker_tg_id = %s AND ended_at IS NULL",
+                    (sid, wid),
+                )
+                return int(cur.rowcount or 0) > 0
+    except Exception:
+        logger.exception("stop_worker_break_max failed shift=%s worker=%s", sid, wid)
+        return False
+
+
+def get_active_break_max(shift_id: int, worker_tg_id: int) -> dict[str, Any] | None:
+    if not DATABASE_URL:
+        return None
+    sid = int(shift_id)
+    wid = int(worker_tg_id)
+    if sid <= 0 or wid <= 0:
+        return None
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, break_type, started_at, max_minutes
+                    FROM assignment_breaks
+                    WHERE shift_id = %s AND worker_tg_id = %s AND ended_at IS NULL
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    (sid, wid),
+                )
+                row = cur.fetchone()
+    except Exception:
+        logger.exception("get_active_break_max failed shift=%s worker=%s", sid, wid)
+        return None
+    if not row:
+        return None
+    return {
+        "id": int(row[0] or 0),
+        "break_type": str(row[1] or ""),
+        "started_at": row[2],
+        "max_minutes": int(row[3] or 0),
+    }
+
+
+def get_worker_break_stats_max(shift_id: int, worker_tg_id: int) -> dict[str, int]:
+    out = {"lunch_count": 0, "smoke_count": 0, "tech_count": 0, "total_minutes": 0}
+    if not DATABASE_URL:
+        return out
+    sid = int(shift_id)
+    wid = int(worker_tg_id)
+    if sid <= 0 or wid <= 0:
+        return out
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (WHERE break_type = 'lunch')::int,
+                        COUNT(*) FILTER (WHERE break_type = 'smoke')::int,
+                        COUNT(*) FILTER (WHERE break_type NOT IN ('lunch', 'smoke'))::int,
+                        COALESCE(
+                            SUM(GREATEST(EXTRACT(EPOCH FROM (COALESCE(ended_at, NOW()) - started_at)) / 60.0, 0)),
+                            0
+                        )::int
+                    FROM assignment_breaks
+                    WHERE shift_id = %s AND worker_tg_id = %s
+                    """,
+                    (sid, wid),
+                )
+                row = cur.fetchone()
+                if row:
+                    out = {
+                        "lunch_count": int(row[0] or 0),
+                        "smoke_count": int(row[1] or 0),
+                        "tech_count": int(row[2] or 0),
+                        "total_minutes": int(row[3] or 0),
+                    }
+    except Exception:
+        logger.exception("get_worker_break_stats_max failed shift=%s worker=%s", sid, wid)
+    return out
+
+
+def auto_close_expired_breaks_max() -> int:
+    if not DATABASE_URL:
+        return 0
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE assignment_breaks
+                    SET ended_at = NOW(), auto_closed = TRUE
+                    WHERE ended_at IS NULL
+                      AND started_at + (COALESCE(max_minutes, 10) || ' minutes')::interval <= NOW()
+                    """
+                )
+                return int(cur.rowcount or 0)
+    except Exception:
+        logger.exception("auto_close_expired_breaks_max failed")
+        return 0
+
+
+def get_worker_beacon_state_max(worker_tg_id: int) -> dict[str, Any]:
+    out = {"is_active": False, "enabled_at": None, "expires_at": None}
+    if not DATABASE_URL:
+        return out
+    wid = int(worker_tg_id)
+    if wid <= 0:
+        return out
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT is_active, enabled_at, expires_at FROM worker_beacon WHERE worker_tg_id = %s LIMIT 1",
+                    (wid,),
+                )
+                row = cur.fetchone()
+                if row:
+                    out = {
+                        "is_active": bool(int(row[0] or 0)),
+                        "enabled_at": row[1],
+                        "expires_at": row[2],
+                    }
+    except Exception:
+        logger.exception("get_worker_beacon_state_max failed worker=%s", wid)
+    return out
+
+
+def enable_worker_beacon_max(worker_tg_id: int, hours: int = 24) -> bool:
+    if not DATABASE_URL:
+        return False
+    wid = int(worker_tg_id)
+    hh = max(1, min(168, int(hours or 24)))
+    if wid <= 0:
+        return False
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO worker_beacon (worker_tg_id, is_active, enabled_at, expires_at, updated_at)
+                    VALUES (%s, 1, NOW(), NOW() + (%s || ' hours')::interval, NOW())
+                    ON CONFLICT (worker_tg_id) DO UPDATE SET
+                        is_active = 1,
+                        enabled_at = NOW(),
+                        expires_at = NOW() + (%s || ' hours')::interval,
+                        updated_at = NOW()
+                    """,
+                    (wid, hh, hh),
+                )
+                return True
+    except Exception:
+        logger.exception("enable_worker_beacon_max failed worker=%s", wid)
+        return False
+
+
+def disable_worker_beacon_max(worker_tg_id: int) -> bool:
+    if not DATABASE_URL:
+        return False
+    wid = int(worker_tg_id)
+    if wid <= 0:
+        return False
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO worker_beacon (worker_tg_id, is_active, enabled_at, expires_at, updated_at)
+                    VALUES (%s, 0, NULL, NULL, NOW())
+                    ON CONFLICT (worker_tg_id) DO UPDATE SET
+                        is_active = 0,
+                        expires_at = NULL,
+                        updated_at = NOW()
+                    """,
+                    (wid,),
+                )
+                return True
+    except Exception:
+        logger.exception("disable_worker_beacon_max failed worker=%s", wid)
+        return False
+
+
 def update_worker_payment_status_max(payment_id: int, status: str) -> tuple[bool, str]:
     if not DATABASE_URL:
         return False, "Нужен PostgreSQL."
@@ -2282,6 +2887,8 @@ def get_admin_hub_counters_max() -> dict[str, int]:
         "crm_kp": 0,
         "crm_urgent": 0,
         "workers_total": 0,
+        "checked_in_now": 0,
+        "on_break_now": 0,
     }
     if not DATABASE_URL:
         return out
@@ -2296,6 +2903,13 @@ def get_admin_hub_counters_max() -> dict[str, int]:
                 out["payments_pending"] = int((cur.fetchone() or [0])[0] or 0)
                 cur.execute("SELECT COUNT(*) FROM workers")
                 out["workers_total"] = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute("SELECT COUNT(*) FROM shift_assignments WHERE LOWER(COALESCE(status, '')) = 'checked_in'")
+                out["checked_in_now"] = int((cur.fetchone() or [0])[0] or 0)
+                try:
+                    cur.execute("SELECT COUNT(*) FROM assignment_breaks WHERE ended_at IS NULL")
+                    out["on_break_now"] = int((cur.fetchone() or [0])[0] or 0)
+                except Exception:
+                    out["on_break_now"] = 0
     except Exception:
         logger.exception("get_admin_hub_counters_max failed basic counters")
     try:

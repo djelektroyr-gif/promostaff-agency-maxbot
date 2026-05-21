@@ -13,7 +13,7 @@ import random
 import re
 import time
 import json
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from config import (
@@ -49,6 +49,9 @@ from funnel_db import (
     list_visit_rows,
     list_open_shifts_admin_max,
     get_shift_admin_max,
+    list_shift_assignments_for_shift_max,
+    list_assignable_workers_for_shift_max,
+    assign_worker_to_shift_max,
     list_projects_admin_max,
     get_project_admin_max,
     list_shift_assignments_recent_max,
@@ -59,6 +62,20 @@ from funnel_db import (
     get_worker_admin_max,
     get_worker_assignment_stats_max,
     list_worker_payments_for_worker_max,
+    list_worker_shifts_max,
+    get_worker_shift_assignment_max,
+    confirm_worker_shift_max,
+    checkin_worker_shift_max,
+    checkout_worker_shift_max,
+    start_worker_break_max,
+    stop_worker_break_max,
+    get_active_break_max,
+    get_worker_break_stats_max,
+    auto_close_expired_breaks_max,
+    get_worker_beacon_state_max,
+    enable_worker_beacon_max,
+    disable_worker_beacon_max,
+    resolve_tg_id_for_max_user,
     update_worker_payment_status_max,
     log_admin_action_max,
     list_admin_logs_max,
@@ -536,6 +553,46 @@ def _portfolio_photo_ref_from_body(message_body: dict[str, Any] | None) -> str |
         if isinstance(p, str) and p:
             return p
     return None
+
+
+def _location_from_body(message_body: dict[str, Any] | None, text: str | None = None) -> tuple[float, float] | None:
+    if message_body:
+        loc = message_body.get("location")
+        if isinstance(loc, dict):
+            lat = loc.get("lat") or loc.get("latitude")
+            lng = loc.get("lng") or loc.get("lon") or loc.get("longitude")
+            try:
+                if lat is not None and lng is not None:
+                    return float(lat), float(lng)
+            except (TypeError, ValueError):
+                pass
+        raw = message_body.get("attachments")
+        if raw is None and isinstance(message_body.get("attachment"), dict):
+            raw = [message_body["attachment"]]
+        if isinstance(raw, list):
+            for a in raw:
+                if not isinstance(a, dict):
+                    continue
+                t = (a.get("type") or "").lower()
+                if t not in ("location", "geo", "geopoint"):
+                    continue
+                p = a.get("payload")
+                if isinstance(p, dict):
+                    lat = p.get("lat") or p.get("latitude")
+                    lng = p.get("lng") or p.get("lon") or p.get("longitude")
+                    try:
+                        if lat is not None and lng is not None:
+                            return float(lat), float(lng)
+                    except (TypeError, ValueError):
+                        continue
+    txt = (text or "").strip()
+    m = re.search(r"(-?\d+(?:\.\d+)?)\s*[,; ]\s*(-?\d+(?:\.\d+)?)", txt)
+    if not m:
+        return None
+    try:
+        return float(m.group(1)), float(m.group(2))
+    except (TypeError, ValueError):
+        return None
 
 
 VAC_FROM_KEY = {
@@ -1626,6 +1683,219 @@ PAYMENT_STATUS_LABELS_RU: dict[str, str] = {
     "paid": "💵 Выплачена",
     "cancelled": "🚫 Отменена",
 }
+ASSIGNMENT_STATUS_LABELS_RU: dict[str, str] = {
+    "assigned": "Назначена",
+    "confirmed": "Подтверждена",
+    "checked_in": "На смене",
+    "checked_out": "Завершена",
+    "cancelled": "Отменена",
+}
+BREAK_TYPE_LABELS_RU: dict[str, str] = {
+    "lunch": "Обед",
+    "smoke": "Перекур",
+    "tech": "Тех. перерыв",
+}
+
+
+def _worker_shift_list_text(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "*Мои смены*\n\nНазначений пока нет."
+    lines = ["*Мои смены*", ""]
+    for row in rows[:20]:
+        sid = int(row.get("shift_id") or 0)
+        st = str(row.get("assignment_status") or "")
+        lines.append(
+            f"• #{sid} · {(row.get('shift_date') or '—')} {row.get('start_time') or '—'}-{row.get('end_time') or '—'}\n"
+            f"  {row.get('project_name') or 'Проект'} · {ASSIGNMENT_STATUS_LABELS_RU.get(st, st or '—')}"
+        )
+    return "\n".join(lines)[:3900]
+
+
+def _worker_shift_list_keyboard(rows: list[dict[str, Any]]) -> list[dict]:
+    kb_rows: list[list[dict]] = []
+    for row in rows[:20]:
+        sid = int(row.get("shift_id") or 0)
+        kb_rows.append([cb_btn(f"📍 Смена #{sid}", f"worker_shift_{sid}")])
+    kb_rows.append([cb_btn("🔙 Меню исполнителя", "main_menu")])
+    return inline_keyboard(kb_rows)
+
+
+def _worker_shift_detail_text(card: dict[str, Any], active_break: dict[str, Any] | None, bstats: dict[str, int]) -> str:
+    st = str(card.get("assignment_status") or "")
+    text = (
+        f"*Смена #{int(card.get('shift_id') or 0)}*\n\n"
+        f"Проект: {card.get('project_name') or '—'}\n"
+        f"Дата: {card.get('shift_date') or '—'}\n"
+        f"Время: {card.get('start_time') or '—'} - {card.get('end_time') or '—'}\n"
+        f"Локация: {card.get('location') or '—'}\n"
+        f"Статус: {ASSIGNMENT_STATUS_LABELS_RU.get(st, st or '—')}\n"
+        f"Чекин: {card.get('checkin_time') or '—'}\n"
+        f"Чекаут: {card.get('checkout_time') or '—'}\n"
+        f"Отработано (мин): {int(card.get('worked_minutes') or 0)}\n"
+        f"Перерывы: обед {int(bstats.get('lunch_count', 0))}, "
+        f"перекур {int(bstats.get('smoke_count', 0))}, "
+        f"тех {int(bstats.get('tech_count', 0))}"
+    )
+    if active_break:
+        bt = str(active_break.get("break_type") or "")
+        text += (
+            f"\n\n🟡 Активный перерыв: {BREAK_TYPE_LABELS_RU.get(bt, bt or '—')} "
+            f"(старт: {active_break.get('started_at') or '—'})"
+        )
+    return text[:3900]
+
+
+def _worker_shift_detail_keyboard(card: dict[str, Any], active_break: dict[str, Any] | None) -> list[dict]:
+    sid = int(card.get("shift_id") or 0)
+    st = str(card.get("assignment_status") or "")
+    rows: list[list[dict]] = []
+    if st == "assigned":
+        rows.append([cb_btn("✅ Подтвердить смену", f"worker_shift_confirm_{sid}")])
+    if st in {"confirmed"}:
+        rows.append([cb_btn("📍 Чекин", f"worker_shift_checkin_{sid}")])
+    if st in {"checked_in"}:
+        rows.append([cb_btn("🏁 Чекаут", f"worker_shift_checkout_{sid}")])
+        rows.append([cb_btn("☕ Перерывы", f"worker_break_menu_{sid}")])
+    if active_break:
+        rows.append([cb_btn("⏹ Завершить перерыв", f"worker_break_stop_{sid}")])
+    rows.append([cb_btn("🔙 К сменам", "worker_reg_shifts")])
+    rows.append([cb_btn("🔙 Меню исполнителя", "main_menu")])
+    return inline_keyboard(rows)
+
+
+def _format_assignment_compact_lines_max(assignments: list[dict[str, Any]], limit: int = 12) -> str:
+    status_labels = {
+        "assigned": "🟡 assigned",
+        "confirmed": "🟦 confirmed",
+        "checked_in": "🟢 checked_in",
+        "checked_out": "⚪ checked_out",
+        "cancelled": "🔴 cancelled",
+    }
+    rows: list[str] = []
+    for a in (assignments or [])[: max(1, int(limit))]:
+        st = str(a.get("status") or "").strip().lower()
+        worker = str(a.get("worker_name") or a.get("worker_tg_id") or "—").strip()
+        rows.append(f"• {worker} — {status_labels.get(st, st or '—')}")
+    if not rows:
+        return "Назначений пока нет."
+    return "\n".join(rows)
+
+
+def _ops_shift_risk_lines_max(
+    card: dict[str, Any],
+    status_counts: dict[str, int],
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    risks: list[str] = []
+    n = now or datetime.now()
+    assigned = int(status_counts.get("assigned", 0))
+    confirmed = int(status_counts.get("confirmed", 0))
+    checked_in = int(status_counts.get("checked_in", 0))
+    checked_out = int(status_counts.get("checked_out", 0))
+    total_assigned = assigned + confirmed + checked_in + checked_out
+    workers_needed = int(card.get("workers_needed") or 0)
+    bounds = _shift_bounds_from_card(card)
+    if not bounds:
+        return risks
+    dt_start, dt_end = bounds
+    mins_to_start = int((dt_start - n).total_seconds() // 60)
+    mins_after_end = int((n - dt_end).total_seconds() // 60)
+    if 0 <= mins_to_start <= 120 and assigned > 0:
+        risks.append(f"🔴 До старта ~{mins_to_start} мин, но {assigned} исполнителей ещё без подтверждения.")
+    if workers_needed > 0 and total_assigned < workers_needed and 0 <= mins_to_start <= 180:
+        risks.append(f"🟠 До старта ~{mins_to_start} мин, недобор персонала: {total_assigned}/{workers_needed}.")
+    if -180 <= mins_to_start < 0 and checked_in == 0 and total_assigned > 0:
+        risks.append("🔴 Смена уже началась, но нет ни одного check-in.")
+    if mins_after_end >= 30 and checked_in > 0:
+        risks.append(f"🟠 После конца смены прошло {mins_after_end} мин, есть незакрытые check-out.")
+    return risks
+
+
+def _is_unconfirmed_ping_window_max(card: dict[str, Any], *, now: datetime | None = None) -> tuple[bool, str]:
+    n = now or datetime.now()
+    bounds = _shift_bounds_from_card(card)
+    if not bounds:
+        return False, "Не удалось определить время старта смены."
+    dt_start, _dt_end = bounds
+    mins_to_start = int((dt_start - n).total_seconds() // 60)
+    if mins_to_start > 120:
+        return False, f"До старта ещё {mins_to_start} мин — вне критичного окна (<=120)."
+    if mins_to_start < -180:
+        return False, f"Смена началась более {-mins_to_start} мин назад — массовый пинг уже неактуален."
+    return True, ""
+
+
+def _as_naive_dt(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None) if value.tzinfo else value
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if "T" not in raw and " " in raw:
+        raw = raw.replace(" ", "T", 1)
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _shift_bounds_from_card(card: dict[str, Any]) -> tuple[datetime, datetime] | None:
+    d = str(card.get("shift_date") or "").strip()
+    st = str(card.get("start_time") or "").strip()
+    et = str(card.get("end_time") or "").strip()
+    if not d or not st or not et:
+        return None
+    dt_start = _as_naive_dt(f"{d}T{st}")
+    dt_end = _as_naive_dt(f"{d}T{et}")
+    if not dt_start or not dt_end:
+        return None
+    if dt_end <= dt_start:
+        dt_end = dt_end + timedelta(days=1)
+    return dt_start, dt_end
+
+
+def _shift_duration_hours_from_card(card: dict[str, Any]) -> int:
+    bounds = _shift_bounds_from_card(card)
+    if not bounds:
+        return 1
+    dt_start, dt_end = bounds
+    return max(1, int((dt_end - dt_start).total_seconds() // 3600))
+
+
+def _break_start_validation_message_max(
+    card: dict[str, Any],
+    stats: dict[str, int],
+    break_type: str,
+) -> str | None:
+    now = datetime.now()
+    checkin = _as_naive_dt(card.get("checkin_time"))
+    bounds = _shift_bounds_from_card(card)
+    if break_type == "lunch":
+        if int(stats.get("lunch_count", 0)) >= 1:
+            return "Обеденный перерыв можно взять только один раз за смену."
+        if not checkin or (now - checkin).total_seconds() < 2 * 3600:
+            return "Обед доступен не раньше чем через 2 часа после чек-ина."
+        if bounds:
+            _, dt_end = bounds
+            if (dt_end - now).total_seconds() < 2 * 3600:
+                return "Обед недоступен в последние 2 часа смены."
+    if break_type == "smoke":
+        if not checkin or (now - checkin).total_seconds() < 3600:
+            return "Перекур доступен не раньше чем через 1 час после чек-ина."
+        if bounds:
+            _, dt_end = bounds
+            if (dt_end - now).total_seconds() < 3600:
+                return "Перекур недоступен в последний час смены."
+        max_smokes = max(0, _shift_duration_hours_from_card(card) - 1)
+        if int(stats.get("smoke_count", 0)) >= max_smokes:
+            return f"Лимит перекуров исчерпан: {max_smokes}."
+    if break_type == "tech":
+        if not checkin or (now - checkin).total_seconds() < 15 * 60:
+            return "Тех. перерыв доступен не раньше чем через 15 минут после чек-ина."
+    return None
 
 
 def _is_admin_max_uid(max_uid: int) -> bool:
@@ -1997,6 +2267,11 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
             "admin_order_detail_",
             "admin_order_stage_",
             "admin_ops_shift_detail_",
+            "admin_ops_shift_assign_pick_",
+            "admin_ops_shift_assign_do_",
+            "admin_ops_shift_report_",
+            "admin_ops_shift_risk_unconfirmed_",
+            "admin_ops_shift_ping_unconfirmed_",
             "admin_ops_project_detail_",
             "admin_hrm_payment_",
             "admin_hrm_paystatus_",
@@ -2018,6 +2293,8 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
                     "Хабы совпадают с Telegram: OPS, HRM, CRM, System.\n"
                     "Выберите раздел ниже.\n\n"
                     f"OPS: {int(counters.get('open_shifts', 0))} открытых смен\n"
+                    f"На смене сейчас: {int(counters.get('checked_in_now', 0))} · "
+                    f"на перерыве: {int(counters.get('on_break_now', 0))}\n"
                     f"HRM: {int(counters.get('workers_total', 0))} исполнителей · "
                     f"{int(counters.get('payments_pending', 0))} выплат pending\n"
                     f"CRM: {int(counters.get('crm_all', 0))} заявок в воронке"
@@ -2032,7 +2309,9 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
                     "*OPS (Операции)*\n\n"
                     "Контур операционного управления: смены, проекты, отчёты.\n\n"
                     f"Открытых смен: {int(counters.get('open_shifts', 0))}\n"
-                    f"Проектов: {int(counters.get('projects_total', 0))}"
+                    f"Проектов: {int(counters.get('projects_total', 0))}\n"
+                    f"Сейчас на смене: {int(counters.get('checked_in_now', 0))}\n"
+                    f"Сейчас на перерыве: {int(counters.get('on_break_now', 0))}"
                 ),
                 "format": "markdown",
                 "attachments": visit_card.admin_hub_ops_keyboard(),
@@ -2069,6 +2348,8 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
                     "*System*\n\n"
                     "Мониторинг и сервисные инструменты для поддержки.\n\n"
                     f"Открытых смен: {int(counters.get('open_shifts', 0))}\n"
+                    f"Сейчас на смене: {int(counters.get('checked_in_now', 0))}\n"
+                    f"Сейчас на перерыве: {int(counters.get('on_break_now', 0))}\n"
                     f"Pending выплат: {int(counters.get('payments_pending', 0))}\n"
                     f"CRM заявок: {int(counters.get('crm_all', 0))}"
                 ),
@@ -2554,6 +2835,22 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
                     "format": "markdown",
                     "attachments": visit_card.admin_hub_ops_keyboard(),
                 }
+            assigns = list_shift_assignments_for_shift_max(sid, limit=120)
+            status_counts = {
+                "assigned": 0,
+                "confirmed": 0,
+                "checked_in": 0,
+                "checked_out": 0,
+                "cancelled": 0,
+                "other": 0,
+            }
+            for a in assigns:
+                st = str(a.get("status") or "").strip().lower()
+                if st in status_counts:
+                    status_counts[st] += 1
+                else:
+                    status_counts["other"] += 1
+            risk_lines = _ops_shift_risk_lines_max(row, status_counts)
             text = (
                 f"*Смена #{int(row.get('id') or 0)}*\n\n"
                 f"Проект: {(row.get('project_name') or '—')}\n"
@@ -2563,7 +2860,21 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
                 f"Ставка: {int(row.get('rate') or 0)} ₽/ч\n"
                 f"Нужно: {int(row.get('workers_needed') or 0)}\n"
                 f"Назначено: {int(row.get('assignments_total') or 0)}\n"
-                f"Статус: `{row.get('status') or '—'}`"
+                f"Статус: `{row.get('status') or '—'}`\n"
+                f"Статусы: assigned {status_counts['assigned']} · "
+                f"confirmed {status_counts['confirmed']} · "
+                f"checked_in {status_counts['checked_in']} · "
+                f"checked_out {status_counts['checked_out']} · "
+                f"cancelled {status_counts['cancelled']}"
+                + (f" · other {status_counts['other']}" if status_counts["other"] else "")
+                + "\n\n"
+                + (
+                    "🚨 Риски:\n" + "\n".join(risk_lines) + "\n\n"
+                    if risk_lines
+                    else ""
+                )
+                + "Исполнители:\n"
+                + _format_assignment_compact_lines_max(assigns, limit=12)
             )
             return {
                 "notification": " ",
@@ -2571,8 +2882,200 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
                 "format": "markdown",
                 "attachments": inline_keyboard(
                     [
+                        [cb_btn("👷 Назначить исполнителя", f"admin_ops_shift_assign_pick_{sid}")],
+                        [cb_btn("🧾 Отчёт по смене", f"admin_ops_shift_report_{sid}")],
+                        [cb_btn("📣 Неподтверждённые", f"admin_ops_shift_risk_unconfirmed_{sid}")],
+                        [cb_btn("📮 Пинг в админ-канал", f"admin_ops_shift_ping_unconfirmed_{sid}")],
                         [cb_btn("🔙 К сменам", "admin_ops_shifts_active")],
                         [cb_btn("🔙 OPS", "admin_hub_ops")],
+                    ]
+                ),
+            }
+        if payload.startswith("admin_ops_shift_risk_unconfirmed_"):
+            m = re.match(r"^admin_ops_shift_risk_unconfirmed_(\d+)$", payload)
+            sid = int(m.group(1)) if m else 0
+            row = get_shift_admin_max(sid)
+            if not row:
+                return {
+                    "notification": "Не найдено",
+                    "text": "Смена не найдена.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_ops_keyboard(),
+                }
+            assigns = list_shift_assignments_for_shift_max(sid, limit=120)
+            unconfirmed = [a for a in assigns if str(a.get("status") or "").strip().lower() == "assigned"]
+            if not unconfirmed:
+                text = f"*Смена #{sid}*\n\nНеподтверждённых назначений сейчас нет."
+            else:
+                lines = [f"*Смена #{sid} · неподтверждённые*", ""]
+                for a in unconfirmed[:30]:
+                    lines.append(f"• {(a.get('worker_name') or a.get('worker_tg_id') or '—')} ({a.get('worker_tg_id')})")
+                text = "\n".join(lines)
+            return {
+                "notification": " ",
+                "text": text[:3900],
+                "format": "markdown",
+                "attachments": inline_keyboard(
+                    [
+                        [cb_btn("👷 Назначить исполнителя", f"admin_ops_shift_assign_pick_{sid}")],
+                        [cb_btn("🔙 К смене", f"admin_ops_shift_detail_{sid}")],
+                    ]
+                ),
+            }
+        if payload.startswith("admin_ops_shift_ping_unconfirmed_"):
+            m = re.match(r"^admin_ops_shift_ping_unconfirmed_(\d+)$", payload)
+            sid = int(m.group(1)) if m else 0
+            row = get_shift_admin_max(sid)
+            if not row:
+                return {
+                    "notification": "Не найдено",
+                    "text": "Смена не найдена.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_ops_keyboard(),
+                }
+            assigns = list_shift_assignments_for_shift_max(sid, limit=120)
+            unconfirmed = [a for a in assigns if str(a.get("status") or "").strip().lower() == "assigned"]
+            if not unconfirmed:
+                return {
+                    "notification": "Нет рисков",
+                    "text": "Неподтверждённых назначений нет — пинг не требуется.",
+                    "format": "markdown",
+                    "attachments": inline_keyboard([[cb_btn("🔙 К смене", f"admin_ops_shift_detail_{sid}")]]),
+                }
+            in_window, reason = _is_unconfirmed_ping_window_max(row)
+            if not in_window:
+                return {
+                    "notification": "Вне окна",
+                    "text": (
+                        f"*Смена #{sid}*\n\n"
+                        "Пинг неподтверждённых сейчас не отправлен.\n\n"
+                        f"{reason}"
+                    ),
+                    "format": "markdown",
+                    "attachments": inline_keyboard([[cb_btn("🔙 К смене", f"admin_ops_shift_detail_{sid}")]]),
+                }
+            plain_lines = [
+                f"MAX OPS: смена #{sid}",
+                f"Проект: {(row.get('project_name') or '—')}",
+                f"Дата: {(row.get('shift_date') or '—')} {(row.get('start_time') or '—')}-{(row.get('end_time') or '—')}",
+                "",
+                "Неподтверждённые исполнители (assigned):",
+            ]
+            for a in unconfirmed[:40]:
+                plain_lines.append(f"- {(a.get('worker_name') or a.get('worker_tg_id') or '—')} ({a.get('worker_tg_id')})")
+            _schedule_notify(
+                f"[MAX] Пинг неподтверждённых · смена #{sid}",
+                "\n".join(plain_lines),
+            )
+            log_admin_action_max(int(max_uid), "risk_ping_unconfirmed", "shift", sid, f"count={len(unconfirmed)};via_max")
+            return {
+                "notification": "Отправлено",
+                "text": (
+                    f"*Смена #{sid}*\n\n"
+                    f"Отправил пинг в админ-канал по неподтверждённым назначениям: {len(unconfirmed)}."
+                ),
+                "format": "markdown",
+                "attachments": inline_keyboard([[cb_btn("🔙 К смене", f"admin_ops_shift_detail_{sid}")]]),
+            }
+        if payload.startswith("admin_ops_shift_assign_pick_"):
+            m = re.match(r"^admin_ops_shift_assign_pick_(\d+)$", payload)
+            sid = int(m.group(1)) if m else 0
+            row = get_shift_admin_max(sid)
+            if not row:
+                return {
+                    "notification": "Не найдено",
+                    "text": "Смена не найдена.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_ops_keyboard(),
+                }
+            workers = list_assignable_workers_for_shift_max(sid, limit=20)
+            if not workers:
+                return {
+                    "notification": "Пусто",
+                    "text": (
+                        f"*Назначение на смену #{sid}*\n\n"
+                        "Нет доступных исполнителей (approved/agency) или все уже назначены."
+                    ),
+                    "format": "markdown",
+                    "attachments": inline_keyboard(
+                        [
+                            [cb_btn("🔙 К смене", f"admin_ops_shift_detail_{sid}")],
+                            [cb_btn("🔙 OPS", "admin_hub_ops")],
+                        ]
+                    ),
+                }
+            lines = [f"*Назначение на смену #{sid}*", ""]
+            kb_rows: list[list[dict]] = []
+            for w in workers:
+                wid = int(w.get("user_id") or 0)
+                fio = (w.get("full_name") or "—").strip()
+                prof = (w.get("profession") or "—").strip()
+                lines.append(f"• {fio} ({wid}) · {prof}")
+                kb_rows.append([cb_btn(f"➕ {fio[:40]}", f"admin_ops_shift_assign_do_{sid}_{wid}")])
+            kb_rows.append([cb_btn("🔙 К смене", f"admin_ops_shift_detail_{sid}")])
+            return {
+                "notification": " ",
+                "text": "\n".join(lines)[:3900],
+                "format": "markdown",
+                "attachments": inline_keyboard(kb_rows),
+            }
+        if payload.startswith("admin_ops_shift_assign_do_"):
+            m = re.match(r"^admin_ops_shift_assign_do_(\d+)_(\d+)$", payload)
+            sid = int(m.group(1)) if m else 0
+            wid = int(m.group(2)) if m else 0
+            ok, msg = assign_worker_to_shift_max(sid, wid)
+            if ok:
+                log_admin_action_max(int(max_uid), "assign_worker_to_shift", "shift", sid, f"worker={wid};via_max")
+            detail = registered_menu_static_reply(max_uid, f"admin_ops_shift_detail_{sid}") or {
+                "notification": "Ошибка",
+                "text": "Не удалось открыть карточку смены.",
+                "format": "markdown",
+                "attachments": visit_card.admin_hub_ops_keyboard(),
+            }
+            detail["notification"] = "Обновлено" if ok else "Ошибка"
+            detail["text"] = f"{detail.get('text', '')}\n\n{'✅' if ok else '⚠️'} {msg}".strip()[:3900]
+            return detail
+        if payload.startswith("admin_ops_shift_report_"):
+            m = re.match(r"^admin_ops_shift_report_(\d+)$", payload)
+            sid = int(m.group(1)) if m else 0
+            row = get_shift_admin_max(sid)
+            if not row:
+                return {
+                    "notification": "Не найдено",
+                    "text": "Смена не найдена.",
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_ops_keyboard(),
+                }
+            assigns = list_shift_assignments_for_shift_max(sid, limit=120)
+            lines = [
+                f"*Отчёт по смене #{sid}*",
+                "",
+                f"Проект: {(row.get('project_name') or '—')}",
+                f"Дата: {(row.get('shift_date') or '—')}",
+                f"Время: {(row.get('start_time') or '—')} - {(row.get('end_time') or '—')}",
+                "",
+            ]
+            if not assigns:
+                lines.append("Назначений пока нет.")
+            else:
+                lines.append(f"Назначений: {len(assigns)}")
+                lines.append("")
+                for a in assigns:
+                    st = str(a.get("status") or "—")
+                    lines.append(
+                        f"• {(a.get('worker_name') or a.get('worker_tg_id') or '—')} · `{st}`\n"
+                        f"  чек-ин: {a.get('checkin_time') or '—'} · "
+                        f"чекаут: {a.get('checkout_time') or '—'} · "
+                        f"мин: {int(a.get('worked_minutes') or 0)}"
+                    )
+            return {
+                "notification": " ",
+                "text": "\n".join(lines)[:3900],
+                "format": "markdown",
+                "attachments": inline_keyboard(
+                    [
+                        [cb_btn("🔙 К смене", f"admin_ops_shift_detail_{sid}")],
+                        [cb_btn("🔙 К сменам", "admin_ops_shifts_active")],
                     ]
                 ),
             }
@@ -2618,7 +3121,12 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
                     project = (row.get("project_name") or "—").strip()
                     time_range = f"{(row.get('start_time') or '—')} - {(row.get('end_time') or '—')}"
                     status = (row.get("status") or "—").strip()
-                    lines.append(f"• #{sid} · {date} · {project} · {time_range} · `{status}`")
+                    need = int(row.get("workers_needed") or 0)
+                    assigned = int(row.get("assignments_total") or 0)
+                    lines.append(
+                        f"• #{sid} · {date} · {project} · {time_range} · `{status}`\n"
+                        f"  люди: {assigned}/{need}"
+                    )
                     kb_rows.append([cb_btn(f"📅 Смена #{sid}", f"admin_ops_shift_detail_{sid}")])
                 text = "\n".join(lines)[:3900]
                 return {
@@ -2819,25 +3327,21 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
             ),
         }
 
-    worker_texts = {
-        "worker_reg_profile": (
-            "*Мои данные*\n\n"
-            "Карточка и документы синхронизируются с веб-кабинетом. Для актуальных данных откройте «Кабинет на сайте»."
-        ),
-        "worker_reg_shifts": (
-            "*Мои смены*\n\n"
-            "Смены в MAX появятся после завершения паритета с Telegram. Сейчас используйте веб-кабинет и Telegram-канал задач."
-        ),
-        "worker_reg_payments": (
-            "*Мои выплаты*\n\n"
-            "Раздел выплат в MAX в разработке. Актуальные суммы и статусы смотрите в веб-кабинете."
-        ),
-        "worker_reg_beacon": (
-            "*Маяк*\n\n"
-            "Режим срочного поиска в MAX запланирован после паритета по сменам."
-        ),
+    worker_payload_roots = {
+        "worker_reg_profile",
+        "worker_reg_shifts",
+        "worker_reg_payments",
+        "worker_reg_beacon",
     }
-    if payload in worker_texts:
+    if payload in worker_payload_roots or payload.startswith(
+        (
+            "worker_shift_",
+            "worker_break_menu_",
+            "worker_break_start_",
+            "worker_break_stop_",
+            "worker_beacon_",
+        )
+    ):
         if (
             has_max_active_executor_profile(max_uid)
             and get_max_worker_cooperation_mode(max_uid) == COOPERATION_MODE_PLATFORM
@@ -2866,12 +3370,265 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
                 "format": "markdown",
                 "attachments": visit_card.main_menu_keyboard(),
             }
-        return {
-            "notification": " ",
-            "text": worker_texts[payload],
-            "format": "markdown",
-            "attachments": visit_card.worker_registered_main_menu_keyboard(),
-        }
+
+        worker_tg_id = resolve_tg_id_for_max_user(int(max_uid))
+        if payload == "worker_reg_profile":
+            w = get_worker_admin_max(worker_tg_id)
+            stats = get_worker_assignment_stats_max(worker_tg_id)
+            if not w:
+                text = "*Мои данные*\n\nПрофиль исполнителя пока не найден."
+            else:
+                text = (
+                    "*Мои данные*\n\n"
+                    f"ФИО: {w.get('full_name') or '—'}\n"
+                    f"Телефон: {w.get('phone') or '—'}\n"
+                    f"Профессия: {w.get('profession') or '—'}\n"
+                    f"Статус: {w.get('status') or '—'}\n"
+                    f"Режим: {w.get('cooperation_mode') or 'agency'}\n"
+                    f"Смен всего: {int(stats.get('assignments_total', 0))}\n"
+                    f"Открытых задач: {int(stats.get('open_tasks', 0))}"
+                )
+            return {
+                "notification": " ",
+                "text": text,
+                "format": "markdown",
+                "attachments": visit_card.worker_registered_main_menu_keyboard(),
+            }
+        if payload == "worker_reg_payments":
+            rows = list_worker_payments_for_worker_max(worker_tg_id, limit=20)
+            if not rows:
+                text = "*Мои выплаты*\n\nВыплат пока нет."
+            else:
+                lines = ["*Мои выплаты*", ""]
+                for row in rows[:20]:
+                    st = str(row.get("status") or "")
+                    lines.append(
+                        f"• #{int(row.get('id') or 0)} · {float(row.get('amount_rub') or 0):.2f} "
+                        f"{row.get('currency') or 'RUB'} · "
+                        f"{PAYMENT_STATUS_LABELS_RU.get(st, st or '—')}\n"
+                        f"  {(row.get('title') or 'Выплата')} · {row.get('created_at') or '—'}"
+                    )
+                text = "\n".join(lines)[:3900]
+            return {
+                "notification": " ",
+                "text": text,
+                "format": "markdown",
+                "attachments": visit_card.worker_registered_main_menu_keyboard(),
+            }
+        if payload == "worker_reg_beacon":
+            st = get_worker_beacon_state_max(worker_tg_id)
+            active = bool(st.get("is_active"))
+            text = (
+                "*Маяк*\n\n"
+                f"Статус: {'🟢 Включен' if active else '⚪ Выключен'}\n"
+                f"Включен с: {st.get('enabled_at') or '—'}\n"
+                f"До: {st.get('expires_at') or '—'}"
+            )
+            kb_rows = [
+                [cb_btn("🟢 Включить на 24ч", "worker_beacon_on")],
+                [cb_btn("⚪ Выключить", "worker_beacon_off")],
+                [cb_btn("🔙 Меню исполнителя", "main_menu")],
+            ]
+            return {
+                "notification": " ",
+                "text": text,
+                "format": "markdown",
+                "attachments": inline_keyboard(kb_rows),
+            }
+        if payload == "worker_beacon_on":
+            ok = enable_worker_beacon_max(worker_tg_id, hours=24)
+            if not ok:
+                return {
+                    "notification": "Ошибка",
+                    "text": "Не удалось включить маяк.",
+                    "format": "markdown",
+                    "attachments": visit_card.worker_registered_main_menu_keyboard(),
+                }
+            log_admin_action_max(int(max_uid), "worker_beacon_on", "worker", int(worker_tg_id), "via_max")
+            return registered_menu_static_reply(max_uid, "worker_reg_beacon")
+        if payload == "worker_beacon_off":
+            ok = disable_worker_beacon_max(worker_tg_id)
+            if not ok:
+                return {
+                    "notification": "Ошибка",
+                    "text": "Не удалось выключить маяк.",
+                    "format": "markdown",
+                    "attachments": visit_card.worker_registered_main_menu_keyboard(),
+                }
+            log_admin_action_max(int(max_uid), "worker_beacon_off", "worker", int(worker_tg_id), "via_max")
+            return registered_menu_static_reply(max_uid, "worker_reg_beacon")
+        if payload == "worker_reg_shifts":
+            rows = list_worker_shifts_max(worker_tg_id, limit=20)
+            return {
+                "notification": " ",
+                "text": _worker_shift_list_text(rows),
+                "format": "markdown",
+                "attachments": _worker_shift_list_keyboard(rows),
+            }
+        if re.match(r"^worker_shift_(\d+)$", payload or ""):
+            m = re.match(r"^worker_shift_(\d+)$", payload or "")
+            sid = int(m.group(1))
+            auto_close_expired_breaks_max()
+            card = get_worker_shift_assignment_max(sid, worker_tg_id)
+            if not card:
+                return {
+                    "notification": "Не найдено",
+                    "text": "Смена не найдена или не назначена вам.",
+                    "format": "markdown",
+                    "attachments": visit_card.worker_registered_main_menu_keyboard(),
+                }
+            active_break = get_active_break_max(sid, worker_tg_id)
+            bstats = get_worker_break_stats_max(sid, worker_tg_id)
+            return {
+                "notification": " ",
+                "text": _worker_shift_detail_text(card, active_break, bstats),
+                "format": "markdown",
+                "attachments": _worker_shift_detail_keyboard(card, active_break),
+            }
+        if payload.startswith("worker_shift_confirm_"):
+            m = re.match(r"^worker_shift_confirm_(\d+)$", payload or "")
+            if not m:
+                return None
+            sid = int(m.group(1))
+            ok = confirm_worker_shift_max(sid, worker_tg_id)
+            if not ok:
+                return {
+                    "notification": "Ошибка",
+                    "text": "Не удалось подтвердить смену.",
+                    "format": "markdown",
+                    "attachments": visit_card.worker_registered_main_menu_keyboard(),
+                }
+            log_admin_action_max(int(max_uid), "worker_shift_confirm", "shift", sid, f"worker={worker_tg_id}")
+            return registered_menu_static_reply(max_uid, f"worker_shift_{sid}")
+        if payload.startswith("worker_shift_checkin_"):
+            m = re.match(r"^worker_shift_checkin_(\d+)$", payload or "")
+            if not m:
+                return None
+            sid = int(m.group(1))
+            card = get_worker_shift_assignment_max(sid, worker_tg_id)
+            if not card:
+                return {
+                    "notification": "Не найдено",
+                    "text": "Смена не найдена или не назначена вам.",
+                    "format": "markdown",
+                    "attachments": visit_card.worker_registered_main_menu_keyboard(),
+                }
+            SESSIONS[int(max_uid)] = {
+                "flow": "worker_shift",
+                "step": "checkin_geo",
+                "data": {"shift_id": sid},
+            }
+            return {
+                "notification": "Чекин",
+                "text": (
+                    f"*Чекин · смена #{sid}*\n\n"
+                    "Шаг 1/2: отправьте геолокацию (или координаты текстом: `55.751244, 37.618423`)."
+                ),
+                "format": "markdown",
+                "attachments": inline_keyboard([[cb_btn("❌ Отмена", "main_menu")], [cb_btn("🔙 К смене", f"worker_shift_{sid}")]]),
+            }
+        if payload.startswith("worker_shift_checkout_"):
+            m = re.match(r"^worker_shift_checkout_(\d+)$", payload or "")
+            if not m:
+                return None
+            sid = int(m.group(1))
+            card = get_worker_shift_assignment_max(sid, worker_tg_id)
+            if not card:
+                return {
+                    "notification": "Не найдено",
+                    "text": "Смена не найдена или не назначена вам.",
+                    "format": "markdown",
+                    "attachments": visit_card.worker_registered_main_menu_keyboard(),
+                }
+            SESSIONS[int(max_uid)] = {
+                "flow": "worker_shift",
+                "step": "checkout_geo",
+                "data": {"shift_id": sid},
+            }
+            return {
+                "notification": "Чекаут",
+                "text": (
+                    f"*Чекаут · смена #{sid}*\n\n"
+                    "Шаг 1/2: отправьте геолокацию (или координаты текстом: `55.751244, 37.618423`)."
+                ),
+                "format": "markdown",
+                "attachments": inline_keyboard([[cb_btn("❌ Отмена", "main_menu")], [cb_btn("🔙 К смене", f"worker_shift_{sid}")]]),
+            }
+        if payload.startswith("worker_break_menu_"):
+            m = re.match(r"^worker_break_menu_(\d+)$", payload or "")
+            if not m:
+                return None
+            sid = int(m.group(1))
+            active_break = get_active_break_max(sid, worker_tg_id)
+            kb_rows = [
+                [cb_btn("🍽 Обед", f"worker_break_start_{sid}_lunch")],
+                [cb_btn("🚬 Перекур", f"worker_break_start_{sid}_smoke")],
+                [cb_btn("🛠 Тех. перерыв", f"worker_break_start_{sid}_tech")],
+                [cb_btn("⏹ Завершить текущий", f"worker_break_stop_{sid}")],
+                [cb_btn("🔙 К смене", f"worker_shift_{sid}")],
+            ]
+            text = "*Перерывы*\n\nВыберите действие."
+            if active_break:
+                bt = str(active_break.get("break_type") or "")
+                text += (
+                    f"\n\nСейчас активен: {BREAK_TYPE_LABELS_RU.get(bt, bt)}"
+                    f"\nСтарт: {active_break.get('started_at') or '—'}"
+                )
+            return {"notification": " ", "text": text, "format": "markdown", "attachments": inline_keyboard(kb_rows)}
+        if payload.startswith("worker_break_start_"):
+            m = re.match(r"^worker_break_start_(\d+)_(lunch|smoke|tech)$", payload or "")
+            if not m:
+                return None
+            sid = int(m.group(1))
+            bt = m.group(2)
+            card = get_worker_shift_assignment_max(sid, worker_tg_id) or {}
+            if not card or str(card.get("assignment_status") or "") != "checked_in":
+                return {
+                    "notification": "Недоступно",
+                    "text": "Перерыв доступен только после чек-ина на смене.",
+                    "format": "markdown",
+                    "attachments": inline_keyboard([[cb_btn("🔙 К смене", f"worker_shift_{sid}")]]),
+                }
+            stats = get_worker_break_stats_max(sid, worker_tg_id)
+            err = _break_start_validation_message_max(card, stats, bt)
+            if err:
+                return {
+                    "notification": "Недоступно",
+                    "text": err,
+                    "format": "markdown",
+                    "attachments": inline_keyboard([[cb_btn("🔙 К смене", f"worker_shift_{sid}")]]),
+                }
+            ok = start_worker_break_max(sid, worker_tg_id, bt)
+            if not ok:
+                return {
+                    "notification": "Ошибка",
+                    "text": "Не удалось начать перерыв (возможно, уже есть активный).",
+                    "format": "markdown",
+                    "attachments": inline_keyboard([[cb_btn("🔙 К смене", f"worker_shift_{sid}")]]),
+                }
+            log_admin_action_max(
+                int(max_uid),
+                "worker_break_start",
+                "shift",
+                sid,
+                f"worker={worker_tg_id};type={bt}",
+            )
+            return registered_menu_static_reply(max_uid, f"worker_shift_{sid}")
+        if payload.startswith("worker_break_stop_"):
+            m = re.match(r"^worker_break_stop_(\d+)$", payload or "")
+            if not m:
+                return None
+            sid = int(m.group(1))
+            ok = stop_worker_break_max(sid, worker_tg_id)
+            if not ok:
+                return {
+                    "notification": "Ошибка",
+                    "text": "Активный перерыв не найден.",
+                    "format": "markdown",
+                    "attachments": inline_keyboard([[cb_btn("🔙 К смене", f"worker_shift_{sid}")]]),
+                }
+            log_admin_action_max(int(max_uid), "worker_break_stop", "shift", sid, f"worker={worker_tg_id}")
+            return registered_menu_static_reply(max_uid, f"worker_shift_{sid}")
 
     return None
 
@@ -2947,6 +3704,8 @@ async def process_callback(
             "worker_reg_shifts",
             "worker_reg_payments",
             "worker_reg_beacon",
+            "worker_beacon_on",
+            "worker_beacon_off",
         }
     )
     if payload in _reg_payloads or payload.startswith(
@@ -2959,6 +3718,10 @@ async def process_callback(
             "admin_hrm_payment_",
             "admin_hrm_paystatus_",
             "admin_hrm_worker_detail_",
+            "worker_shift_",
+            "worker_break_menu_",
+            "worker_break_start_",
+            "worker_break_stop_",
         )
     ):
         return registered_menu_static_reply(max_uid, payload)
@@ -4147,6 +4910,89 @@ async def process_text(
         if blocked:
             return blocked
         return None
+
+    if flow == "worker_shift":
+        sid = int((data.get("shift_id") or 0))
+        if sid <= 0:
+            clear_session(max_uid)
+            return {
+                "notification": "Ошибка",
+                "text": "Не удалось определить смену. Откройте раздел «Мои смены» снова.",
+                "format": "markdown",
+                "attachments": visit_card.worker_registered_main_menu_keyboard(),
+            }
+        worker_tg_id = resolve_tg_id_for_max_user(int(max_uid))
+        if step in ("checkin_geo", "checkout_geo"):
+            loc = _location_from_body(message_body, text)
+            if not loc:
+                return {
+                    "notification": "Нужна геолокация",
+                    "text": (
+                        f"*Смена #{sid}*\n\n"
+                        "Не вижу координаты. Отправьте геолокацию или введите координаты текстом "
+                        "в формате `55.751244, 37.618423`."
+                    ),
+                    "format": "markdown",
+                    "attachments": inline_keyboard([[cb_btn("🔙 К смене", f"worker_shift_{sid}")], [cb_btn("🏠 Меню", "main_menu")]]),
+                }
+            data["geo_lat"] = float(loc[0])
+            data["geo_lng"] = float(loc[1])
+            if step == "checkin_geo":
+                s["step"] = "checkin_photo"
+                return {
+                    "notification": "Шаг 2",
+                    "text": (
+                        f"*Чекин · смена #{sid}*\n\n"
+                        "Шаг 2/2: отправьте фото (селфи на точке)."
+                    ),
+                    "format": "markdown",
+                    "attachments": inline_keyboard([[cb_btn("🔙 К смене", f"worker_shift_{sid}")], [cb_btn("🏠 Меню", "main_menu")]]),
+                }
+            s["step"] = "checkout_photo"
+            return {
+                "notification": "Шаг 2",
+                "text": (
+                    f"*Чекаут · смена #{sid}*\n\n"
+                    "Шаг 2/2: отправьте фото с завершения смены."
+                ),
+                "format": "markdown",
+                "attachments": inline_keyboard([[cb_btn("🔙 К смене", f"worker_shift_{sid}")], [cb_btn("🏠 Меню", "main_menu")]]),
+            }
+        if step in ("checkin_photo", "checkout_photo"):
+            photo_ref = _image_ref_from_body(message_body)
+            if not photo_ref:
+                return {
+                    "notification": "Нужно фото",
+                    "text": "Пришлите фото вложением, чтобы завершить операцию.",
+                    "format": "markdown",
+                    "attachments": inline_keyboard([[cb_btn("🔙 К смене", f"worker_shift_{sid}")], [cb_btn("🏠 Меню", "main_menu")]]),
+                }
+            lat = float(data.get("geo_lat") or 0.0)
+            lng = float(data.get("geo_lng") or 0.0)
+            loc_s = f"{lat:.6f},{lng:.6f}" if lat and lng else None
+            if step == "checkin_photo":
+                ok = checkin_worker_shift_max(sid, worker_tg_id, photo_url=photo_ref, checkin_location=loc_s)
+                if not ok:
+                    return {
+                        "notification": "Ошибка",
+                        "text": "Не удалось выполнить чекин. Проверьте статус смены и попробуйте снова.",
+                        "format": "markdown",
+                        "attachments": inline_keyboard([[cb_btn("🔙 К смене", f"worker_shift_{sid}")], [cb_btn("🏠 Меню", "main_menu")]]),
+                    }
+                log_admin_action_max(int(max_uid), "worker_checkin", "shift", sid, f"worker={worker_tg_id};loc={loc_s or '-'}")
+                clear_session(max_uid)
+                return registered_menu_static_reply(max_uid, f"worker_shift_{sid}")
+            ok = checkout_worker_shift_max(sid, worker_tg_id, photo_url=photo_ref, checkout_location=loc_s)
+            if not ok:
+                return {
+                    "notification": "Ошибка",
+                    "text": "Не удалось выполнить чекаут. Проверьте статус смены и попробуйте снова.",
+                    "format": "markdown",
+                    "attachments": inline_keyboard([[cb_btn("🔙 К смене", f"worker_shift_{sid}")], [cb_btn("🏠 Меню", "main_menu")]]),
+                }
+            log_admin_action_max(int(max_uid), "worker_checkout", "shift", sid, f"worker={worker_tg_id};loc={loc_s or '-'}")
+            clear_session(max_uid)
+            return registered_menu_static_reply(max_uid, f"worker_shift_{sid}")
 
     if step == "consent":
         if flow == "client_visit":
