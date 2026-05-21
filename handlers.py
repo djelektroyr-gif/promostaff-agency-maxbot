@@ -125,6 +125,15 @@ def _remove_registration_exit_buttons(attachments: Any) -> Any:
     if not isinstance(attachments, list) or not attachments:
         return attachments
     out: list[Any] = []
+    blocked_payloads = {
+        "main_menu",
+        "back_to_main",
+        "visit_public_menu",
+        "consent_client_visit_accept",
+        "consent_join_accept",
+        "consent_order_accept",
+        "consent_question_accept",
+    }
     for item in attachments:
         if not isinstance(item, dict):
             out.append(item)
@@ -137,6 +146,26 @@ def _remove_registration_exit_buttons(attachments: Any) -> Any:
         if not isinstance(buttons, list):
             out.append(item)
             continue
+        has_consent_gate = False
+        for row in buttons:
+            if not isinstance(row, list):
+                continue
+            for btn in row:
+                if not isinstance(btn, dict):
+                    continue
+                p0 = str(btn.get("payload") or "").strip()
+                if p0 in {
+                    "consent_client_visit_accept",
+                    "consent_join_accept",
+                    "consent_order_accept",
+                    "consent_question_accept",
+                }:
+                    has_consent_gate = True
+                    break
+            if has_consent_gate:
+                break
+        if has_consent_gate:
+            continue
         new_buttons: list[list[dict[str, Any]]] = []
         for row in buttons:
             if not isinstance(row, list):
@@ -146,7 +175,7 @@ def _remove_registration_exit_buttons(attachments: Any) -> Any:
                 if not isinstance(btn, dict):
                     continue
                 p = str(btn.get("payload") or "").strip()
-                if p in {"main_menu", "back_to_main"}:
+                if p in blocked_payloads:
                     continue
                 new_row.append(btn)
             if new_row:
@@ -171,6 +200,41 @@ def _strip_registration_escape_keyboard(max_uid: int, reply: dict[str, Any]) -> 
         return reply
     out = dict(reply)
     out["attachments"] = _remove_registration_exit_buttons(out.get("attachments"))
+    if flow == "join":
+        # Чистый экран в мастере исполнителя: на текстовых шагах не держим inline-кнопки.
+        join_text_only_steps = {
+            "full_name",
+            "phone",
+            "birth_date",
+            "tax_se_inn",
+            "tax_fl_inn",
+            "tax_ip_inn",
+            "snils",
+            "contact_email",
+            "gph_bank_name",
+            "gph_bik",
+            "gph_settlement_account",
+            "gph_corr_account",
+            "experience_desc",
+            "param_height",
+            "param_weight",
+            "param_shoe",
+            "medbook_number",
+            "skills",
+            "city",
+            "work_metro",
+            "passport_sn",
+            "passport_issued_by",
+            "passport_issued_on",
+            "registration_address",
+            "portfolio_url",
+            "portfolio_pdf",
+            "selfie",
+            "passport_main",
+            "passport_reg",
+        }
+        if step in join_text_only_steps:
+            out["attachments"] = []
     if _is_escape_only_keyboard(out.get("attachments")):
         # В MAX при отсутствии attachments у callback-ответа старая клавиатура может остаться.
         # Передаём пустой список, чтобы явно очистить кнопки предыдущего шага.

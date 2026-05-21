@@ -1650,6 +1650,11 @@ def _client_visit_preview_text(data: dict[str, Any]) -> str:
     )
 
 
+def _client_visit_input_reply(text: str) -> dict[str, Any]:
+    """Чистый экран: без лишних клавиатур на текстовых шагах регистрации заказчика."""
+    return {"text": text, "format": "markdown", "attachments": []}
+
+
 def _format_client_registration_plain(data: dict[str, Any], who: str) -> str:
     m = "—"
     return (
@@ -2339,6 +2344,7 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
         "admin_sys_admin_logs",
         "admin_sys_monitor",
         "admin_sys_subscriptions_expiring",
+        "admin_sys_web_admin",
         "admin_phone_login_btn",
         "admin_identity_dupes",
     }
@@ -2655,6 +2661,36 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
                 "text": "\n".join(lines)[:3900],
                 "format": "markdown",
                 "attachments": visit_card.admin_hub_system_keyboard(),
+            }
+        if payload == "admin_sys_web_admin":
+            from admin_web_login_link import build_admin_ui_login_url
+
+            url, err = build_admin_ui_login_url()
+            if not url:
+                return {
+                    "notification": "Ошибка",
+                    "text": (
+                        "*Web admin MAX*\n\n"
+                        f"{(err or 'Не удалось подготовить ссылку.')}\n\n"
+                        "Проверьте переменные окружения и повторите попытку."
+                    ),
+                    "format": "markdown",
+                    "attachments": visit_card.admin_hub_system_keyboard(),
+                }
+            return {
+                "notification": " ",
+                "text": (
+                    "*Web admin MAX*\n\n"
+                    "Откройте защищённую ссылку в браузере.\n"
+                    "Токен подставлен автоматически, вручную вводить ничего не нужно."
+                ),
+                "format": "markdown",
+                "attachments": inline_keyboard(
+                    [
+                        [link_btn("🌐 Открыть MAX web admin", url)],
+                        [cb_btn("🔙 System", "admin_hub_system")],
+                    ]
+                ),
             }
         if payload == "admin_hrm_join_recent":
             rows = list_visit_rows("join", limit=12)
@@ -4042,16 +4078,13 @@ async def process_callback(
         if keep.get("canonical_user_tg_id"):
             data["canonical_user_tg_id"] = keep["canonical_user_tg_id"]
         s["step"] = "company_name"
-        return {
-            "notification": "Согласие принято ✅",
-            "text": (
-                "Давайте познакомимся.\n\n"
-                "Укажите *название юрлица заказчика*.\n\n"
-                "_Образец:_ `ООО «Ромашка»`"
-            ),
-            "format": "markdown",
-            "attachments": visit_card.back_to_main_keyboard(),
-        }
+        out = _client_visit_input_reply(
+            "Давайте познакомимся.\n\n"
+            "Укажите *название юрлица заказчика*.\n\n"
+            "_Образец:_ `ООО «Ромашка»`"
+        )
+        out["notification"] = "Согласие принято ✅"
+        return out
 
     if flow == "client_visit" and step == "confirm" and payload == "confirm_client_visit_yes":
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
@@ -4108,41 +4141,29 @@ async def process_callback(
         data["visit_reg_edit_code"] = edit_code
         if edit_code == "c":
             s["step"] = "company_name"
-            return {
-                "text": "Укажите *название юрлица заказчика*.\n\n_Образец:_ `ООО «Ромашка»`",
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            return _client_visit_input_reply(
+                "Укажите *название юрлица заказчика*.\n\n_Образец:_ `ООО «Ромашка»`"
+            )
         if edit_code == "i":
             s["step"] = "inn"
-            return {
-                "text": "Укажите *ИНН юрлица* (10 или 12 цифр).\n\n_Образец:_ `7707083893`",
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            return _client_visit_input_reply(
+                "Укажите *ИНН юрлица* (10 или 12 цифр).\n\n_Образец:_ `7707083893`"
+            )
         if edit_code == "n":
             s["step"] = "contact_name"
-            return {
-                "text": "Введите *ФИО контактного лица*.\n\n_Образец:_ `Иванов Иван Иванович`",
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            return _client_visit_input_reply(
+                "Введите *ФИО контактного лица*.\n\n_Образец:_ `Иванов Иван Иванович`"
+            )
         if edit_code == "p":
             s["step"] = "phone"
-            return {
-                "text": (
-                    "Отправьте *телефон контактного лица* кнопкой ниже или введите вручную.\n\n"
-                    "_Образец:_ `+79001234567`"
-                ),
-                "format": "markdown",
-                "attachments": phone_input_keyboard(),
-            }
+            return _client_visit_input_reply(
+                "Введите *телефон контактного лица*.\n\n"
+                "_Образец:_ `+79001234567`"
+            )
         s["step"] = "email"
-        return {
-            "text": "Введите *email* контактного лица.\n\n_Образец:_ `client@company.ru`",
-            "format": "markdown",
-            "attachments": visit_card.back_to_main_keyboard(),
-        }
+        return _client_visit_input_reply(
+            "Введите *email* контактного лица.\n\n_Образец:_ `client@company.ru`"
+        )
 
     if flow == "client_visit" and step == "confirm" and payload == "visitreg_back":
         data.pop("visit_reg_edit_code", None)
@@ -4404,10 +4425,23 @@ async def process_callback(
             to_save["event_type"] = f"Объявление: {role[:120]}"
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
         public_ref = "—"
+        saved_order_id: int | None = None
         try:
-            _, public_ref = save_visit_order_payload(max_uid, str(username or ""), to_save)
+            saved_order_id, public_ref = save_visit_order_payload(
+                max_uid, str(username or ""), to_save
+            )
         except Exception:
             logger.exception("save_visit_order_payload listing")
+        if not saved_order_id:
+            return {
+                "notification": "Не удалось отправить",
+                "text": (
+                    "Не удалось сохранить заявку на объявление. Попробуйте ещё раз чуть позже.\n\n"
+                    "Данные не потеряны — можно нажать «Подтвердить и отправить» повторно."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.listing_confirm_keyboard(),
+            }
         _schedule_notify(f"Новая заявка на объявление #{oid}", _format_listing_plain(to_save, oid, who))
         ref_show = (
             public_ref if public_ref not in (None, "OFFLINE", "—") else f"внутр. #{oid}"
@@ -4725,13 +4759,26 @@ async def process_callback(
         oid = _new_id()
         to_save = dict(data)
         to_save["order_kind"] = "cp_request"
-        plain = _format_cp_plain(to_save, oid, who)
+        plain = _format_cp_plain(to_save, who)
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
         public_ref = "—"
+        saved_order_id: int | None = None
         try:
-            _, public_ref = save_visit_order_payload(max_uid, str(username or ""), to_save)
+            saved_order_id, public_ref = save_visit_order_payload(
+                max_uid, str(username or ""), to_save
+            )
         except Exception:
             logger.exception("save_visit_order_payload cp")
+        if not saved_order_id:
+            return {
+                "notification": "Не удалось отправить",
+                "text": (
+                    "Не удалось сохранить заявку на КП. Попробуйте ещё раз чуть позже.\n\n"
+                    "Данные не потеряны — можно нажать «Подтвердить и отправить» повторно."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.cp_confirm_keyboard(),
+            }
         _schedule_notify(f"Новая заявка на КП #{oid}", plain)
         ref_show = (
             public_ref if public_ref not in (None, "OFFLINE", "—") else f"внутр. #{oid}"
@@ -4789,6 +4836,7 @@ async def process_callback(
             }
         oid = _new_id()
         to_save = dict(data)
+        to_save["order_kind"] = "quick_estimate"
         sc = int(to_save.get("supervisor_count") or 0)
         if sc > 0:
             scounts = dict(to_save.get("staff_counts") or {})
@@ -4801,21 +4849,38 @@ async def process_callback(
         to_save["cost_meta"] = meta
         plain = _format_order_plain(to_save, oid, who)
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
+        saved_order_id: int | None = None
+        public_ref = "—"
         try:
-            save_visit_order(max_uid, str(username or ""), json.dumps(to_save, ensure_ascii=False))
+            saved_order_id, public_ref = save_visit_order_payload(
+                max_uid, str(username or ""), to_save
+            )
         except Exception:
-            logger.exception("save_visit_order")
+            logger.exception("save_visit_order_payload quick")
+        if not saved_order_id:
+            return {
+                "notification": "Не удалось отправить",
+                "text": (
+                    "Не удалось сохранить заявку на расчёт. Попробуйте ещё раз чуть позже.\n\n"
+                    "Данные не потеряны — можно нажать «Подтвердить и отправить» повторно."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.order_confirm_keyboard(),
+            }
         _schedule_notify(f"Новая заявка на расчёт #{oid}", plain)
+        ref_show = (
+            public_ref if public_ref not in (None, "OFFLINE", "—") else f"внутр. #{oid}"
+        )
         funnel_touch_complete(max_uid)
         clear_session(max_uid)
         return {
             "notification": "✅ Заявка у команды. Менеджер свяжется для уточнения деталей и точной сметы.",
             "text": (
-                f"*Заявка #{oid} принята.*\n\n"
+                f"*Заявка на расчёт принята.* Номер: `{ref_show}`\n\n"
                 "Спасибо! Менеджер свяжется с вами в ближайшее время.\n\n"
             ),
             "format": "markdown",
-            "attachments": visit_card.main_menu_keyboard(),
+            "attachments": visit_card.client_registered_main_menu_keyboard(),
         }
 
     if flow == "order" and step == "confirm" and payload == "edit_order":
@@ -5340,11 +5405,7 @@ async def process_text(
         if step == "company_name":
             t = text.strip()
             if len(t) < 2:
-                return {
-                    "text": "❌ Введите название организации (минимум 2 символа).",
-                    "format": "markdown",
-                    "attachments": visit_card.back_to_main_keyboard(),
-                }
+                return _client_visit_input_reply("❌ Введите название организации (минимум 2 символа).")
             data["company_name"] = t
             if (data.get("visit_reg_edit_code") or "").strip().lower() == "c":
                 data.pop("visit_reg_edit_code", None)
@@ -5355,19 +5416,13 @@ async def process_text(
                     "attachments": visit_card.client_reg_confirm_keyboard(),
                 }
             s["step"] = "inn"
-            return {
-                "text": "Укажите *ИНН юрлица* (10 или 12 цифр).\n\n_Образец:_ `7707083893`",
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            return _client_visit_input_reply(
+                "Укажите *ИНН юрлица* (10 или 12 цифр).\n\n_Образец:_ `7707083893`"
+            )
         if step == "inn":
             raw = text.strip()
             if not validate_inn(raw):
-                return {
-                    "text": "❌ ИНН должен содержать 10 или 12 цифр.",
-                    "format": "markdown",
-                    "attachments": visit_card.back_to_main_keyboard(),
-                }
+                return _client_visit_input_reply("❌ ИНН должен содержать 10 или 12 цифр.")
             data["inn"] = re.sub(r"\D", "", raw)
             if (data.get("visit_reg_edit_code") or "").strip().lower() == "i":
                 data.pop("visit_reg_edit_code", None)
@@ -5378,18 +5433,14 @@ async def process_text(
                     "attachments": visit_card.client_reg_confirm_keyboard(),
                 }
             s["step"] = "contact_name"
-            return {
-                "text": "Введите *ФИО контактного лица*.\n\n_Образец:_ `Иванов Иван Иванович`",
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            return _client_visit_input_reply(
+                "Введите *ФИО контактного лица*.\n\n_Образец:_ `Иванов Иван Иванович`"
+            )
         if step == "contact_name":
             if not validate_full_name(text):
-                return {
-                    "text": "❌ Введите полное ФИО (минимум 2 слова, кириллица или латиница).",
-                    "format": "markdown",
-                    "attachments": visit_card.back_to_main_keyboard(),
-                }
+                return _client_visit_input_reply(
+                    "❌ Введите полное ФИО (минимум 2 слова, кириллица или латиница)."
+                )
             data["contact_name"] = text.strip()
             if (data.get("visit_reg_edit_code") or "").strip().lower() == "n":
                 data.pop("visit_reg_edit_code", None)
@@ -5400,36 +5451,19 @@ async def process_text(
                     "attachments": visit_card.client_reg_confirm_keyboard(),
                 }
             s["step"] = "position_in_org"
-            return {
-                "text": "Укажите *вашу должность* в организации:",
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            return _client_visit_input_reply("Укажите *вашу должность* в организации:")
         if step == "position_in_org":
             t = text.strip()
             if len(t) < 2:
-                return {
-                    "text": "❌ Укажите должность (минимум 2 символа).",
-                    "format": "markdown",
-                    "attachments": visit_card.back_to_main_keyboard(),
-                }
+                return _client_visit_input_reply("❌ Укажите должность (минимум 2 символа).")
             data["position_in_org"] = t
             s["step"] = "phone"
-            return {
-                "text": (
-                    "Отправьте *телефон контактного лица* кнопкой ниже или введите вручную.\n\n"
-                    "_Образец:_ `+79001234567`"
-                ),
-                "format": "markdown",
-                "attachments": phone_input_keyboard(),
-            }
+            return _client_visit_input_reply(
+                "Введите *телефон контактного лица*.\n\n_Образец:_ `+79001234567`"
+            )
         if step == "email":
             if not validate_email(text.strip()):
-                return {
-                    "text": "❌ Введите корректный email. Пример: client@company.ru",
-                    "format": "markdown",
-                    "attachments": visit_card.back_to_main_keyboard(),
-                }
+                return _client_visit_input_reply("❌ Введите корректный email. Пример: client@company.ru")
             data["contact_email"] = text.strip()
             data.pop("visit_reg_edit_code", None)
             s["step"] = "confirm"
@@ -5441,14 +5475,9 @@ async def process_text(
         if step == "phone":
             v = _extract_phone_from_incoming(text, message_body) or validate_phone(text)
             if not v:
-                return {
-                    "text": (
-                        "❌ Не удалось распознать номер. Нажмите *Поделиться контактом* "
-                        "или введите +7XXXXXXXXXX."
-                    ),
-                    "format": "markdown",
-                    "attachments": phone_input_keyboard(),
-                }
+                return _client_visit_input_reply(
+                    "❌ Не удалось распознать номер. Введите номер в формате +7XXXXXXXXXX."
+                )
             data["phone"] = v
             blocked = _phone_resolve_or_none(max_uid, s, v, "client")
             if blocked:
@@ -5462,15 +5491,11 @@ async def process_text(
                     "attachments": visit_card.client_reg_confirm_keyboard(),
                 }
             s["step"] = "email"
-            return {
-                "text": (
-                    "Номер сохранён.\n\n"
-                    "Введите *email* контактного лица.\n\n"
-                    "_Образец:_ `client@company.ru`"
-                ),
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            return _client_visit_input_reply(
+                "Номер сохранён.\n\n"
+                "Введите *email* контактного лица.\n\n"
+                "_Образец:_ `client@company.ru`"
+            )
         if step == "confirm":
             return {
                 "text": "Используйте кнопки под сообщением: подтвердить или заполнить заново.",
@@ -5488,10 +5513,20 @@ async def process_text(
         qid = _new_id()
         plain = _format_question_plain(text, qid, who)
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
+        saved_question_id: int | None = None
         try:
-            save_visit_question(max_uid, str(username or ""), text)
+            saved_question_id = save_visit_question(max_uid, str(username or ""), text)
         except Exception:
             logger.exception("save_visit_question")
+        if not saved_question_id:
+            return {
+                "text": (
+                    "Не удалось отправить сообщение менеджеру. Попробуйте ещё раз.\n\n"
+                    "Ваш текст сохранён в этом экране, можно отправить повторно."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
         _schedule_notify(f"Новый вопрос #{qid}", plain)
         clear_session(max_uid)
         return {
@@ -5808,20 +5843,9 @@ async def process_text(
 
     if flow == "join":
         if step == "anketa_invite":
-            return {
-                "text": (
-                    "Нажмите *«Заполнить анкету»* под предыдущим сообщением "
-                    "или вернитесь в главное меню."
-                ),
-                "format": "markdown",
-                "attachments": visit_card.join_anketa_invite_keyboard(),
-            }
+            return None
         if step == "profession_category":
-            return {
-                "text": "Продолжите выбор кнопками в сообщении выше.",
-                "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
-            }
+            return None
         if step == "profession_custom":
             t = text.strip()
             if len(t) < 2:
@@ -5842,16 +5866,7 @@ async def process_text(
                 }
             return _join_goto_profession_summary(s, data, notification="✅ Профессию записали")
         if step == "profession_summary":
-            return {
-                "text": (
-                    "Нажмите кнопку под сообщением: добавить профессию, "
-                    "перейти к ФИО или вернитесь в меню."
-                ),
-                "format": "markdown",
-                "attachments": visit_card.profession_summary_keyboard(
-                    edit_mode=bool(data.get("join_edit_mode"))
-                ),
-            }
+            return None
         if step == "full_name":
             if not data.get("join_consent_accepted"):
                 return {
@@ -6072,11 +6087,7 @@ async def process_text(
             return _join_prompt_selfie()
 
         if step == "portfolio_menu":
-            return {
-                "text": "Выберите вариант кнопками под предыдущим сообщением.",
-                "format": "markdown",
-                "attachments": visit_card.join_portfolio_menu_keyboard(),
-            }
+            return None
 
         if step == "tax_ip_inn":
             if not visit_join_validators.validate_inn_digits(text):
@@ -6127,23 +6138,11 @@ async def process_text(
                 "attachments": visit_card.tax_ip_actions_keyboard(),
             }
         if step == "tax_menu":
-            return {
-                "text": "Выберите налоговый статус кнопками ниже.",
-                "format": "markdown",
-                "attachments": visit_card.join_tax_status_keyboard(),
-            }
+            return None
         if step == "tax_fl_menu":
-            return {
-                "text": "Выберите вариант кнопками ниже.",
-                "format": "markdown",
-                "attachments": visit_card.tax_fl_followup_keyboard(),
-            }
+            return None
         if step == "experience_pick":
-            return {
-                "text": "Выберите уровень опыта кнопками под предыдущим сообщением.",
-                "format": "markdown",
-                "attachments": visit_card.experience_level_keyboard(),
-            }
+            return None
         if step == "experience_desc":
             t = text.strip()
             if len(t) < 30:
@@ -6485,10 +6484,6 @@ async def process_text(
             data["metro_station"] = text.strip()
             return _join_go_to_review(s, data)
         if step == "review_submit":
-            return {
-                "text": "Используйте кнопки под сообщением с проверкой данных.",
-                "format": "markdown",
-                "attachments": visit_card.join_review_keyboard(),
-            }
+            return None
 
     return None

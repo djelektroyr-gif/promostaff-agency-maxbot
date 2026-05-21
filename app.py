@@ -9,12 +9,23 @@ import io
 import json
 import logging
 from contextlib import asynccontextmanager
+from urllib.parse import quote_plus
 
-from fastapi import BackgroundTasks, FastAPI, Query, Request, Form
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+)
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from config import (
     ADMIN_MAX_USER_IDS,
+    ADMIN_UI_TOKEN,
     DATABASE_URL,
     FUNNEL_REMINDERS_ENABLED,
     FUNNEL_REMINDERS_INTERVAL_SEC,
@@ -28,6 +39,31 @@ from visit_flows import get_platform_gate_metrics
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+
+def _extract_bearer_token(authorization: str | None) -> str:
+    raw = (authorization or "").strip()
+    if not raw:
+        return ""
+    if raw.lower().startswith("bearer "):
+        return raw[7:].strip()
+    return ""
+
+
+def _require_admin_ui_auth(
+    token: str | None = Query(default=None),
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> None:
+    expected = (ADMIN_UI_TOKEN or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin endpoints disabled: set ADMIN_UI_TOKEN",
+        )
+    provided = (token or "").strip() or (x_admin_token or "").strip() or _extract_bearer_token(authorization)
+    if provided != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 def _parse_broadcast_filter(raw: str) -> dict[str, str | bool]:
@@ -290,7 +326,7 @@ async def root():
 
 
 @app.get("/admin")
-async def admin():
+async def admin(_auth: None = Depends(_require_admin_ui_auth)):
     funnel = _funnel_metrics()
     visit = _visitcard_metrics()
     ui = _ui_metrics()
@@ -338,11 +374,13 @@ async def admin():
 
 @app.get("/admin/ui", response_class=HTMLResponse)
 async def admin_ui(
+    request: Request,
     run: str | None = Query(default=None),
     confirm: int = Query(default=0),
     visit_kind: str = Query(default="orders"),
     date_from: str = Query(default=""),
     date_to: str = Query(default=""),
+    _auth: None = Depends(_require_admin_ui_auth),
 ):
     action_note = ""
     action_error = ""
@@ -431,6 +469,21 @@ async def admin_ui(
     if dup.get("phone_duplicates_error"):
         db_errors.append(f"Phone duplicates error: {dup['phone_duplicates_error']}")
     db_note = "".join([f"<p class='warn'>{e}</p>" for e in db_errors])
+    token_raw = request.query_params.get("token", "")
+    token_q = f"token={quote_plus(token_raw)}" if token_raw else ""
+    ui_href = f"/admin/ui?{token_q}" if token_q else "/admin/ui"
+    admin_href = f"/admin?{token_q}" if token_q else "/admin"
+    one_shot_href = (
+        f"/admin/ui?run=funnel_scan&confirm=1&{token_q}"
+        if token_q
+        else "/admin/ui?run=funnel_scan&confirm=1"
+    )
+    export_href = (
+        f"/admin/export?kind={visit_kind}&date_from={date_from}&date_to={date_to}&{token_q}"
+        if token_q
+        else f"/admin/export?kind={visit_kind}&date_from={date_from}&date_to={date_to}"
+    )
+    broadcast_action = f"/admin/broadcast?{token_q}" if token_q else "/admin/broadcast"
     return f"""
     <html lang="ru">
       <head>
@@ -460,9 +513,9 @@ async def admin_ui(
         <div class="box">
           <h3>Быстрые действия</h3>
           <a class="btn" href="/health">Health</a>
-          <a class="btn" href="/admin">Admin JSON</a>
-          <a class="btn" href="/admin/ui">Обновить</a>
-          <a class="btn" href="/admin/ui?run=funnel_scan&confirm=1">Запустить one-shot скан напоминаний</a>
+          <a class="btn" href="{admin_href}">Admin JSON</a>
+          <a class="btn" href="{ui_href}">Обновить</a>
+          <a class="btn" href="{one_shot_href}">Запустить one-shot скан напоминаний</a>
           <p class="muted">Для ручного прогона напоминаний используйте запущенный фоновый цикл (FUNNEL_REMINDERS_ENABLED=1).</p>
           {f"<p class='muted'>{action_note}</p>" if action_note else ""}
           {f"<p class='warn'>{action_error}</p>" if action_error else ""}
@@ -483,7 +536,7 @@ async def admin_ui(
         <div class="box">
           <h3>Рассылка вакансии (MAX)</h3>
           <p class="muted">Сегментированная отправка предложения о работе по базе MAX.</p>
-          <form method="post" action="/admin/broadcast">
+          <form method="post" action="{broadcast_action}">
             <label>Фильтр аудитории:</label><br/>
             <input style="width: 100%; max-width: 720px;" name="filter_text" value="all" placeholder="all | priority | position=Хостес | experience=Более 3 лет"/><br/><br/>
             <label>Текст вакансии:</label><br/>
@@ -498,6 +551,7 @@ async def admin_ui(
           <h3>Visitcard leads</h3>
           <p class="muted">Фильтр лидов по типу и дате.</p>
           <form method="get" action="/admin/ui">
+            {f'<input type="hidden" name="token" value="{token_raw}"/>' if token_raw else ""}
             <label>Тип:
               <select name="visit_kind">
                 <option value="orders" {"selected" if visit_kind == "orders" else ""}>orders</option>
@@ -509,7 +563,7 @@ async def admin_ui(
             <label> по: <input name="date_to" value="{date_to}" placeholder="YYYY-MM-DD"/></label>
             <button type="submit">Применить</button>
           </form>
-          <p class="muted"><a href="/admin/export?kind={visit_kind}&date_from={date_from}&date_to={date_to}">Скачать CSV по фильтру</a></p>
+          <p class="muted"><a href="{export_href}">Скачать CSV по фильтру</a></p>
           <table>
             <thead><tr><th>ID</th><th>Дата</th><th>User</th><th>Preview</th></tr></thead>
             <tbody>
@@ -546,6 +600,7 @@ async def admin_export_csv(
     kind: str = Query(default="orders"),
     date_from: str = Query(default=""),
     date_to: str = Query(default=""),
+    _auth: None = Depends(_require_admin_ui_auth),
 ):
     from funnel_db import list_visit_rows
 
@@ -592,6 +647,7 @@ async def admin_broadcast(
     filter_text: str = Form(default="all"),
     message_text: str = Form(default=""),
     action: str = Form(default="preview"),
+    _auth: None = Depends(_require_admin_ui_auth),
 ):
     filt_raw = (filter_text or "all").strip() or "all"
     body = (message_text or "").strip()

@@ -135,7 +135,7 @@ def _client_tg_id_for_max_cp(
 
 
 def _pg_upsert_user_for_max_visit_client(
-    max_user_id: int, username: str, data: dict[str, Any]
+    max_user_id: int, username: str, data: dict[str, Any], company_id: int | None = None
 ) -> None:
     """После регистрации заказчика в MAX — строка в users (нужна для cp_requests и панели)."""
     if not DATABASE_URL:
@@ -149,16 +149,17 @@ def _pg_upsert_user_for_max_visit_client(
                 cur.execute(
                     """
                     INSERT INTO users (
-                        tg_id, max_user_id, role, company_name, contact_person, phone, inn, org_position, full_name,
+                        tg_id, max_user_id, role, company_id, company_name, contact_person, phone, inn, org_position, full_name,
                         pd_consent_at, pd_consent_version, funnel_completed_at, pro_access_at, pro_access_source,
                         updated_at
                     ) VALUES (
-                        %s, %s, 'client', %s, %s, %s, %s, %s, %s,
+                        %s, %s, 'client', %s, %s, %s, %s, %s, %s, %s,
                         NOW(), %s, NOW(), NOW(), %s, NOW()
                     )
                     ON CONFLICT (tg_id) DO UPDATE SET
                         max_user_id = COALESCE(EXCLUDED.max_user_id, users.max_user_id),
                         role = 'client',
+                        company_id = COALESCE(EXCLUDED.company_id, users.company_id),
                         company_name = EXCLUDED.company_name,
                         contact_person = EXCLUDED.contact_person,
                         phone = EXCLUDED.phone,
@@ -175,6 +176,7 @@ def _pg_upsert_user_for_max_visit_client(
                     (
                         tg_row,
                         uid,
+                        company_id,
                         (data.get("company_name") or "").strip(),
                         cn,
                         (data.get("phone") or "").strip(),
@@ -187,6 +189,27 @@ def _pg_upsert_user_for_max_visit_client(
                 )
     except Exception:
         logger.exception("_pg_upsert_user_for_max_visit_client max_uid=%s", uid)
+
+
+def _ensure_company_for_max_client(cur, company_name: str, company_inn: str) -> int | None:
+    """Создаёт/находит company_id для MAX-регистрации заказчика."""
+    name = (company_name or "").strip()
+    if not name:
+        return None
+    inn = (company_inn or "").strip()
+    cur.execute("SELECT id FROM companies WHERE name = %s LIMIT 1", (name,))
+    row = cur.fetchone()
+    if row:
+        cid = int(row[0])
+        if inn:
+            cur.execute("UPDATE companies SET inn = %s WHERE id = %s", (inn, cid))
+        return cid
+    cur.execute(
+        "INSERT INTO companies (name, inn) VALUES (%s, %s) RETURNING id",
+        (name, inn or "0000000000"),
+    )
+    created = cur.fetchone()
+    return int(created[0]) if created and created[0] else None
 
 
 def _sync_cp_request_from_max_visit_order(
@@ -498,6 +521,21 @@ def init_schema() -> None:
                     ) THEN
                         ALTER TABLE agency_max_visit_clients
                         ADD COLUMN contact_email TEXT DEFAULT '';
+                    END IF;
+                END $$;
+                """
+            )
+            cur.execute(
+                """
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = 'agency_max_visit_clients'
+                          AND column_name = 'company_id'
+                    ) THEN
+                        ALTER TABLE agency_max_visit_clients
+                        ADD COLUMN company_id BIGINT;
                     END IF;
                 END $$;
                 """
@@ -962,6 +1000,7 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
     phone = (data.get("phone") or "").strip()
     inn = (data.get("inn") or "").strip()
     cemail = (data.get("contact_email") or "").strip()
+    company_id: int | None = None
     if DATABASE_URL:
         try:
             with connection() as conn:
@@ -969,8 +1008,8 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                     cur.execute(
                         """
                         INSERT INTO agency_max_visit_clients (
-                            max_user_id, username, company_name, contact_name, position_in_org, phone, inn, contact_email
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            max_user_id, username, company_name, contact_name, position_in_org, phone, inn, contact_email, company_id
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL)
                         ON CONFLICT (max_user_id) DO UPDATE SET
                             username = EXCLUDED.username,
                             company_name = EXCLUDED.company_name,
@@ -987,6 +1026,16 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                     )
                     inn_digits = re.sub(r"\D", "", inn)
                     inn_sql = inn_digits if len(inn_digits) in (10, 12) else ""
+                    company_id = _ensure_company_for_max_client(cur, cn, inn_sql)
+                    if company_id:
+                        cur.execute(
+                            """
+                            UPDATE agency_max_visit_clients
+                            SET company_id = %s
+                            WHERE max_user_id = %s
+                            """,
+                            (int(company_id), uid),
+                        )
                     cur.execute(
                         """
                         INSERT INTO visit_clients (
@@ -1011,6 +1060,18 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                         """,
                         (tg_row, cn, contact, phone),
                     )
+                    if company_id:
+                        cur.execute(
+                            """
+                            UPDATE users
+                            SET company_id = %s,
+                                company_name = %s,
+                                contact_person = %s,
+                                updated_at = NOW()
+                            WHERE tg_id = %s
+                            """,
+                            (int(company_id), cn, contact, int(tg_row)),
+                        )
             _pg_upsert_user_for_max_visit_client(
                 uid,
                 un,
@@ -1021,6 +1082,7 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                     "phone": phone,
                     "inn": inn,
                 },
+                company_id=company_id if company_id else None,
             )
             return True
         except Exception:
@@ -3312,7 +3374,7 @@ def get_client_company_id_max(max_user_id: int) -> int | None:
                 cur.execute(
                     """
                     SELECT company_id
-                    FROM max_visit_clients
+                    FROM agency_max_visit_clients
                     WHERE max_user_id = %s AND company_id IS NOT NULL
                     LIMIT 1
                     """,

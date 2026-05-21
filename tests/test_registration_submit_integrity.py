@@ -101,3 +101,86 @@ def test_worker_submit_does_not_fake_success_when_db_save_failed(monkeypatch):
     assert out is not None
     assert "не удалось сохранить анкету" in str(out.get("text") or "").lower()
     assert max_uid in visit_flows.SESSIONS
+
+
+def test_cp_submit_does_not_fake_success_when_db_save_failed(monkeypatch):
+    max_uid = 992004
+    visit_flows.SESSIONS[max_uid] = {
+        "flow": "order",
+        "step": "cp_confirm",
+        "data": {
+            "order_consent_accepted": True,
+            "event_type": "Дегустация",
+            "city": "Москва",
+            "event_date": "01.06.2026",
+        },
+    }
+
+    monkeypatch.setattr(visit_flows, "_gate_client_quote_access", lambda *_a, **_k: None)
+    monkeypatch.setattr(visit_flows, "_order_contact_ready", lambda *_a, **_k: True)
+    monkeypatch.setattr(visit_flows, "save_visit_order_payload", lambda *_a, **_k: (None, "OFFLINE"))
+    monkeypatch.setattr(
+        visit_flows,
+        "_schedule_notify",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("notify should not be called")),
+    )
+
+    out = asyncio.run(visit_flows.process_callback(max_uid, "confirm_cp_order", {"username": "client_u"}))
+    assert out is not None
+    assert "не удалось сохранить заявку на кп" in str(out.get("text") or "").lower()
+    assert max_uid in visit_flows.SESSIONS
+
+
+def test_listing_submit_does_not_fake_success_when_db_save_failed(monkeypatch):
+    max_uid = 992005
+    visit_flows.SESSIONS[max_uid] = {
+        "flow": "order",
+        "step": "listing_confirm",
+        "data": {
+            "order_consent_accepted": True,
+            "listing_role": "Промоутер",
+            "listing_description": "Работа на промо-стойке в ТЦ, полный день",
+            "contact_name": "Иван",
+            "contact_channel": "phone",
+            "phone": "+79990000055",
+        },
+    }
+
+    monkeypatch.setattr(visit_flows, "_gate_client_quote_access", lambda *_a, **_k: None)
+    monkeypatch.setattr(visit_flows, "_order_contact_ready", lambda *_a, **_k: True)
+    monkeypatch.setattr(visit_flows, "save_visit_order_payload", lambda *_a, **_k: (None, "OFFLINE"))
+    monkeypatch.setattr(
+        visit_flows,
+        "_schedule_notify",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("notify should not be called")),
+    )
+
+    out = asyncio.run(
+        visit_flows.process_callback(max_uid, "confirm_listing_order", {"username": "client_u"})
+    )
+    assert out is not None
+    assert "не удалось сохранить заявку на объявление" in str(out.get("text") or "").lower()
+    assert max_uid in visit_flows.SESSIONS
+
+
+def test_question_submit_does_not_fake_success_when_db_save_failed(monkeypatch):
+    max_uid = 992006
+    visit_flows.SESSIONS[max_uid] = {
+        "flow": "question",
+        "step": "text",
+        "data": {"question_consent_accepted": True},
+    }
+
+    monkeypatch.setattr(visit_flows, "save_visit_question", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        visit_flows,
+        "_schedule_notify",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("notify should not be called")),
+    )
+
+    out = asyncio.run(
+        visit_flows.process_text(max_uid, "Подскажите по ставкам", {"username": "client_u"})
+    )
+    assert out is not None
+    assert "не удалось отправить сообщение менеджеру" in str(out.get("text") or "").lower()
+    assert max_uid in visit_flows.SESSIONS

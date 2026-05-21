@@ -74,3 +74,31 @@ def test_keep_non_escape_keyboard_for_join_step():
     assert "tax_back_bd" in payloads
     assert "main_menu" not in payloads
     visit_flows.SESSIONS.pop(uid, None)
+
+
+def test_strip_consent_gate_keyboard_after_client_consent_step():
+    uid = 123501
+    visit_flows.SESSIONS[uid] = {"flow": "client_visit", "step": "company_name", "data": {}}
+    reply = {
+        "text": "Укажите название юрлица заказчика",
+        "format": "markdown",
+        "attachments": visit_card.consent_gate_keyboard("client_visit"),
+    }
+    out = handlers._strip_registration_escape_keyboard(uid, reply)
+    assert out.get("attachments") == []
+    visit_flows.SESSIONS.pop(uid, None)
+
+
+def test_join_phone_step_forces_clean_screen_without_inline_keyboard():
+    uid = 123502
+    visit_flows.SESSIONS[uid] = {"flow": "join", "step": "phone", "data": {}}
+    from max_attachments import phone_input_keyboard
+
+    reply = {
+        "text": "Укажите номер телефона",
+        "format": "markdown",
+        "attachments": phone_input_keyboard(),
+    }
+    out = handlers._strip_registration_escape_keyboard(uid, reply)
+    assert out.get("attachments") == []
+    visit_flows.SESSIONS.pop(uid, None)

@@ -164,6 +164,7 @@ def is_visit_flow_payload(p: str) -> bool:
         "client_reg_settings",
         "client_reg_web",
         "open_web_cabinet",
+        "admin_sys_web_admin",
         "worker_reg_profile",
         "worker_reg_shifts",
         "worker_reg_payments",
@@ -174,13 +175,8 @@ def is_visit_flow_payload(p: str) -> bool:
 
 
 def client_pre_erp_pending_keyboard() -> list[dict]:
-    """Заказчик зарегистрирован, админ ещё не подтвердил — как _pre_erp_client_keyboard(quotes_enabled=False)."""
-    return inline_keyboard(
-        [
-            [cb_btn("📞 Связаться с менеджером", "contact_manager")],
-            [cb_btn("🏠 Меню визитки", "visit_public_menu")],
-        ]
-    )
+    """До верификации заказчика — только связь с менеджером."""
+    return inline_keyboard([[cb_btn("📞 Связаться с менеджером", "contact_manager")]])
 
 
 def client_registered_main_menu_keyboard(*, quotes_enabled: bool = True) -> list[dict]:
@@ -195,6 +191,7 @@ def client_registered_main_menu_keyboard(*, quotes_enabled: bool = True) -> list
         rows.append([cb_btn("📋 Заказать проект", "client_quote_quick")])
         rows.append([cb_btn("📄 Заказать КП", "client_quote_cp")])
         rows.append([cb_btn("📣 Разместить объявление", "client_quote_listing")])
+    rows.append([cb_btn("📞 Связаться с менеджером", "contact_manager")])
     rows.append([cb_btn("🏠 Меню визитки", "visit_public_menu")])
     return inline_keyboard(rows)
 
@@ -235,6 +232,7 @@ def worker_registered_main_menu_keyboard() -> list[dict]:
         [cb_btn("💳 Мои выплаты", "worker_reg_payments")],
         [cb_btn("📍 Маяк", "worker_reg_beacon")],
         [cb_btn("🌐 Кабинет на сайте", "open_web_cabinet")],
+        [cb_btn("📞 Связаться с менеджером", "contact_manager")],
         [cb_btn("🏠 Меню визитки", "visit_public_menu")],
     ]
     return inline_keyboard(rows)
@@ -314,6 +312,7 @@ def admin_hub_system_keyboard() -> list[dict]:
             [cb_btn("📝 Лог админ-действий", "admin_sys_admin_logs")],
             [cb_btn("📞 Вход по телефону", "admin_phone_login_btn")],
             [cb_btn("🧬 Дубли телефонов users", "admin_identity_dupes")],
+            [cb_btn("🛡 Web admin MAX", "admin_sys_web_admin")],
             [link_btn("🌐 Web admin", f"{base}/dashboard")],
             [cb_btn("🔙 В админ-меню", "admin_agency_hub")],
         ]
@@ -321,16 +320,27 @@ def admin_hub_system_keyboard() -> list[dict]:
 
 
 def main_menu_keyboard(max_uid: int | None = None) -> list[dict]:
-    # Паритет с Telegram keyboards.visit_card_keyboard: компактное корневое меню;
-    # преимущества, кейсы, вакансии и расчёт — внутри «О нас» (about_keyboard).
-    rows: list[list[dict]] = [
-        [cb_btn("📋 О нас", "about")],
-        [cb_btn("💼 Меню заказчика", "client_visit_menu")],
-        [cb_btn("🛠 Меню исполнителя", "join_team")],
-        [cb_btn("🧭 Управление агентством", "admin_agency_hub")] if is_admin_user(max_uid) else [],
-        [cb_btn("❓ FAQ", "faq")],
-        [cb_btn("📞 Связаться с менеджером", "contact_manager")],
-    ]
+    is_admin = is_admin_user(max_uid)
+    rows: list[list[dict]] = []
+    if is_admin:
+        # Для админа сначала рабочий контур, как в Telegram-подходе.
+        rows.extend(
+            [
+                [cb_btn("🧭 Управление агентством", "admin_agency_hub")],
+                [cb_btn("🛡 Web admin MAX", "admin_sys_web_admin")],
+            ]
+        )
+    else:
+        # Публичный контур: преимущества и кейсы — в «О нас».
+        rows.append([cb_btn("📋 О нас", "about")])
+    rows.extend(
+        [
+            [cb_btn("💼 Меню заказчика", "client_visit_menu")],
+            [cb_btn("🛠 Меню исполнителя", "join_team")],
+            [cb_btn("❓ FAQ", "faq")],
+            [cb_btn("📞 Связаться с менеджером", "contact_manager")],
+        ]
+    )
     rows = [r for r in rows if r]
     return inline_keyboard(rows)
 
@@ -1349,7 +1359,7 @@ def message_role_home(max_uid: int | None) -> dict[str, Any]:
             "attachments": inline_keyboard(
                 [
                     [cb_btn("🧭 Управление агентством", "admin_agency_hub")],
-                    [cb_btn("📋 О нас", "about")],
+                    [cb_btn("🛡 Web admin MAX", "admin_sys_web_admin")],
                     [cb_btn("📞 Связаться с менеджером", "contact_manager")],
                 ]
             ),

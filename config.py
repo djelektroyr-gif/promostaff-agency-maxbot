@@ -58,6 +58,11 @@ FUNNEL_REMINDERS_INTERVAL_SEC = _env_int("FUNNEL_REMINDERS_INTERVAL_SEC", 600)
 COMPANY_NAME = _env("COMPANY_NAME") or "PROMOSTAFF-AGENCY"
 WEBSITE_URL = _env("WEBSITE_URL") or "https://promostaff-agency.ru"
 CABINET_WEB_BASE_URL = (_env("CABINET_WEB_BASE_URL") or "https://promostaff.pro").strip().rstrip("/")
+MAX_ADMIN_UI_BASE_URL = (
+    _env("MAX_ADMIN_UI_BASE_URL")
+    or _env("MAXBOT_PUBLIC_BASE_URL")
+    or _env("WEBSITE_URL")
+).strip().rstrip("/")
 _BASE_DIR = Path(__file__).resolve().parent
 LOGO_PNG_PATH = _BASE_DIR / "assets" / "logo.png"
 # Публичный HTTPS URL логотипа (для MAX и опционально в тексте). Файл в репо: assets/logo.png — см. assets/README.txt
@@ -160,6 +165,9 @@ ADMIN_TG_USER_IDS = (
     or _env_int_list("ADMIN_USER_ID")
     or _env_int_list("YOUR_USER_ID")
 )
+# Защита админ-эндпоинтов /admin* (JSON/UI/export/broadcast).
+# Поддержка: ADMIN_UI_TOKEN или fallback ADMIN_TOKEN.
+ADMIN_UI_TOKEN = _env("ADMIN_UI_TOKEN") or _env("ADMIN_TOKEN")
 
 
 def contact_phone_tel() -> str:
