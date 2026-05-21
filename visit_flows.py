@@ -1833,7 +1833,9 @@ def _format_assignment_compact_lines_max(assignments: list[dict[str, Any]], limi
     for a in (assignments or [])[: max(1, int(limit))]:
         st = str(a.get("status") or "").strip().lower()
         worker = str(a.get("worker_name") or a.get("worker_tg_id") or "—").strip()
-        rows.append(f"• {worker} — {status_labels.get(st, st or '—')}")
+        src_raw = str(a.get("last_action_source") or "").strip().lower()
+        src_label = " · src:TG" if src_raw == "tg" else " · src:MAX" if src_raw == "max" else ""
+        rows.append(f"• {worker} — {status_labels.get(st, st or '—')}{src_label}")
     if not rows:
         return "Назначений пока нет."
     return "\n".join(rows)

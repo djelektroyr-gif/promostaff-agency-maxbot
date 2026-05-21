@@ -88,9 +88,9 @@ def test_admin_ops_shift_detail_has_assign_and_report_buttons(monkeypatch):
         visit_flows,
         "list_shift_assignments_for_shift_max",
         lambda sid, limit=120: [
-            {"status": "assigned", "worker_name": "Иванов"},
+            {"status": "assigned", "worker_name": "Иванов", "last_action_source": "tg"},
             {"status": "confirmed", "worker_name": "Петров"},
-            {"status": "checked_in", "worker_name": "Сидоров"},
+            {"status": "checked_in", "worker_name": "Сидоров", "last_action_source": "max"},
             {"status": "checked_out", "worker_name": "Смирнов"},
         ],
     )
@@ -103,6 +103,8 @@ def test_admin_ops_shift_detail_has_assign_and_report_buttons(monkeypatch):
     assert "admin_ops_shift_ping_unconfirmed_101" in att
     assert "assigned 1" in str(reply.get("text", ""))
     assert "Иванов" in str(reply.get("text", ""))
+    assert "src:TG" in str(reply.get("text", ""))
+    assert "src:MAX" in str(reply.get("text", ""))
 
 
 def test_admin_ops_shift_ping_unconfirmed_no_risk(monkeypatch):

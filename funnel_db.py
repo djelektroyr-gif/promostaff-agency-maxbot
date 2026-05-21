@@ -68,6 +68,7 @@ COOPERATION_MODE_PLATFORM = "platform"
 VALID_COOPERATION_MODES = frozenset({COOPERATION_MODE_AGENCY, COOPERATION_MODE_PLATFORM})
 _HRM_PIPELINE = "hrm"
 _HRM_JOIN_SOURCE = "agency_visit_join"
+_SHIFT_ACTION_SOURCE_COLS_READY = False
 
 
 def normalize_cooperation_mode(raw: object) -> str:
@@ -75,6 +76,24 @@ def normalize_cooperation_mode(raw: object) -> str:
     if mode in VALID_COOPERATION_MODES:
         return mode
     return COOPERATION_MODE_AGENCY
+
+
+def _ensure_shift_action_source_columns_max() -> None:
+    global _SHIFT_ACTION_SOURCE_COLS_READY
+    if _SHIFT_ACTION_SOURCE_COLS_READY or not DATABASE_URL:
+        return
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "ALTER TABLE shift_assignments ADD COLUMN IF NOT EXISTS last_action_source TEXT"
+                )
+                cur.execute(
+                    "ALTER TABLE shift_assignments ADD COLUMN IF NOT EXISTS last_action_at TIMESTAMP"
+                )
+        _SHIFT_ACTION_SOURCE_COLS_READY = True
+    except Exception:
+        logger.debug("ensure shift action source columns skipped", exc_info=True)
 
 
 def _client_tg_id_for_max_cp(
@@ -1955,6 +1974,7 @@ def get_project_admin_max(project_id: int) -> dict[str, Any] | None:
 def list_shift_assignments_for_shift_max(shift_id: int, limit: int = 100) -> list[dict[str, Any]]:
     if not DATABASE_URL:
         return []
+    _ensure_shift_action_source_columns_max()
     sid = int(shift_id)
     lim = max(1, min(int(limit), 300))
     if sid <= 0:
@@ -1962,18 +1982,33 @@ def list_shift_assignments_for_shift_max(shift_id: int, limit: int = 100) -> lis
     try:
         with connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT sa.id, sa.worker_tg_id, COALESCE(w.full_name, ''), COALESCE(sa.status, ''),
-                           sa.checkin_time, sa.checkout_time, COALESCE(sa.worked_minutes, 0)
-                    FROM shift_assignments sa
-                    LEFT JOIN workers w ON w.user_id = sa.worker_tg_id
-                    WHERE sa.shift_id = %s
-                    ORDER BY sa.id DESC
-                    LIMIT %s
-                    """,
-                    (sid, lim),
-                )
+                try:
+                    cur.execute(
+                        """
+                        SELECT sa.id, sa.worker_tg_id, COALESCE(w.full_name, ''), COALESCE(sa.status, ''),
+                               sa.checkin_time, sa.checkout_time, COALESCE(sa.worked_minutes, 0),
+                               COALESCE(sa.last_action_source, ''), sa.last_action_at
+                        FROM shift_assignments sa
+                        LEFT JOIN workers w ON w.user_id = sa.worker_tg_id
+                        WHERE sa.shift_id = %s
+                        ORDER BY sa.id DESC
+                        LIMIT %s
+                        """,
+                        (sid, lim),
+                    )
+                except Exception:
+                    cur.execute(
+                        """
+                        SELECT sa.id, sa.worker_tg_id, COALESCE(w.full_name, ''), COALESCE(sa.status, ''),
+                               sa.checkin_time, sa.checkout_time, COALESCE(sa.worked_minutes, 0)
+                        FROM shift_assignments sa
+                        LEFT JOIN workers w ON w.user_id = sa.worker_tg_id
+                        WHERE sa.shift_id = %s
+                        ORDER BY sa.id DESC
+                        LIMIT %s
+                        """,
+                        (sid, lim),
+                    )
                 rows = cur.fetchall() or []
     except Exception:
         logger.exception("list_shift_assignments_for_shift_max failed shift_id=%s", sid)
@@ -1987,6 +2022,8 @@ def list_shift_assignments_for_shift_max(shift_id: int, limit: int = 100) -> lis
             "checkin_time": r[4],
             "checkout_time": r[5],
             "worked_minutes": int(r[6] or 0),
+            "last_action_source": str(r[7] or "") if len(r) > 7 else "",
+            "last_action_at": r[8] if len(r) > 8 else None,
         }
         for r in rows
     ]
@@ -2477,9 +2514,54 @@ def get_worker_shift_assignment_max(shift_id: int, worker_tg_id: int) -> dict[st
     }
 
 
+def _set_assignment_last_action_max(cur, shift_id: int, worker_tg_id: int, *, source: str) -> None:
+    src = (source or "").strip().lower()[:16] or "max"
+    try:
+        cur.execute(
+            """
+            UPDATE shift_assignments
+            SET last_action_source = %s, last_action_at = NOW()
+            WHERE shift_id = %s AND worker_tg_id = %s
+            """,
+            (src, int(shift_id), int(worker_tg_id)),
+        )
+    except Exception:
+        pass
+
+
+def _assignment_cross_source_guard_max(
+    cur,
+    shift_id: int,
+    worker_tg_id: int,
+    *,
+    source: str,
+    window_seconds: int = 8,
+) -> bool:
+    src = (source or "").strip().lower()[:16] or "max"
+    try:
+        cur.execute(
+            """
+            SELECT 1
+            FROM shift_assignments
+            WHERE shift_id = %s
+              AND worker_tg_id = %s
+              AND COALESCE(last_action_source, '') <> ''
+              AND COALESCE(last_action_source, '') <> %s
+              AND last_action_at IS NOT NULL
+              AND EXTRACT(EPOCH FROM (NOW() - last_action_at)) < %s
+            LIMIT 1
+            """,
+            (int(shift_id), int(worker_tg_id), src, max(1, int(window_seconds))),
+        )
+        return cur.fetchone() is None
+    except Exception:
+        return True
+
+
 def confirm_worker_shift_max(shift_id: int, worker_tg_id: int) -> bool:
     if not DATABASE_URL:
         return False
+    _ensure_shift_action_source_columns_max()
     sid = int(shift_id)
     wid = int(worker_tg_id)
     if sid <= 0 or wid <= 0:
@@ -2487,11 +2569,16 @@ def confirm_worker_shift_max(shift_id: int, worker_tg_id: int) -> bool:
     try:
         with connection() as conn:
             with conn.cursor() as cur:
+                if not _assignment_cross_source_guard_max(cur, sid, wid, source="max"):
+                    return False
                 cur.execute(
                     "UPDATE shift_assignments SET status = 'confirmed' WHERE shift_id = %s AND worker_tg_id = %s",
                     (sid, wid),
                 )
-                return int(cur.rowcount or 0) > 0
+                ok = int(cur.rowcount or 0) > 0
+                if ok:
+                    _set_assignment_last_action_max(cur, sid, wid, source="max")
+                return ok
     except Exception:
         logger.exception("confirm_worker_shift_max failed shift=%s worker=%s", sid, wid)
         return False
@@ -2506,6 +2593,7 @@ def checkin_worker_shift_max(
 ) -> bool:
     if not DATABASE_URL:
         return False
+    _ensure_shift_action_source_columns_max()
     sid = int(shift_id)
     wid = int(worker_tg_id)
     if sid <= 0 or wid <= 0:
@@ -2513,6 +2601,8 @@ def checkin_worker_shift_max(
     try:
         with connection() as conn:
             with conn.cursor() as cur:
+                if not _assignment_cross_source_guard_max(cur, sid, wid, source="max"):
+                    return False
                 try:
                     cur.execute(
                         """
@@ -2537,6 +2627,7 @@ def checkin_worker_shift_max(
                     )
                 ok = int(cur.rowcount or 0) > 0
                 if ok:
+                    _set_assignment_last_action_max(cur, sid, wid, source="max")
                     cur.execute("UPDATE shifts SET status = 'in_progress' WHERE id = %s AND status = 'open'", (sid,))
                 return ok
     except Exception:
@@ -2553,6 +2644,7 @@ def checkout_worker_shift_max(
 ) -> bool:
     if not DATABASE_URL:
         return False
+    _ensure_shift_action_source_columns_max()
     sid = int(shift_id)
     wid = int(worker_tg_id)
     if sid <= 0 or wid <= 0:
@@ -2560,6 +2652,8 @@ def checkout_worker_shift_max(
     try:
         with connection() as conn:
             with conn.cursor() as cur:
+                if not _assignment_cross_source_guard_max(cur, sid, wid, source="max"):
+                    return False
                 cur.execute(
                     "SELECT checkin_time FROM shift_assignments WHERE shift_id = %s AND worker_tg_id = %s",
                     (sid, wid),
@@ -2593,6 +2687,7 @@ def checkout_worker_shift_max(
                     )
                 ok = int(cur.rowcount or 0) > 0
                 if ok:
+                    _set_assignment_last_action_max(cur, sid, wid, source="max")
                     cur.execute(
                         "SELECT COUNT(*) FROM shift_assignments WHERE shift_id = %s AND status NOT IN ('checked_out', 'cancelled')",
                         (sid,),
@@ -2609,6 +2704,7 @@ def checkout_worker_shift_max(
 def start_worker_break_max(shift_id: int, worker_tg_id: int, break_type: str) -> bool:
     if not DATABASE_URL:
         return False
+    _ensure_shift_action_source_columns_max()
     sid = int(shift_id)
     wid = int(worker_tg_id)
     bt = (break_type or "").strip().lower()
@@ -2618,6 +2714,8 @@ def start_worker_break_max(shift_id: int, worker_tg_id: int, break_type: str) ->
     try:
         with connection() as conn:
             with conn.cursor() as cur:
+                if not _assignment_cross_source_guard_max(cur, sid, wid, source="max"):
+                    return False
                 cur.execute(
                     "SELECT 1 FROM assignment_breaks WHERE shift_id = %s AND worker_tg_id = %s AND ended_at IS NULL LIMIT 1",
                     (sid, wid),
@@ -2631,6 +2729,7 @@ def start_worker_break_max(shift_id: int, worker_tg_id: int, break_type: str) ->
                     """,
                     (sid, wid, bt, max_minutes),
                 )
+                _set_assignment_last_action_max(cur, sid, wid, source="max")
                 return True
     except Exception:
         logger.exception("start_worker_break_max failed shift=%s worker=%s", sid, wid)
@@ -2640,6 +2739,7 @@ def start_worker_break_max(shift_id: int, worker_tg_id: int, break_type: str) ->
 def stop_worker_break_max(shift_id: int, worker_tg_id: int) -> bool:
     if not DATABASE_URL:
         return False
+    _ensure_shift_action_source_columns_max()
     sid = int(shift_id)
     wid = int(worker_tg_id)
     if sid <= 0 or wid <= 0:
@@ -2651,7 +2751,10 @@ def stop_worker_break_max(shift_id: int, worker_tg_id: int) -> bool:
                     "UPDATE assignment_breaks SET ended_at = NOW() WHERE shift_id = %s AND worker_tg_id = %s AND ended_at IS NULL",
                     (sid, wid),
                 )
-                return int(cur.rowcount or 0) > 0
+                ok = int(cur.rowcount or 0) > 0
+                if ok:
+                    _set_assignment_last_action_max(cur, sid, wid, source="max")
+                return ok
     except Exception:
         logger.exception("stop_worker_break_max failed shift=%s worker=%s", sid, wid)
         return False
