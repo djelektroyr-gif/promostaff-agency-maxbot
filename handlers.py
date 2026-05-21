@@ -96,6 +96,86 @@ def _short_notification_from_text(text: str) -> str:
     return one_line or " "
 
 
+def _is_escape_only_keyboard(attachments: Any) -> bool:
+    """Клавиатура только с кнопками выхода из сценария (главное меню/назад)."""
+    if not isinstance(attachments, list) or not attachments:
+        return False
+    root = attachments[0] if isinstance(attachments[0], dict) else {}
+    payload = root.get("payload") if isinstance(root, dict) else {}
+    buttons = payload.get("buttons") if isinstance(payload, dict) else None
+    if not isinstance(buttons, list) or not buttons:
+        return False
+    seen_payloads: set[str] = set()
+    for row in buttons:
+        if not isinstance(row, list):
+            continue
+        for btn in row:
+            if not isinstance(btn, dict):
+                continue
+            p = str(btn.get("payload") or "").strip()
+            if p:
+                seen_payloads.add(p)
+    if not seen_payloads:
+        return False
+    return seen_payloads.issubset({"main_menu", "back", "back_to_main"})
+
+
+def _remove_registration_exit_buttons(attachments: Any) -> Any:
+    """Убирает из inline-клавиатур только выход из сценария регистрации."""
+    if not isinstance(attachments, list) or not attachments:
+        return attachments
+    out: list[Any] = []
+    for item in attachments:
+        if not isinstance(item, dict):
+            out.append(item)
+            continue
+        if item.get("type") != "inline_keyboard":
+            out.append(item)
+            continue
+        payload = item.get("payload")
+        buttons = payload.get("buttons") if isinstance(payload, dict) else None
+        if not isinstance(buttons, list):
+            out.append(item)
+            continue
+        new_buttons: list[list[dict[str, Any]]] = []
+        for row in buttons:
+            if not isinstance(row, list):
+                continue
+            new_row: list[dict[str, Any]] = []
+            for btn in row:
+                if not isinstance(btn, dict):
+                    continue
+                p = str(btn.get("payload") or "").strip()
+                if p in {"main_menu", "back_to_main"}:
+                    continue
+                new_row.append(btn)
+            if new_row:
+                new_buttons.append(new_row)
+        if new_buttons:
+            cloned = dict(item)
+            cloned_payload = dict(payload or {})
+            cloned_payload["buttons"] = new_buttons
+            cloned["payload"] = cloned_payload
+            out.append(cloned)
+    return out
+
+
+def _strip_registration_escape_keyboard(max_uid: int, reply: dict[str, Any]) -> dict[str, Any]:
+    """В регистрации не показываем кнопки выхода после согласия (паритет с Telegram)."""
+    s = visit_flows.SESSIONS.get(int(max_uid)) or {}
+    flow = str(s.get("flow") or "")
+    step = str(s.get("step") or "")
+    if flow not in {"join", "client_visit"}:
+        return reply
+    if step in {"consent"}:
+        return reply
+    out = dict(reply)
+    out["attachments"] = _remove_registration_exit_buttons(out.get("attachments"))
+    if _is_escape_only_keyboard(out.get("attachments")):
+        out.pop("attachments", None)
+    return out
+
+
 async def _sync_funnel(max_uid: int) -> None:
     await asyncio.to_thread(
         funnel_sync_session,
@@ -135,13 +215,13 @@ def _sender_from_message(body: dict[str, Any]) -> dict[str, Any] | None:
 
 
 async def _send_message(max_uid: int, body: dict[str, Any]) -> None:
-    body = dict(body)
+    body = _strip_registration_escape_keyboard(max_uid, dict(body))
     body.pop("notification", None)
     await post_message(MAX_TOKEN, max_uid, body)
 
 
 async def _answer_message(callback_id: str, max_uid: int, msg: dict[str, Any]) -> None:
-    msg = dict(msg)
+    msg = _strip_registration_escape_keyboard(max_uid, dict(msg))
     raw = msg.pop("notification", None)
     notif = (raw if isinstance(raw, str) else None) or " "
     if notif.strip() == "":

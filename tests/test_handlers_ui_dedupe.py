@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import handlers
+import visit_card
 import visit_flows
 
 
@@ -43,3 +44,33 @@ def test_short_notification_from_text_strips_markdown():
     note = handlers._short_notification_from_text(txt)
     assert "*" not in note
     assert "Ошибка" in note
+
+
+def test_strip_registration_escape_keyboard_for_join_step():
+    uid = 123499
+    visit_flows.SESSIONS[uid] = {"flow": "join", "step": "full_name", "data": {}}
+    reply = {
+        "text": "Введите ФИО",
+        "format": "markdown",
+        "attachments": visit_card.back_to_main_keyboard(),
+    }
+    out = handlers._strip_registration_escape_keyboard(uid, reply)
+    assert "attachments" not in out
+    visit_flows.SESSIONS.pop(uid, None)
+
+
+def test_keep_non_escape_keyboard_for_join_step():
+    uid = 123500
+    visit_flows.SESSIONS[uid] = {"flow": "join", "step": "tax_menu", "data": {}}
+    reply = {
+        "text": "Выберите налоговый статус",
+        "format": "markdown",
+        "attachments": visit_card.join_tax_status_keyboard(),
+    }
+    out = handlers._strip_registration_escape_keyboard(uid, reply)
+    assert out.get("attachments") is not None
+    btns = out["attachments"][0]["payload"]["buttons"]
+    payloads = {str(btn.get("payload") or "") for row in btns for btn in row}
+    assert "tax_back_bd" in payloads
+    assert "main_menu" not in payloads
+    visit_flows.SESSIONS.pop(uid, None)
