@@ -1008,8 +1008,8 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                     cur.execute(
                         """
                         INSERT INTO agency_max_visit_clients (
-                            max_user_id, username, company_name, contact_name, position_in_org, phone, inn, contact_email, company_id
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL)
+                            max_user_id, username, company_name, contact_name, position_in_org, phone, inn, contact_email
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (max_user_id) DO UPDATE SET
                             username = EXCLUDED.username,
                             company_name = EXCLUDED.company_name,
@@ -1026,16 +1026,14 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                     )
                     inn_digits = re.sub(r"\D", "", inn)
                     inn_sql = inn_digits if len(inn_digits) in (10, 12) else ""
-                    company_id = _ensure_company_for_max_client(cur, cn, inn_sql)
-                    if company_id:
-                        cur.execute(
-                            """
-                            UPDATE agency_max_visit_clients
-                            SET company_id = %s
-                            WHERE max_user_id = %s
-                            """,
-                            (int(company_id), uid),
+                    try:
+                        company_id = _ensure_company_for_max_client(cur, cn, inn_sql)
+                    except Exception:
+                        logger.exception(
+                            "save_max_visit_client_verified company bind failed max_uid=%s",
+                            uid,
                         )
+                        company_id = None
                     cur.execute(
                         """
                         INSERT INTO visit_clients (
@@ -1061,17 +1059,23 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                         (tg_row, cn, contact, phone),
                     )
                     if company_id:
-                        cur.execute(
-                            """
-                            UPDATE users
-                            SET company_id = %s,
-                                company_name = %s,
-                                contact_person = %s,
-                                updated_at = NOW()
-                            WHERE tg_id = %s
-                            """,
-                            (int(company_id), cn, contact, int(tg_row)),
-                        )
+                        try:
+                            cur.execute(
+                                """
+                                UPDATE users
+                                SET company_id = %s,
+                                    company_name = %s,
+                                    contact_person = %s,
+                                    updated_at = NOW()
+                                WHERE tg_id = %s
+                                """,
+                                (int(company_id), cn, contact, int(tg_row)),
+                            )
+                        except Exception:
+                            logger.exception(
+                                "save_max_visit_client_verified users company update failed max_uid=%s",
+                                uid,
+                            )
             _pg_upsert_user_for_max_visit_client(
                 uid,
                 un,

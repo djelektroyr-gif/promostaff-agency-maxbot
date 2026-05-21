@@ -5458,9 +5458,11 @@ async def process_text(
                 return _client_visit_input_reply("❌ Укажите должность (минимум 2 символа).")
             data["position_in_org"] = t
             s["step"] = "phone"
-            return _client_visit_input_reply(
-                "Введите *телефон контактного лица*.\n\n_Образец:_ `+79001234567`"
-            )
+            return {
+                "text": "Введите *телефон контактного лица*.\n\n_Образец:_ `+79001234567`",
+                "format": "markdown",
+                "attachments": phone_input_keyboard(),
+            }
         if step == "email":
             if not validate_email(text.strip()):
                 return _client_visit_input_reply("❌ Введите корректный email. Пример: client@company.ru")
@@ -5475,9 +5477,11 @@ async def process_text(
         if step == "phone":
             v = _extract_phone_from_incoming(text, message_body) or validate_phone(text)
             if not v:
-                return _client_visit_input_reply(
-                    "❌ Не удалось распознать номер. Введите номер в формате +7XXXXXXXXXX."
-                )
+                return {
+                    "text": "❌ Не удалось распознать номер. Введите номер в формате +7XXXXXXXXXX.",
+                    "format": "markdown",
+                    "attachments": phone_input_keyboard(),
+                }
             data["phone"] = v
             blocked = _phone_resolve_or_none(max_uid, s, v, "client")
             if blocked:

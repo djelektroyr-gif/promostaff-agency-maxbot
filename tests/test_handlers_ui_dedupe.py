@@ -102,3 +102,18 @@ def test_join_phone_step_forces_clean_screen_without_inline_keyboard():
     out = handlers._strip_registration_escape_keyboard(uid, reply)
     assert out.get("attachments") == []
     visit_flows.SESSIONS.pop(uid, None)
+
+
+def test_client_phone_step_keeps_phone_keyboard():
+    uid = 123503
+    visit_flows.SESSIONS[uid] = {"flow": "client_visit", "step": "phone", "data": {}}
+    from max_attachments import phone_input_keyboard
+
+    reply = {
+        "text": "Введите телефон контактного лица",
+        "format": "markdown",
+        "attachments": phone_input_keyboard(),
+    }
+    out = handlers._strip_registration_escape_keyboard(uid, reply)
+    assert out.get("attachments") is not None
+    visit_flows.SESSIONS.pop(uid, None)
