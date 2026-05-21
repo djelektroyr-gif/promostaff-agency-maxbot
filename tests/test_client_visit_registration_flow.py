@@ -64,3 +64,80 @@ def test_client_visit_confirm_saves_registration_fields_only(monkeypatch):
     assert "order_kind" not in payload
     assert "contact_channel" not in payload
     assert "cp_contact_channel" not in payload
+
+
+def test_client_visit_confirm_edit_opens_field_menu():
+    max_uid = 991003
+    visit_flows.SESSIONS[max_uid] = {
+        "flow": "client_visit",
+        "step": "confirm",
+        "data": {
+            "company_name": "ООО Тест",
+            "contact_name": "Иванов Иван Иванович",
+            "position_in_org": "Руководитель отдела",
+            "phone": "+79991234567",
+            "inn": "7707083893",
+            "contact_email": "client@test.ru",
+        },
+    }
+    out = asyncio.run(visit_flows.process_callback(max_uid, "confirm_client_visit_edit", {}))
+    assert out is not None
+    assert "Что хотите исправить?" in str(out.get("text") or "")
+    buttons = str(out.get("attachments") or "")
+    assert "Юрлицо" in buttons
+    assert "Телефон" in buttons
+    assert "visitreg_back" in buttons
+
+
+def test_client_visit_phone_field_edit_returns_to_preview(monkeypatch):
+    max_uid = 991004
+    visit_flows.SESSIONS[max_uid] = {
+        "flow": "client_visit",
+        "step": "confirm",
+        "data": {
+            "company_name": "ООО Тест",
+            "contact_name": "Иванов Иван Иванович",
+            "position_in_org": "Руководитель отдела",
+            "phone": "+79991234567",
+            "inn": "7707083893",
+            "contact_email": "client@test.ru",
+        },
+    }
+
+    monkeypatch.setattr(visit_flows, "_phone_resolve_or_none", lambda *_args, **_kwargs: None)
+    out_pick = asyncio.run(visit_flows.process_callback(max_uid, "vredit:p", {}))
+    assert out_pick is not None
+    assert "телефон контактного лица" in str(out_pick.get("text") or "").lower()
+
+    out_save = asyncio.run(visit_flows.process_text(max_uid, "+79990001122", {}))
+    assert out_save is not None
+    assert "Проверка данных" in str(out_save.get("text") or "")
+    assert "+79990001122" in str(out_save.get("text") or "")
+    assert visit_flows.SESSIONS[max_uid]["step"] == "confirm"
+
+
+def test_start_client_visit_menu_skips_consent_when_prior_pd_context(monkeypatch):
+    max_uid = 991005
+    visit_flows.SESSIONS.pop(max_uid, None)
+    monkeypatch.setattr(visit_flows, "has_max_active_executor_profile", lambda _uid: False)
+    monkeypatch.setattr(visit_flows, "is_max_visit_client_registered", lambda _uid: False)
+    monkeypatch.setattr(visit_flows, "is_max_visit_client_verified", lambda _uid: False)
+    monkeypatch.setattr(visit_flows, "user_has_prior_bot_pd_context_max", lambda _uid: True)
+
+    out = visit_flows.start_client_visit_menu(max_uid)
+    assert "Давайте познакомимся" in str(out.get("text") or "")
+    session = visit_flows.SESSIONS.get(max_uid) or {}
+    assert session.get("flow") == "client_visit"
+    assert session.get("step") == "company_name"
+
+
+def test_start_client_visit_menu_shows_role_entry_without_prior_pd_context(monkeypatch):
+    max_uid = 991006
+    visit_flows.SESSIONS.pop(max_uid, None)
+    monkeypatch.setattr(visit_flows, "has_max_active_executor_profile", lambda _uid: False)
+    monkeypatch.setattr(visit_flows, "is_max_visit_client_registered", lambda _uid: False)
+    monkeypatch.setattr(visit_flows, "is_max_visit_client_verified", lambda _uid: False)
+    monkeypatch.setattr(visit_flows, "user_has_prior_bot_pd_context_max", lambda _uid: False)
+
+    out = visit_flows.start_client_visit_menu(max_uid)
+    assert "Уже регистрировался" in str(out.get("text") or "")

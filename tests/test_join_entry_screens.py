@@ -1,4 +1,5 @@
 """Вход в анкету исполнителя — экраны как в Telegram."""
+import asyncio
 from unittest.mock import patch
 
 import visit_card
@@ -49,3 +50,34 @@ def test_join_anketa_invite_keyboard_matches_telegram():
     assert len(buttons) == 1
     assert buttons[0][0]["text"] == "📝 Заполнить анкету"
     assert buttons[0][0]["payload"] == "join_proceed_anketa"
+
+
+def test_join_consent_from_profile_goes_direct_to_profession_category():
+    uid = 991101
+    vf.SESSIONS[uid] = {
+        "flow": "join",
+        "step": "consent",
+        "data": {"join_entry": "profile", "position": "Хостес"},
+    }
+    out = asyncio.run(vf.process_callback(uid, "consent_join_accept", {}))
+    assert out is not None
+    assert "ВЫБОР ПРОФЕССИИ" in str(out.get("text") or "")
+    session = vf.SESSIONS[uid]
+    assert session["step"] == "profession_category"
+    assert session["data"].get("join_profession_titles") == []
+    assert session["data"].get("position") == ""
+
+
+def test_join_consent_from_vacancy_goes_to_profession_summary():
+    uid = 991102
+    vf.SESSIONS[uid] = {
+        "flow": "join",
+        "step": "consent",
+        "data": {"join_entry": "vacancy", "position": "Бариста"},
+    }
+    out = asyncio.run(vf.process_callback(uid, "consent_join_accept", {}))
+    assert out is not None
+    assert "ПРОФЕССИИ" in str(out.get("text") or "")
+    session = vf.SESSIONS[uid]
+    assert session["step"] == "profession_summary"
+    assert session["data"].get("join_profession_titles") == ["Бариста"]

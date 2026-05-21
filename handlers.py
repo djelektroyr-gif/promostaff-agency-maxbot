@@ -201,6 +201,41 @@ async def process_update(body: dict[str, Any]) -> None:
                 )
             await _sync_funnel(max_uid)
             return
+        if re.match(r"^/fsm\b", text, re.I):
+            if not visit_card.is_admin_user(max_uid):
+                await _send_message(
+                    max_uid,
+                    {
+                        "text": "Команда /fsm доступна только администраторам.",
+                        "format": "markdown",
+                        "attachments": visit_card.main_menu_keyboard(max_uid),
+                    },
+                )
+                await _sync_funnel(max_uid)
+                return
+            m = re.match(r"^/fsm(?:\s+(\d+))?\s*$", text, re.I)
+            if not m:
+                await _send_message(
+                    max_uid,
+                    {
+                        "text": "Использование: `/fsm` или `/fsm <user_id>`",
+                        "format": "markdown",
+                        "attachments": visit_card.main_menu_keyboard(max_uid),
+                    },
+                )
+                await _sync_funnel(max_uid)
+                return
+            target_uid = int(m.group(1)) if m.group(1) else int(max_uid)
+            await _send_message(
+                max_uid,
+                {
+                    "text": visit_flows.debug_session_text(target_uid),
+                    "format": "markdown",
+                    "attachments": visit_card.main_menu_keyboard(max_uid),
+                },
+            )
+            await _sync_funnel(max_uid)
+            return
         if re.match(r"^(меню|menu)\b", text, re.I):
             visit_flows.clear_session(max_uid)
             await _send_message(max_uid, visit_card.message_role_home(max_uid))

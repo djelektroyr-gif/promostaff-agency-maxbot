@@ -92,6 +92,7 @@ from funnel_db import (
     has_max_active_executor_profile,
     is_max_visit_client_registered,
     is_max_visit_client_verified,
+    user_has_prior_bot_pd_context_max,
     is_max_visit_worker_verified,
     save_max_visit_client_verified,
     get_max_visit_client,
@@ -224,7 +225,7 @@ def _begin_client_visit_registration_new(max_uid: int) -> dict[str, Any]:
     SESSIONS[max_uid] = {"flow": "client_visit", "step": "consent", "data": {}}
     return {
         "notification": "Меню заказчика",
-        "text": _client_visit_entry_text(),
+        "text": _consent_gate_text("меню заказчика"),
         "format": "markdown",
         "attachments": visit_card.consent_gate_keyboard("client_visit"),
     }
@@ -257,6 +258,30 @@ def _extract_phone_from_incoming(
 
 def clear_session(max_uid: int) -> None:
     SESSIONS.pop(max_uid, None)
+
+
+def debug_session_text(max_uid: int) -> str:
+    """Короткий debug-снимок FSM сессии по user_id."""
+    s = SESSIONS.get(int(max_uid))
+    if not isinstance(s, dict):
+        return "🧪 FSM: активной сессии нет."
+    flow = str(s.get("flow") or "—")
+    step = str(s.get("step") or "—")
+    data = s.get("data")
+    data_keys: list[str] = []
+    if isinstance(data, dict):
+        data_keys = [str(k) for k in data.keys()]
+    preview = ", ".join(data_keys[:16]) if data_keys else "—"
+    if len(data_keys) > 16:
+        preview += ", …"
+    return (
+        "🧪 FSM debug\n\n"
+        f"user_id: `{int(max_uid)}`\n"
+        f"flow: `{flow}`\n"
+        f"step: `{step}`\n"
+        f"data_keys: {len(data_keys)}\n"
+        f"keys: {preview}"
+    )
 
 
 def _phone_resolve_or_none(
@@ -731,6 +756,25 @@ def start_client_visit_menu(max_uid: int) -> dict[str, Any]:
                 )
             return home
         return _gate_client_quote_access(max_uid) or {}
+    if user_has_prior_bot_pd_context_max(max_uid):
+        SESSIONS[max_uid] = {
+            "flow": "client_visit",
+            "step": "company_name",
+            "data": {
+                "order_consent_accepted": True,
+                "order_entry": "visit_client_register",
+            },
+        }
+        return {
+            "notification": "Меню заказчика",
+            "text": (
+                "Давайте познакомимся.\n\n"
+                "Укажите *название юрлица заказчика*.\n\n"
+                "_Образец:_ `ООО «Ромашка»`"
+            ),
+            "format": "markdown",
+            "attachments": visit_card.back_to_main_keyboard(),
+        }
     clear_session(max_uid)
     return _role_entry_screen("client")
 
@@ -1585,6 +1629,20 @@ def _client_visit_payload_for_save(data: dict[str, Any]) -> dict[str, Any]:
             continue
         out[key] = val.strip() if isinstance(val, str) else val
     return out
+
+
+def _client_visit_preview_text(data: dict[str, Any]) -> str:
+    inn = (data.get("inn") or "").strip()
+    return (
+        "📋 *Проверка данных*\n\n"
+        f"🏢 Организация: {data.get('company_name', '')}\n"
+        f"🧾 ИНН: {inn}\n"
+        f"👤 Контактное лицо: {data.get('contact_name', '')}\n"
+        f"💼 Должность: {data.get('position_in_org', '')}\n"
+        f"📞 Телефон: {data.get('phone', '')}\n"
+        f"✉️ Email: {data.get('contact_email', '')}\n\n"
+        "Всё верно?\n\n"
+    )
 
 
 def _format_cp_plain(data: dict[str, Any], who: str) -> str:
@@ -3800,8 +3858,9 @@ async def process_callback(
         return {
             "notification": "Согласие принято ✅",
             "text": (
-                "🏢 *Регистрация заказчика*\n\n"
-                "Введите *полное* юридическое название организации (как в учредительных документах):"
+                "Давайте познакомимся.\n\n"
+                "Укажите *название юрлица заказчика*.\n\n"
+                "_Образец:_ `ООО «Ромашка»`"
             ),
             "format": "markdown",
             "attachments": visit_card.back_to_main_keyboard(),
@@ -3831,12 +3890,60 @@ async def process_callback(
         }
 
     if flow == "client_visit" and step == "confirm" and payload == "confirm_client_visit_edit":
-        data.clear()
-        s["step"] = "consent"
+        s["step"] = "confirm"
         return {
-            "text": _client_visit_entry_text(),
+            "text": "Что хотите исправить?",
             "format": "markdown",
-            "attachments": visit_card.consent_gate_keyboard("client_visit"),
+            "attachments": visit_card.client_reg_edit_menu_keyboard(),
+        }
+
+    if flow == "client_visit" and step == "confirm" and payload in {"vredit:c", "vredit:i", "vredit:n", "vredit:p", "vredit:e"}:
+        edit_code = payload.split(":", 1)[-1].strip().lower()
+        data["visit_reg_edit_code"] = edit_code
+        if edit_code == "c":
+            s["step"] = "company_name"
+            return {
+                "text": "Укажите *название юрлица заказчика*.\n\n_Образец:_ `ООО «Ромашка»`",
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if edit_code == "i":
+            s["step"] = "inn"
+            return {
+                "text": "Укажите *ИНН юрлица* (10 или 12 цифр).\n\n_Образец:_ `7707083893`",
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if edit_code == "n":
+            s["step"] = "contact_name"
+            return {
+                "text": "Введите *ФИО контактного лица*.\n\n_Образец:_ `Иванов Иван Иванович`",
+                "format": "markdown",
+                "attachments": visit_card.back_to_main_keyboard(),
+            }
+        if edit_code == "p":
+            s["step"] = "phone"
+            return {
+                "text": (
+                    "Отправьте *телефон контактного лица* кнопкой ниже или введите вручную.\n\n"
+                    "_Образец:_ `+79001234567`"
+                ),
+                "format": "markdown",
+                "attachments": phone_input_keyboard(),
+            }
+        s["step"] = "email"
+        return {
+            "text": "Введите *email* контактного лица.\n\n_Образец:_ `client@company.ru`",
+            "format": "markdown",
+            "attachments": visit_card.back_to_main_keyboard(),
+        }
+
+    if flow == "client_visit" and step == "confirm" and payload == "visitreg_back":
+        data.pop("visit_reg_edit_code", None)
+        return {
+            "text": _client_visit_preview_text(data),
+            "format": "markdown",
+            "attachments": visit_card.client_reg_confirm_keyboard(),
         }
 
     if flow == "order" and step == "consent" and payload == "consent_order_accept":
@@ -4204,22 +4311,21 @@ async def process_callback(
             pos = str(data.get("position") or "").strip()
             data["join_profession_titles"] = [pos]
             data["position"] = pos
-            s["step"] = "full_name"
+            s["step"] = "profession_summary"
             return {
                 "notification": "Согласие принято ✅",
-                "text": f"Должность: *{data.get('position')}*\n\n{_basic_info_intro()}",
+                "text": _profession_summary_markdown([pos]),
                 "format": "markdown",
-                "attachments": visit_card.back_to_main_keyboard(),
+                "attachments": visit_card.profession_summary_keyboard(edit_mode=False),
             }
-        s["step"] = "anketa_invite"
+        data["join_profession_titles"] = []
+        data["position"] = ""
+        s["step"] = "profession_category"
         return {
             "notification": "Согласие принято ✅",
-            "text": (
-                "Для получения предложений о работе заполните анкету.\n\n"
-                "Чем подробнее вы заполните профиль, тем точнее будут предложения."
-            ),
+            "text": "*ВЫБОР ПРОФЕССИИ*\n\nВыберите категорию 👇",
             "format": "markdown",
-            "attachments": visit_card.join_anketa_invite_keyboard(),
+            "attachments": visit_card.profession_categories_keyboard(),
         }
 
     if flow == "join" and step == "anketa_invite" and payload == "join_proceed_anketa":
@@ -4997,7 +5103,7 @@ async def process_text(
     if step == "consent":
         if flow == "client_visit":
             return {
-                "text": "Нажмите кнопку согласия ниже или вернитесь в меню.",
+                "text": _consent_gate_text("меню заказчика"),
                 "format": "markdown",
                 "attachments": visit_card.consent_gate_keyboard("client_visit"),
             }
@@ -5022,12 +5128,17 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["company_name"] = t
+            if (data.get("visit_reg_edit_code") or "").strip().lower() == "c":
+                data.pop("visit_reg_edit_code", None)
+                s["step"] = "confirm"
+                return {
+                    "text": _client_visit_preview_text(data),
+                    "format": "markdown",
+                    "attachments": visit_card.client_reg_confirm_keyboard(),
+                }
             s["step"] = "inn"
             return {
-                "text": (
-                    "Введите *ИНН* организации (10 цифр для юрлица или 12 для ИП) — сразу после названия, "
-                    "чтобы мы могли сверить компанию."
-                ),
+                "text": "Укажите *ИНН юрлица* (10 или 12 цифр).\n\n_Образец:_ `7707083893`",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
@@ -5040,9 +5151,17 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["inn"] = re.sub(r"\D", "", raw)
+            if (data.get("visit_reg_edit_code") or "").strip().lower() == "i":
+                data.pop("visit_reg_edit_code", None)
+                s["step"] = "confirm"
+                return {
+                    "text": _client_visit_preview_text(data),
+                    "format": "markdown",
+                    "attachments": visit_card.client_reg_confirm_keyboard(),
+                }
             s["step"] = "contact_name"
             return {
-                "text": "Введите *полное ФИО* контактного лица:",
+                "text": "Введите *ФИО контактного лица*.\n\n_Образец:_ `Иванов Иван Иванович`",
                 "format": "markdown",
                 "attachments": visit_card.back_to_main_keyboard(),
             }
@@ -5054,6 +5173,14 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["contact_name"] = text.strip()
+            if (data.get("visit_reg_edit_code") or "").strip().lower() == "n":
+                data.pop("visit_reg_edit_code", None)
+                s["step"] = "confirm"
+                return {
+                    "text": _client_visit_preview_text(data),
+                    "format": "markdown",
+                    "attachments": visit_card.client_reg_confirm_keyboard(),
+                }
             s["step"] = "position_in_org"
             return {
                 "text": "Укажите *вашу должность* в организации:",
@@ -5072,9 +5199,8 @@ async def process_text(
             s["step"] = "phone"
             return {
                 "text": (
-                    "📞 *Укажите номер телефона*\n\n"
-                    "Нажмите *Поделиться контактом* или введите вручную.\n\n"
-                    "_Пример: +7 916 123-45-67_"
+                    "Отправьте *телефон контактного лица* кнопкой ниже или введите вручную.\n\n"
+                    "_Образец:_ `+79001234567`"
                 ),
                 "format": "markdown",
                 "attachments": phone_input_keyboard(),
@@ -5087,20 +5213,10 @@ async def process_text(
                     "attachments": visit_card.back_to_main_keyboard(),
                 }
             data["contact_email"] = text.strip()
+            data.pop("visit_reg_edit_code", None)
             s["step"] = "confirm"
-            inn = (data.get("inn") or "").strip()
-            preview = (
-                "📋 *Проверка данных*\n\n"
-                f"🏢 Организация: {data.get('company_name', '')}\n"
-                f"🧾 ИНН: {inn}\n"
-                f"👤 Контактное лицо: {data.get('contact_name', '')}\n"
-                f"💼 Должность: {data.get('position_in_org', '')}\n"
-                f"📞 Телефон: {data.get('phone', '')}\n"
-                f"✉️ Email: {data.get('contact_email', '')}\n\n"
-                "Всё верно?\n\n"
-            )
             return {
-                "text": preview,
+                "text": _client_visit_preview_text(data),
                 "format": "markdown",
                 "attachments": visit_card.client_reg_confirm_keyboard(),
             }
@@ -5119,11 +5235,19 @@ async def process_text(
             blocked = _phone_resolve_or_none(max_uid, s, v, "client")
             if blocked:
                 return blocked
+            if (data.get("visit_reg_edit_code") or "").strip().lower() == "p":
+                data.pop("visit_reg_edit_code", None)
+                s["step"] = "confirm"
+                return {
+                    "text": _client_visit_preview_text(data),
+                    "format": "markdown",
+                    "attachments": visit_card.client_reg_confirm_keyboard(),
+                }
             s["step"] = "email"
             return {
                 "text": (
                     "Номер сохранён.\n\n"
-                    "Введите *email* для связи по проекту (коммерческие письма, КП).\n\n"
+                    "Введите *email* контактного лица.\n\n"
                     "_Образец:_ `client@company.ru`"
                 ),
                 "format": "markdown",

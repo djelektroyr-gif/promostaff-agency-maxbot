@@ -128,6 +128,15 @@ Webhook API: `promostaff-bot/docs/MAX_WEBHOOK_AND_SUBSCRIPTIONS.md`.
 | Админ verify → меню исполнителя | `wvf:` + `workers` | OK (`workers.status=approved`, `is_max_visit_worker_verified`) | — |
 | Уточнение анкеты (clarification) | `join_clarification` | OK (`clrf:start` / `clrf:ack`, `join_clarification_db`) | — |
 
+### 3.3.1. UI-checklist регистрации (TG → MAX)
+
+- `consent_join_accept`:
+  - профиль (`join_entry=profile`) → сразу `*ВЫБОР ПРОФЕССИИ*` (без экрана-приглашения);
+  - вакансия (`join_entry=vacancy`) → сразу `profession_summary` с выбранной ролью.
+- Экран review заказчика: `Проверка данных` + кнопки `✅ Всё верно, отправить администратору` / `✏️ Исправить данные`.
+- Для заказчика в MAX есть меню точечной правки полей (`Юрлицо/ИНН/ФИО/Телефон/Email`) с возвратом `◀️ К проверке`.
+- Тексты шагов заказчика (ИНН/ФИО/телефон/email) выровнены по формулировкам Telegram.
+
 ### 3.4. Вопрос менеджеру
 
 | Блок | Telegram | MAX | Приоритет |

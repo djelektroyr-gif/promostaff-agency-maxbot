@@ -725,6 +725,62 @@ def is_max_visit_client_verified(max_user_id: int) -> bool:
     return False
 
 
+def user_has_prior_bot_pd_context_max(max_user_id: int) -> bool:
+    """
+    MAX-эквивалент user_has_prior_bot_pd_context:
+    если пользователь уже взаимодействовал с контуром (регистрация/заявки/вопросы),
+    повторный consent-экран можно не показывать.
+    """
+    uid = int(max_user_id)
+    if uid <= 0:
+        return False
+    if is_max_visit_client_registered(uid):
+        return True
+    if has_max_active_executor_profile(uid):
+        return True
+    if not DATABASE_URL:
+        return False
+    tg_id = resolve_tg_id_for_max_user(uid)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM agency_visit_orders
+                    WHERE (source = 'max' AND user_id = %s) OR user_id = %s
+                    LIMIT 1
+                    """,
+                    (uid, tg_id),
+                )
+                if cur.fetchone():
+                    return True
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM agency_visit_join_requests
+                    WHERE (source = 'max' AND user_id = %s) OR user_id = %s
+                    LIMIT 1
+                    """,
+                    (uid, tg_id),
+                )
+                if cur.fetchone():
+                    return True
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM agency_visit_questions
+                    WHERE (source = 'max' AND user_id = %s) OR user_id = %s
+                    LIMIT 1
+                    """,
+                    (uid, tg_id),
+                )
+                return bool(cur.fetchone())
+    except Exception:
+        logger.exception("user_has_prior_bot_pd_context_max max_uid=%s", uid)
+    return False
+
+
 def is_max_visit_worker_verified(max_user_id: int) -> bool:
     """Исполнитель одобрен в панели (workers.status = approved), как is_visit_worker_verified."""
     ids = _worker_lookup_ids_for_max(int(max_user_id))

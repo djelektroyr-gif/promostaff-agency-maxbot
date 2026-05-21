@@ -426,7 +426,7 @@ def role_entry_keyboard(role: str) -> list[dict]:
         [
             [cb_btn("✅ Уже регистрировался", f"visit_entry_returning:{r}")],
             [cb_btn("🆕 Регистрируюсь впервые", f"visit_entry_new:{r}")],
-            [cb_btn("⬅️ Назад", "main_menu")],
+            [cb_btn("⬅️ Назад", "back_to_main")],
         ]
     )
 
@@ -964,9 +964,21 @@ def order_confirm_keyboard() -> list[dict]:
 def client_reg_confirm_keyboard() -> list[dict]:
     return inline_keyboard(
         [
-            [cb_btn("✅ Данные верны, завершить регистрацию", "confirm_client_visit_yes")],
-            [cb_btn("✏️ Заполнить заново", "confirm_client_visit_edit")],
-            [cb_btn("⬅️ В меню", "main_menu")],
+            [cb_btn("✅ Всё верно, отправить администратору", "confirm_client_visit_yes")],
+            [cb_btn("✏️ Исправить данные", "confirm_client_visit_edit")],
+        ]
+    )
+
+
+def client_reg_edit_menu_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("Юрлицо", "vredit:c")],
+            [cb_btn("ИНН", "vredit:i")],
+            [cb_btn("ФИО контакта", "vredit:n")],
+            [cb_btn("Телефон", "vredit:p")],
+            [cb_btn("Email", "vredit:e")],
+            [cb_btn("◀️ К проверке", "visitreg_back")],
         ]
     )
 
@@ -977,6 +989,7 @@ def consent_gate_keyboard(flow: str) -> list[dict]:
         "join": "consent_join_accept",
         "question": "consent_question_accept",
         "client_visit": "consent_client_visit_accept",
+        "client_menu": "consent_client_menu_accept",
     }
     cb = callbacks.get(flow, "main_menu")
     return inline_keyboard(
