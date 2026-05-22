@@ -161,6 +161,10 @@ def is_visit_flow_payload(p: str) -> bool:
         "client_reg_team",
         "client_reg_reports",
         "client_reg_orders",
+        "client_applications_hub",
+        "client_projects_hub",
+        "client_team_hub",
+        "client_finance_hub",
         "client_reg_settings",
         "client_reg_web",
         "open_web_cabinet",
@@ -203,39 +207,74 @@ def admin_visit_registration_keyboard(client_tg_id: int) -> list[dict]:
     )
 
 
-def client_home_menu_keyboard(
-    *,
-    quotes_enabled: bool = True,
-    show_web_cabinet: bool = True,
-) -> list[dict]:
-    """Паритет TG для заказчика: только веб-кабинет (без Mini App — продуктовый канон)."""
-    rows: list[list[dict]] = []
-    if show_web_cabinet:
-        rows.append([cb_btn("🌐 Кабинет на сайте", "open_web_cabinet")])
-    if quotes_enabled:
-        rows.append([cb_btn("📋 Заявки", "client_reg_orders")])
-        rows.append([cb_btn("📋 Заказать проект", "client_quote_quick")])
-        rows.append([cb_btn("📄 Заказать КП", "client_quote_cp")])
-        rows.append([cb_btn("📣 Разместить объявление", "client_quote_listing")])
-    rows.append([cb_btn("🏗️ Проекты", "my_projects")])
-    rows.append([cb_btn("⚙️ Настройки", "client_reg_settings")])
-    rows.append([cb_btn("📞 Связаться с менеджером", "contact_manager")])
+def client_home_inline_keyboard() -> list[dict]:
+    """Паритет TG: кабинет и менеджер только на экране «домой»."""
+    return inline_keyboard(
+        [
+            [cb_btn("🌐 Кабинет на сайте", "open_web_cabinet")],
+            [cb_btn("📞 Связаться с менеджером", "contact_manager")],
+        ]
+    )
+
+
+def client_tab_bar_keyboard(*, quotes_enabled: bool = True) -> list[dict]:
+    """MAX: зеркало Reply-таб-бара Telegram (подменю — отдельные payload)."""
+    rows: list[list[dict]] = [
+        [cb_btn("🏠 Главное меню", "main_menu"), cb_btn("🏗️ Проекты", "client_projects_hub")],
+        [cb_btn("👥 Команда", "client_team_hub"), cb_btn("📋 Заявки", "client_applications_hub")],
+        [cb_btn("💰 Финансы", "client_finance_hub"), cb_btn("⚙️ Настройки", "client_reg_settings")],
+    ]
     return inline_keyboard(rows)
 
 
 def client_registered_main_menu_keyboard(*, quotes_enabled: bool = True) -> list[dict]:
-    """Верифицированный заказчик — веб-кабинет + заявки (без Mini App)."""
-    return client_home_menu_keyboard(quotes_enabled=quotes_enabled, show_web_cabinet=True)
+    """Верифицированный заказчик: таб-бар + кабинет/менеджер в одной inline-клавиатуре."""
+    _ = quotes_enabled
+    tab_rows = [
+        [cb_btn("🏠 Главное меню", "main_menu"), cb_btn("🏗️ Проекты", "client_projects_hub")],
+        [cb_btn("👥 Команда", "client_team_hub"), cb_btn("📋 Заявки", "client_applications_hub")],
+        [cb_btn("💰 Финансы", "client_finance_hub"), cb_btn("⚙️ Настройки", "client_reg_settings")],
+        [cb_btn("🌐 Кабинет на сайте", "open_web_cabinet")],
+        [cb_btn("📞 Связаться с менеджером", "contact_manager")],
+    ]
+    return inline_keyboard(tab_rows)
+
+
+def client_applications_hub_keyboard(*, quotes_enabled: bool = True) -> list[dict]:
+    rows: list[list[dict]] = [[cb_btn("📋 Мои заявки", "client_reg_orders")]]
+    if quotes_enabled:
+        rows.append([cb_btn("📋 Заказать проект", "client_quote_quick")])
+        rows.append([cb_btn("📄 Заказать КП", "client_quote_cp")])
+        rows.append([cb_btn("📣 Разместить объявление", "client_quote_listing")])
+    rows.append([cb_btn("🔙 К главному меню", "main_menu")])
+    return inline_keyboard(rows)
 
 
 def client_projects_hub_keyboard() -> list[dict]:
     return inline_keyboard(
         [
+            [cb_btn("📋 Список проектов", "my_projects")],
             [cb_btn("➕ Создать проект", "client_reg_create_project")],
+            [cb_btn("🔙 К главному меню", "main_menu")],
+        ]
+    )
+
+
+def client_team_hub_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
+            [cb_btn("👥 Состав команды", "client_reg_team")],
+            [cb_btn("🔙 К главному меню", "main_menu")],
+        ]
+    )
+
+
+def client_finance_hub_keyboard() -> list[dict]:
+    return inline_keyboard(
+        [
             [cb_btn("💳 Подписка и лимиты", "client_reg_subscription")],
-            [cb_btn("👥 Команда заказчика", "client_reg_team")],
             [cb_btn("📊 Отчёты Excel/PDF", "client_reg_reports")],
-            [cb_btn("🔙 К меню заказчика", "main_menu")],
+            [cb_btn("🔙 К главному меню", "main_menu")],
         ]
     )
 
@@ -1453,7 +1492,7 @@ def message_role_home(max_uid: int | None) -> dict[str, Any]:
             cap = (
                 f"*Главное меню заказчика*\n\n"
                 f"Вы вошли как зарегистрированный заказчик *{COMPANY_NAME}*.\n\n"
-                "Профиль подтверждён. Заявки, расчёты и связь с менеджером — в меню ниже."
+                "Профиль подтверждён. Разделы — кнопками ниже; кабинет на сайте и менеджер — внизу."
             )
             kb = client_registered_main_menu_keyboard(quotes_enabled=True)
         else:

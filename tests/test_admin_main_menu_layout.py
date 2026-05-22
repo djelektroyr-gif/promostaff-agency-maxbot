@@ -50,15 +50,15 @@ def test_client_pending_menu_has_manager_and_main():
     assert labels == ["📞 Связаться с менеджером", "🏠 Главное меню"]
 
 
-def test_client_verified_menu_matches_tg_order():
+def test_client_verified_menu_tab_bar_and_home_actions():
     kb = vc.client_registered_main_menu_keyboard(quotes_enabled=True)
-    labels = _labels_from_keyboard(kb)
-    assert labels[0] == "🌐 Кабинет на сайте"
-    assert "📋 Заявки" in labels
-    assert "🏗️ Проекты" in labels
-    assert "📞 Связаться с менеджером" in labels
-    assert "📂 Мои проекты" not in labels
-    assert "🏠 Меню визитки" not in labels
+    flat = str(kb)
+    assert "client_applications_hub" in flat
+    assert "client_projects_hub" in flat
+    assert "client_team_hub" in flat
+    assert "client_finance_hub" in flat
+    assert "open_web_cabinet" in flat
+    assert "contact_manager" in flat
 
 
 def test_client_registered_menu_has_manager_contact():

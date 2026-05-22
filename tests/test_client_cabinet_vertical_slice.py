@@ -11,6 +11,10 @@ def test_visit_payload_registry_has_client_cabinet_slice_actions():
         "client_reg_subscription",
         "client_reg_team",
         "client_reg_reports",
+        "client_applications_hub",
+        "client_projects_hub",
+        "client_team_hub",
+        "client_finance_hub",
     ):
         assert visit_card.is_visit_flow_payload(payload), payload
 
@@ -19,8 +23,12 @@ def test_client_projects_hub_keyboard_contains_actions():
     kb = visit_card.client_projects_hub_keyboard()
     flat = str(kb)
     assert "client_reg_create_project" in flat
+    assert "my_projects" in flat
+
+
+def test_client_finance_hub_has_subscription_and_reports():
+    flat = str(visit_card.client_finance_hub_keyboard())
     assert "client_reg_subscription" in flat
-    assert "client_reg_team" in flat
     assert "client_reg_reports" in flat
 
 

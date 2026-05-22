@@ -3452,6 +3452,69 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
                 "attachments": visit_card.admin_hub_ops_keyboard(),
             }
 
+    if payload == "client_applications_hub":
+        if not is_max_visit_client_verified(max_uid):
+            return {
+                "notification": "Нужна регистрация",
+                "text": "Сначала пройдите регистрацию заказчика.",
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
+        return {
+            "notification": " ",
+            "text": (
+                "*Заявки*\n\n"
+                "Статусы расчётов и КП — в списке. Новые запросы — кнопками ниже."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.client_applications_hub_keyboard(quotes_enabled=True),
+        }
+
+    if payload == "client_projects_hub":
+        if not is_max_visit_client_verified(max_uid):
+            return {
+                "notification": "Нужна регистрация",
+                "text": "Сначала пройдите регистрацию заказчика.",
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
+        return {
+            "notification": " ",
+            "text": "*Проекты*\n\nСписок проектов и создание — кнопками ниже.",
+            "format": "markdown",
+            "attachments": visit_card.client_projects_hub_keyboard(),
+        }
+
+    if payload == "client_team_hub":
+        if not is_max_visit_client_verified(max_uid):
+            return {
+                "notification": "Нужна регистрация",
+                "text": "Сначала пройдите регистрацию заказчика.",
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
+        return {
+            "notification": " ",
+            "text": "*Команда*\n\nИсполнители по вашим проектам.",
+            "format": "markdown",
+            "attachments": visit_card.client_team_hub_keyboard(),
+        }
+
+    if payload == "client_finance_hub":
+        if not is_max_visit_client_verified(max_uid):
+            return {
+                "notification": "Нужна регистрация",
+                "text": "Сначала пройдите регистрацию заказчика.",
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(),
+            }
+        return {
+            "notification": " ",
+            "text": "*Финансы*\n\nПодписка, лимиты и отчёты.",
+            "format": "markdown",
+            "attachments": visit_card.client_finance_hub_keyboard(),
+        }
+
     if payload in ("my_projects", "client_reg_projects"):
         if is_max_visit_client_registered(max_uid) and not is_max_visit_client_verified(max_uid):
             return {
@@ -3677,7 +3740,7 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
             "notification": " ",
             "text": body,
             "format": "markdown",
-            "attachments": visit_card.client_registered_main_menu_keyboard(),
+            "attachments": visit_card.client_applications_hub_keyboard(quotes_enabled=True),
         }
 
     if payload == "client_reg_settings":
@@ -4169,6 +4232,10 @@ async def process_callback(
             "client_reg_team",
             "client_reg_reports",
             "client_reg_orders",
+            "client_applications_hub",
+            "client_projects_hub",
+            "client_team_hub",
+            "client_finance_hub",
             "client_reg_settings",
             "client_reg_web",
             "open_web_cabinet",
