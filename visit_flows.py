@@ -35,6 +35,7 @@ from visit_join_anketa_catalog import (
     EXPERIENCE_RATING_TABLE,
     PROFESSION_SLUG_TO_TITLE,
     ProfessionCategory,
+    resolve_profession_category_token,
 )
 from funnel_store import funnel_touch_complete
 from funnel_db import (
@@ -1058,6 +1059,12 @@ def _append_join_profession_title(data: dict[str, Any], title: str) -> tuple[lis
     data["join_profession_titles"] = raw
     data["position"] = raw[0]
     return raw, True
+
+
+def _normalize_profession_category_token(raw: str) -> str:
+    """prof_cat:* → main|creative; архив tech/admin и Enum repr — как в TG."""
+    resolved = resolve_profession_category_token(raw)
+    return resolved if resolved else (raw or "").strip().lower()
 
 
 def _join_goto_profession_summary(
@@ -4941,7 +4948,7 @@ async def process_callback(
                 "attachments": visit_card.profession_categories_keyboard(),
             }
         if low.startswith("prof_cat:"):
-            cat_s = payload.split(":", 1)[-1].strip().lower()
+            cat_s = _normalize_profession_category_token(payload.split(":", 1)[-1])
             try:
                 cat = ProfessionCategory(cat_s)
             except ValueError:
@@ -4991,7 +4998,7 @@ async def process_callback(
                 }
             return _join_goto_profession_summary(s, data, notification=f"Профессия: {title}")
         if low.startswith("prof_custom:"):
-            cat_s = payload.split(":", 1)[-1].strip().lower()
+            cat_s = _normalize_profession_category_token(payload.split(":", 1)[-1])
             try:
                 ProfessionCategory(cat_s)
             except ValueError:

@@ -498,12 +498,11 @@ def join_anketa_invite_keyboard() -> list[dict]:
 
 
 def profession_categories_keyboard() -> list[dict]:
+    """Паритет handlers/join_anketa/keyboards.py::profession_categories_keyboard (TG)."""
     return inline_keyboard(
         [
-            [cb_btn("👷 Основной персонал", f"prof_cat:{ProfessionCategory.MAIN}")],
-            [cb_btn("🔧 Технический персонал", f"prof_cat:{ProfessionCategory.TECH}")],
-            [cb_btn("🎨 Креативный персонал", f"prof_cat:{ProfessionCategory.CREATIVE}")],
-            [cb_btn("👔 Административный персонал", f"prof_cat:{ProfessionCategory.ADMIN}")],
+            [cb_btn("🛠️ Основной персонал", f"prof_cat:{ProfessionCategory.MAIN.value}")],
+            [cb_btn("✨ Творческий персонал", f"prof_cat:{ProfessionCategory.CREATIVE.value}")],
             [cb_btn("🏠 Главное меню", "main_menu")],
         ]
     )

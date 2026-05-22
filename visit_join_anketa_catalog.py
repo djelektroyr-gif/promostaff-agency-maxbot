@@ -1,4 +1,5 @@
-# Синхронно с promostaff-agency-bot/join_anketa_catalog.py
+# Копия канона promostaff-agency-bot/professions_data.py (анкета join).
+# При смене каталога в TG — обновлять этот файл 1-в-1 (категории, slug, тексты).
 from __future__ import annotations
 
 from enum import Enum
@@ -6,28 +7,40 @@ from enum import Enum
 
 class ProfessionCategory(str, Enum):
     MAIN = "main"
-    TECH = "tech"
     CREATIVE = "creative"
-    ADMIN = "admin"
 
+
+PROFESSION_CATEGORY_LABEL_RU: dict[str, str] = {
+    ProfessionCategory.MAIN.value: "Основной персонал",
+    ProfessionCategory.CREATIVE.value: "Творческий персонал",
+}
+
+# Архивные category из старого MAX/TG — только отображение.
+PROFESSION_CATEGORY_LABEL_LEGACY_RU: dict[str, str] = {
+    "tech": "Технический персонал (архив)",
+    "admin": "Административный персонал (архив)",
+}
+
+# Категории, которые больше не показываем в кнопках (старые callback в чате).
+LEGACY_PROFESSION_CATEGORY_ALIASES: dict[str, str] = {
+    "tech": ProfessionCategory.MAIN.value,
+    "admin": ProfessionCategory.MAIN.value,
+}
 
 # (emoji, title, slug)
 PROFESSION_BY_CATEGORY: dict[ProfessionCategory, list[tuple[str, str, str]]] = {
     ProfessionCategory.MAIN: [
         ("📢", "Промоутер", "promoter"),
         ("👩‍💼", "Хостес", "hostess"),
+        ("🧥", "Гардеробщик", "wardrobe"),
         ("🎭", "Аниматор", "animator"),
         ("👷", "Хелпер", "helper"),
         ("📦", "Грузчик", "loader"),
         ("🍽️", "Официант", "waiter"),
-    ],
-    ProfessionCategory.TECH: [
         ("🚐", "Водитель", "driver"),
         ("🛡️", "Охранник", "security"),
-        ("🧹", "Уборщик", "cleaner"),
-        ("🧼", "Мойщик посуды", "dishwasher"),
         ("🚗", "Парковщик", "parking"),
-        ("📦", "Курьер", "courier"),
+        ("👨‍💼", "Супервайзер", "supervisor"),
     ],
     ProfessionCategory.CREATIVE: [
         ("🎧", "DJ", "dj"),
@@ -36,39 +49,49 @@ PROFESSION_BY_CATEGORY: dict[ProfessionCategory, list[tuple[str, str, str]]] = {
         ("🎨", "Декоратор", "decorator"),
         ("🎤", "Ведущий", "host"),
     ],
-    ProfessionCategory.ADMIN: [
-        ("👨‍💼", "Супервайзер", "supervisor"),
-        ("📋", "Менеджер проекта", "pm"),
-        ("🗂️", "Координатор", "coordinator"),
-    ],
+}
+
+LEGACY_PROFESSION_SLUG_TITLE_RU: dict[str, str] = {
+    "pm": "Менеджер проекта",
+    "coordinator": "Координатор",
+    "cleaner": "Уборщик",
+    "dishwasher": "Мойщик посуды",
+    "courier": "Курьер",
 }
 
 PROFESSION_SLUG_TO_TITLE: dict[str, str] = {}
 for _cat, items in PROFESSION_BY_CATEGORY.items():
     for _e, title, slug in items:
         PROFESSION_SLUG_TO_TITLE[slug] = title
+for _slug, _title in LEGACY_PROFESSION_SLUG_TITLE_RU.items():
+    PROFESSION_SLUG_TO_TITLE.setdefault(_slug, _title)
+
+
+def resolve_profession_category_token(raw: str) -> str | None:
+    """Нормализует prof_cat:* / архив tech|admin → main|creative."""
+    s = (raw or "").strip().lower()
+    if s.startswith("professioncategory."):
+        s = s.split(".", 1)[-1]
+    if s in LEGACY_PROFESSION_CATEGORY_ALIASES:
+        return LEGACY_PROFESSION_CATEGORY_ALIASES[s]
+    try:
+        return ProfessionCategory(s).value
+    except ValueError:
+        return None
 
 
 UNIFORM_REQUIREMENTS_TEXT = (
-    "*Требования к форме*\n\n"
-    "| Роль | Форма |\n"
-    "|------|-------|\n"
-    "| Промоутер | Чистая одежда в деловом стиле (белый верх, тёмный низ) |\n"
-    "| Хостес | Единая форма (часто предоставляется работодателем) |\n"
-    "| Официант, повар | Спецодежда (предоставляется работодателем) |\n"
-    "| Аниматор | Костюм персонажа (предоставляется работодателем) |\n"
-    "| Хелпер | Аккуратный деловой или спортивный стиль по брифу |\n\n"
-    "💡 _Если у вас есть своя форма, это преимущество при отборе на некоторые проекты._"
+    "📋 *Требования к форме*\n\n"
+    "📢 *Промоутер* — чистая одежда в деловом стиле (белый верх, тёмный низ).\n\n"
+    "👩‍💼 *Хостес* — единая форма (часто даёт работодатель).\n\n"
+    "🍽️ *Официант, повар* — спецодежда (обычно от работодателя).\n\n"
+    "🎭 *Аниматор* — костюм персонажа (от работодателя).\n\n"
+    "👷 *Хелпер* — аккуратный деловой или спортивный стиль по брифу.\n\n"
+    "💡 _Своя подходящая форма — плюс при отборе на часть проектов._"
 )
 
 
 EXPERIENCE_RATING_TABLE = (
-    "\n\n*Расчёт начального рейтинга:*\n"
-    "```\n"
-    "Опыт        | База | + за анкету | Итого\n"
-    "------------+------+-------------+-------\n"
-    "Меньше года | 1⭐  | до +1⭐     | до 2⭐\n"
-    "1–3 года    | 2⭐  | до +1⭐     | до 3⭐\n"
-    "Более 3 лет | 3⭐  | до +1⭐     | до 4⭐\n"
-    "```"
+    "\n\nСтартовый уровень в системе задаётся по заявленному стажу и проверяется при модерации. "
+    "Указывайте достоверный опыт — несоответствия выявляются на верификации."
 )
