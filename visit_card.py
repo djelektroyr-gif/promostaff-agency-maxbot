@@ -179,11 +179,22 @@ def client_pre_erp_pending_keyboard() -> list[dict]:
     return inline_keyboard([[cb_btn("📞 Связаться с менеджером", "contact_manager")]])
 
 
+def admin_visit_registration_keyboard(client_tg_id: int) -> list[dict]:
+    """Паритет handlers/visit_public.py::_admin_visit_registration_keyboard (cvf/cvr)."""
+    tid = int(client_tg_id)
+    return inline_keyboard(
+        [
+            [cb_btn("✅ Верифицировать заказчика", f"cvf:{tid}")],
+            [cb_btn("❌ Отказать в верификации", f"cvr:{tid}")],
+        ]
+    )
+
+
 def client_registered_main_menu_keyboard(*, quotes_enabled: bool = True) -> list[dict]:
     """Меню заказчика после регистрации — REGISTRATION_AND_POST_MENU_SPEC.md §5."""
     rows: list[list[dict]] = [
         [cb_btn("📂 Мои проекты", "client_reg_projects")],
-        [cb_btn("📜 История заказов", "client_reg_orders")],
+        [cb_btn("📋 Заявки", "client_reg_orders")],
         [cb_btn("⚙️ Настройки", "client_reg_settings")],
         [cb_btn("🌐 Кабинет на сайте", "open_web_cabinet")],
     ]

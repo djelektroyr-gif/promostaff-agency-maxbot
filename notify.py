@@ -83,12 +83,15 @@ async def send_admin_email(subject: str, body: str) -> bool:
         return False
 
 
-async def send_admin_max_messages(text: str) -> int:
+async def send_admin_max_messages(text: str, *, attachments: list[dict] | None = None) -> int:
     if not MAX_TOKEN or not ADMIN_MAX_USER_IDS:
         return 0
     n = 0
+    body: dict = {"text": text}
+    if attachments:
+        body["attachments"] = attachments
     for uid in ADMIN_MAX_USER_IDS:
-        ok = await post_message(MAX_TOKEN, uid, {"text": text})
+        ok = await post_message(MAX_TOKEN, uid, body)
         if ok:
             n += 1
     return n
@@ -126,13 +129,21 @@ async def send_admin_telegram_messages(text: str) -> int:
     return sent
 
 
-async def notify_agency_admins(subject: str, body: str) -> dict[str, int | bool]:
+async def notify_agency_admins(
+    subject: str,
+    body: str,
+    *,
+    max_attachments: list[dict] | None = None,
+) -> dict[str, int | bool]:
     """
     Дублирует текст на почту (если настроен SMTP) и в MAX указанным user_id.
+
+    max_attachments — inline-кнопки (верификация заказчика cvf/cvr и т.п.).
 
     Возвращает счётчики для логов/дашборда; ошибки не пробрасываются.
     """
     email_ok = await send_admin_email(subject, body)
-    max_n = await send_admin_max_messages(f"{subject}\n\n{body}")
-    tg_n = await send_admin_telegram_messages(f"{subject}\n\n{body}")
+    plain = f"{subject}\n\n{body}"
+    max_n = await send_admin_max_messages(plain, attachments=max_attachments)
+    tg_n = await send_admin_telegram_messages(plain)
     return {"email_sent": bool(email_ok), "max_messages": max_n, "tg_messages": tg_n}

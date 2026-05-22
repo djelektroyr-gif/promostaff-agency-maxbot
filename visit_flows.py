@@ -98,6 +98,9 @@ from funnel_db import (
     has_max_active_executor_profile,
     is_max_visit_client_registered,
     is_max_visit_client_verified,
+    approve_visit_client_by_tg_id,
+    reject_pending_client_registration,
+    resolve_max_user_id_from_tg_id,
     user_has_prior_bot_pd_context_max,
     is_max_visit_worker_verified,
     save_max_visit_client_verified,
@@ -1501,6 +1504,141 @@ async def _notify_plain(subject: str, plain: str) -> None:
 def _schedule_notify(subject: str, plain: str) -> None:
     """Не блокировать ответ пользователю в MAX: SMTP/Telegram к админам — в фоне."""
     asyncio.create_task(_notify_plain(subject, plain))
+
+
+async def _notify_registration_admins(subject: str, plain: str, client_tg_id: int) -> None:
+    """Уведомление админам с кнопками cvf/cvr — паритет TG _admin_visit_registration_keyboard."""
+    try:
+        kb = visit_card.admin_visit_registration_keyboard(int(client_tg_id))
+        await notify_agency_admins(subject, plain, max_attachments=kb)
+    except Exception:
+        logger.exception("notify_registration_admins tg_id=%s", client_tg_id)
+
+
+def _schedule_notify_registration(subject: str, plain: str, client_tg_id: int) -> None:
+    asyncio.create_task(_notify_registration_admins(subject, plain, client_tg_id))
+
+
+async def _notify_max_client_verified_menu(client_tg_id: int) -> None:
+    from config import MAX_TOKEN
+    from max_client import post_message
+
+    max_client_uid = resolve_max_user_id_from_tg_id(int(client_tg_id))
+    if not max_client_uid or not MAX_TOKEN:
+        return
+    try:
+        body = visit_card.message_role_home(int(max_client_uid))
+        await post_message(MAX_TOKEN, int(max_client_uid), body)
+    except Exception:
+        logger.exception("notify_max_client_verified_menu tg_id=%s", client_tg_id)
+
+
+def _admin_client_registration_callback(max_uid: int, payload: str) -> dict[str, Any] | None:
+    """cvf:/cvr: — верификация заказчика из уведомления (как TG visit_public)."""
+    if not (payload.startswith("cvf:") or payload.startswith("cvr:")):
+        return None
+    if not visit_card.is_admin_user(max_uid):
+        return {
+            "notification": "Нет доступа",
+            "text": "Верификация заказчика доступна только администраторам агентства.",
+            "format": "markdown",
+            "attachments": visit_card.main_menu_keyboard(max_uid),
+        }
+    parts = payload.split(":", 1)
+    if len(parts) < 2 or not parts[1].strip().isdigit():
+        return {
+            "notification": "Ошибка",
+            "text": "Некорректные данные заявки.",
+            "format": "markdown",
+        }
+    client_tg_id = int(parts[1].strip())
+    if payload.startswith("cvf:"):
+        try:
+            approve_visit_client_by_tg_id(client_tg_id)
+        except Exception:
+            logger.exception("admin cvf failed tg_id=%s admin_max=%s", client_tg_id, max_uid)
+            return {
+                "notification": "Ошибка",
+                "text": "Не удалось верифицировать заказчика. Проверьте логи и PostgreSQL.",
+                "format": "markdown",
+            }
+        asyncio.create_task(_notify_max_client_verified_menu(client_tg_id))
+        return {
+            "notification": "Заказчик верифицирован ✅",
+            "text": (
+                f"Заказчик (tg_id `{client_tg_id}`) верифицирован.\n\n"
+                "Ему отправлено обновлённое меню в MAX (если регистрация была из MAX)."
+            ),
+            "format": "markdown",
+            "attachments": visit_card.main_menu_keyboard(max_uid),
+        }
+    # cvr:
+    SESSIONS[int(max_uid)] = {
+        "flow": "admin",
+        "step": "client_reg_reject_reason",
+        "data": {"reject_client_tg_id": client_tg_id},
+    }
+    return {
+        "notification": " ",
+        "text": (
+            f"Отказ в верификации заказчика (tg_id `{client_tg_id}`).\n\n"
+            "Напишите **одним сообщением** причину — её увидит заказчик."
+        ),
+        "format": "markdown",
+        "attachments": visit_card.main_menu_keyboard(max_uid),
+    }
+
+
+def _admin_client_reject_reason_reply(max_uid: int, text: str, data: dict[str, Any]) -> dict[str, Any]:
+    uid_raw = data.get("reject_client_tg_id")
+    if uid_raw is None:
+        clear_session(max_uid)
+        return {
+            "text": "Сессия устарела. Нажмите «Отказать» в уведомлении о регистрации снова.",
+            "format": "markdown",
+            "attachments": visit_card.main_menu_keyboard(max_uid),
+        }
+    reason = (text or "").strip()
+    if len(reason) < 3:
+        return {
+            "notification": "Короче",
+            "text": "Укажите причину подробнее (минимум 3 символа).",
+            "format": "markdown",
+        }
+    client_tg_id = int(uid_raw)
+    res = reject_pending_client_registration(client_tg_id)
+    clear_session(max_uid)
+    if res is None:
+        return {
+            "text": "Заказчик уже верифицирован — отказ не применён.",
+            "format": "markdown",
+            "attachments": visit_card.main_menu_keyboard(max_uid),
+        }
+    if not res.get("ok"):
+        return {
+            "text": "Не удалось применить отказ (проверьте логи и DATABASE_URL).",
+            "format": "markdown",
+            "attachments": visit_card.main_menu_keyboard(max_uid),
+        }
+    notice = (
+        "❌ *Верификация не пройдена.*\n\n"
+        f"Причина:\n{reason}\n\n"
+        "Можно снова пройти регистрацию через «Меню заказчика» на визитке."
+    )
+    max_client_uid = resolve_max_user_id_from_tg_id(client_tg_id)
+    if max_client_uid:
+        from config import MAX_TOKEN
+        from max_client import post_message
+
+        asyncio.create_task(
+            post_message(MAX_TOKEN, int(max_client_uid), {"text": notice, "format": "markdown"})
+        )
+    return {
+        "notification": "Отправлено",
+        "text": "Отказ отправлен заказчику. Регистрация сброшена.",
+        "format": "markdown",
+        "attachments": visit_card.main_menu_keyboard(max_uid),
+    }
 
 
 def _order_preview_text(data: dict[str, Any]) -> str:
@@ -3923,6 +4061,10 @@ async def process_callback(
     payload = _norm_cb_payload(payload)
     who = _sender_label(sender)
 
+    admin_reg = _admin_client_registration_callback(max_uid, payload)
+    if admin_reg is not None:
+        return admin_reg
+
     if payload.startswith("visit_entry_returning:"):
         role = payload.rsplit(":", 1)[-1].strip().lower()
         if role not in ("client", "worker"):
@@ -4118,9 +4260,12 @@ async def process_callback(
                 "format": "markdown",
                 "attachments": visit_card.client_reg_confirm_keyboard(),
             }
-        _schedule_notify(
+        client_tg_id = resolve_tg_id_for_max_user(max_uid)
+        _schedule_notify_registration(
             "Новая регистрация заказчика (MAX)",
-            _format_client_registration_plain(payload_for_save, who),
+            _format_client_registration_plain(payload_for_save, who)
+            + f"\n\ntg_id для верификации: {client_tg_id}",
+            client_tg_id,
         )
         clear_session(max_uid)
         return {
@@ -5214,6 +5359,9 @@ async def process_text(
     flow = s.get("flow")
     step = s.get("step")
     data = s.setdefault("data", {})
+
+    if flow == "admin" and step == "client_reg_reject_reason":
+        return _admin_client_reject_reason_reply(max_uid, text, data)
 
     if flow == "clarification" and step == "waiting_input":
         import visit_clarification_flows as vcf

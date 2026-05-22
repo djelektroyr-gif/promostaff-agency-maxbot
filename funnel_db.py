@@ -868,6 +868,113 @@ def is_max_visit_client_registered(max_user_id: int) -> bool:
     return False
 
 
+def resolve_max_user_id_from_tg_id(tg_id: int) -> int | None:
+    """MAX user_id для уведомления заказчика после cvf (users.max_user_id или synthetic tg_id)."""
+    tid = int(tg_id)
+    if DATABASE_URL:
+        try:
+            with connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT max_user_id FROM users WHERE tg_id = %s LIMIT 1",
+                        (tid,),
+                    )
+                    row = cur.fetchone()
+                    if row and row[0] is not None:
+                        return int(row[0])
+        except Exception:
+            logger.exception("resolve_max_user_id_from_tg_id pg tg_id=%s", tid)
+    if tid >= _MAX_TG_SYNTHETIC_LEAST:
+        return tid - _MAX_TG_SYNTHETIC_LEAST
+    return None
+
+
+def approve_visit_client_by_tg_id(user_id: int) -> dict:
+    """Как promostaff-agency-bot/db.py::approve_visit_client_by_tg_id."""
+    uid = int(user_id)
+    if not DATABASE_URL:
+        return {"user_id": uid, "verified": False, "offline": True}
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO visit_clients (user_id, company_name, contact_name, phone, verified_at, created_at)
+                VALUES (%s, '', '', '', NOW(), NOW())
+                ON CONFLICT (user_id) DO UPDATE SET
+                    verified_at = NOW()
+                """,
+                (uid,),
+            )
+            cur.execute(
+                "UPDATE users SET role = 'client', updated_at = NOW() WHERE tg_id = %s",
+                (uid,),
+            )
+    return {"user_id": uid, "verified": True}
+
+
+def reject_pending_client_registration(user_id: int) -> dict | None:
+    """Отказ до верификации — как db.py::reject_pending_client_registration."""
+    uid = int(user_id)
+    if is_max_visit_client_verified_by_tg(uid):
+        return None
+    if not DATABASE_URL:
+        return {"ok": False, "offline": True, "tg_id": uid}
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM clients WHERE user_id = %s", (uid,))
+            clients_deleted = int(cur.rowcount or 0)
+            cur.execute("DELETE FROM visit_clients WHERE user_id = %s", (uid,))
+            visit_deleted = int(cur.rowcount or 0)
+            cur.execute(
+                """
+                UPDATE users
+                SET role = 'guest',
+                    profession = NULL,
+                    updated_at = NOW()
+                WHERE tg_id = %s
+                  AND LOWER(COALESCE(role, '')) NOT IN ('admin', 'manager', 'администратор', 'менеджер')
+                  AND LOWER(COALESCE(role, '')) IN ('client', 'заказчик', 'guest', '')
+                """,
+                (uid,),
+            )
+            users_updated = int(cur.rowcount or 0)
+            max_uid = resolve_max_user_id_from_tg_id(uid)
+            if max_uid is not None:
+                cur.execute(
+                    "DELETE FROM agency_max_visit_clients WHERE max_user_id = %s",
+                    (int(max_uid),),
+                )
+    return {
+        "ok": True,
+        "tg_id": uid,
+        "clients_deleted": clients_deleted,
+        "visit_clients_deleted": visit_deleted,
+        "users_updated": users_updated,
+    }
+
+
+def is_max_visit_client_verified_by_tg(tg_id: int) -> bool:
+    """verified_at в visit_clients по каноническому tg_id."""
+    uid = int(tg_id)
+    if not DATABASE_URL:
+        return False
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1 FROM visit_clients
+                    WHERE user_id = %s AND verified_at IS NOT NULL
+                    LIMIT 1
+                    """,
+                    (uid,),
+                )
+                return bool(cur.fetchone())
+    except Exception:
+        logger.exception("is_max_visit_client_verified_by_tg tg_id=%s", uid)
+    return False
+
+
 def is_max_visit_client_verified(max_user_id: int) -> bool:
     """Заказчик подтверждён админом (visit_clients.verified_at), как в Telegram."""
     uid = int(max_user_id)

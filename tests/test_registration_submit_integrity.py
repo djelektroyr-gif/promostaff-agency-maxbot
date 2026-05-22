@@ -33,13 +33,21 @@ def test_client_submit_requires_db_save_and_notifies(monkeypatch):
         notify_calls["plain"] = plain
 
     monkeypatch.setattr(visit_flows, "save_max_visit_client_verified", _fake_save)
-    monkeypatch.setattr(visit_flows, "_schedule_notify", _fake_notify)
+    monkeypatch.setattr(visit_flows, "resolve_tg_id_for_max_user", lambda _uid: 10000001234001)
+
+    def _fake_notify_registration(subject, plain, client_tg_id):
+        notify_calls["subject"] = subject
+        notify_calls["plain"] = plain
+        notify_calls["client_tg_id"] = client_tg_id
+
+    monkeypatch.setattr(visit_flows, "_schedule_notify_registration", _fake_notify_registration)
     out = asyncio.run(visit_flows.process_callback(max_uid, "confirm_client_visit_yes", {"username": "integrity"}))
     assert out is not None
     assert "Регистрация принята" in str(out.get("text") or "")
     assert save_calls.get("uid") == max_uid
     assert "ООО Интегритет" in str(save_calls.get("data"))
     assert "регистрация заказчика" in str(notify_calls.get("subject") or "").lower()
+    assert notify_calls.get("client_tg_id") == 10000001234001
     assert "ООО Интегритет" in str(notify_calls.get("plain") or "")
 
 
