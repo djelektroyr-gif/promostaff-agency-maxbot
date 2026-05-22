@@ -1138,6 +1138,9 @@ def _join_begin_identity_chain(s: dict[str, Any]) -> dict[str, Any]:
 
 
 def _join_begin_tbank_gate(s: dict[str, Any]) -> dict[str, Any]:
+    data = s.get("data") if isinstance(s.get("data"), dict) else {}
+    if data.get("join_skip_tbank"):
+        return _join_begin_identity_chain(s)
     kb = visit_card.tbank_cabinet_gate_keyboard()
     plain = visit_card.tbank_self_employed_invite_plain()
     if not kb or not plain:
@@ -1517,6 +1520,54 @@ async def _notify_registration_admins(subject: str, plain: str, client_tg_id: in
 
 def _schedule_notify_registration(subject: str, plain: str, client_tg_id: int) -> None:
     asyncio.create_task(_notify_registration_admins(subject, plain, client_tg_id))
+
+
+def _schedule_notify_client_invite_worker(
+    client_tg_id: int, worker_tg_id: int, worker_name: str
+) -> None:
+    asyncio.create_task(_notify_client_invite_worker(client_tg_id, worker_tg_id, worker_name))
+
+
+async def _notify_client_invite_worker(
+    client_tg_id: int, worker_tg_id: int, worker_name: str
+) -> None:
+    from config import MAX_TOKEN
+    from max_attachments import cb_btn, inline_keyboard
+    from max_client import post_message
+
+    max_client_uid = resolve_max_user_id_from_tg_id(int(client_tg_id))
+    if not max_client_uid or not MAX_TOKEN or not worker_tg_id:
+        return
+    name = (worker_name or "").strip() or str(worker_tg_id)
+    kb = inline_keyboard(
+        [
+            [
+                cb_btn("✅ Верифицировать", f"max_cwvf_{worker_tg_id}"),
+                cb_btn("❌ Отказать", f"max_cwrj_{worker_tg_id}"),
+            ],
+            [cb_btn("👤 Карточка", f"max_cwcard_{worker_tg_id}")],
+        ]
+    )
+    try:
+        await post_message(
+            MAX_TOKEN,
+            int(max_client_uid),
+            {
+                "text": (
+                    f"*Новый исполнитель в команде*\n\n"
+                    f"{name}\n\n"
+                    "Проверьте анкету и подтвердите или отклоните."
+                ),
+                "format": "markdown",
+                "attachments": kb,
+            },
+        )
+    except Exception:
+        logger.exception(
+            "notify_client_invite_worker client_tg=%s worker=%s",
+            client_tg_id,
+            worker_tg_id,
+        )
 
 
 async def _notify_max_client_verified_menu(client_tg_id: int) -> None:
@@ -4165,6 +4216,14 @@ async def process_callback(
             return _show_join_team_intro(max_uid)
 
     s = SESSIONS.get(max_uid)
+    if s and s.get("flow") == "company_invite":
+        import max_company_invite as mci
+
+        inv = mci.process_callback(max_uid, payload, s, sender)
+        if inv is not None:
+            SESSIONS[max_uid] = s
+            return inv
+
     _reg_payloads = frozenset(
         {
             "admin_agency_hub",
@@ -4244,6 +4303,9 @@ async def process_callback(
             "max_caspick_",
             "max_cshift_proj_",
             "proj_coord_invite_",
+            "max_cwcard_",
+            "max_cwvf_",
+            "max_cwrj_",
         )
     ):
         return registered_menu_static_reply(max_uid, payload)
@@ -5405,7 +5467,67 @@ async def process_callback(
         aligned["specialization_tags"] = _build_join_tags(aligned)
         plain = _format_join_plain(aligned, rid, who)
         username = (sender or {}).get("username") if isinstance(sender, dict) else ""
+        invite_id = data.get("company_invite_id")
         join_saved_id: int | None = None
+        if invite_id:
+            from funnel_db import save_company_invite_join_max
+
+            try:
+                saved_pair = save_company_invite_join_max(
+                    max_uid, str(username or ""), aligned
+                )
+            except Exception:
+                logger.exception("save_company_invite_join_max")
+                saved_pair = (None, None)
+            join_saved_id, worker_tg = saved_pair if saved_pair else (None, None)
+            if join_saved_id is None and worker_tg is None:
+                return {
+                    "notification": "Ошибка",
+                    "text": (
+                        "❌ Не удалось сохранить анкету.\n\n"
+                        "Проверьте данные и повторите отправку."
+                    ),
+                    "format": "markdown",
+                    "attachments": visit_card.join_review_keyboard(),
+                }
+            pool = str(aligned.get("join_source") or "") == "customer_pool"
+            pool_note = (
+                "\n\n👥 Пул заказчика — ожидайте проверки заказчиком."
+                if pool
+                else "\n\n👥 Ожидает верификации заказчиком."
+            )
+            _schedule_notify(
+                f"Анкета по приглашению ci_ #{join_saved_id or rid}",
+                plain + pool_note,
+            )
+            notify_tg = aligned.get("join_notify_client_tg_id")
+            if notify_tg:
+                _schedule_notify_client_invite_worker(
+                    int(notify_tg),
+                    int(worker_tg or 0),
+                    str(aligned.get("full_name") or ""),
+                )
+            funnel_touch_complete(max_uid)
+            clear_session(max_uid)
+            wait_txt = (
+                "Заказчик проверит ваши данные в разделе «Команда». "
+                "После одобрения откроются смены и уведомления."
+            )
+            if pool:
+                wait_txt = (
+                    "Заказчик проверит анкету в «Команда». "
+                    "Ставки на сменах назначает заказчик или координатор."
+                )
+            return {
+                "notification": "Отправлено ✅",
+                "text": (
+                    "*Анкета отправлена.*\n\n"
+                    f"{wait_txt}\n\n"
+                    f"Спасибо за интерес к {COMPANY_NAME}!"
+                ),
+                "format": "markdown",
+                "attachments": visit_card.worker_pending_verification_keyboard(),
+            }
         try:
             join_saved_id = save_visit_join(max_uid, str(username or ""), json.dumps(aligned, ensure_ascii=False))
         except Exception:
@@ -5451,6 +5573,14 @@ async def process_text(
     flow = s.get("flow")
     step = s.get("step")
     data = s.setdefault("data", {})
+
+    if flow == "company_invite":
+        import max_company_invite as mci
+
+        inv = mci.process_text(max_uid, text, s, sender)
+        if inv is not None:
+            SESSIONS[max_uid] = s
+            return inv
 
     if flow == "client_company":
         import max_client_company

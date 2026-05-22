@@ -11,6 +11,7 @@ from config import CONTACT_TELEGRAM, PRIVACY_POLICY_URL
 from max_attachments import cb_btn, inline_keyboard
 from funnel_db import (
     assign_worker_client_pool_max,
+    client_owns_company_member_max,
     client_owns_shift_max,
     count_company_members_max,
     create_company_invite_max,
@@ -158,15 +159,11 @@ def reply_max_client_company(max_uid: int, payload: str) -> dict[str, Any] | Non
             created_by_max_uid=max_uid,
             ttl_days=_INVITE_TTL,
         )
-        link = _tg_invite_link(token)
+        from max_company_invite import invite_share_text_max
+
         return {
             "notification": "Ссылка готова",
-            "text": (
-                "*Приглашение персонала*\n\n"
-                "Скопируйте ссылку и отправьте исполнителю в Telegram "
-                "(регистрация и согласие — в боте агентства):\n\n"
-                f"{link}"
-            ),
+            "text": invite_share_text_max(token),
             "format": "markdown",
             "attachments": _team_hub_kb(),
         }
@@ -180,14 +177,11 @@ def reply_max_client_company(max_uid: int, payload: str) -> dict[str, Any] | Non
             created_by_max_uid=max_uid,
             ttl_days=_INVITE_TTL,
         )
-        link = _tg_invite_link(token)
+        from max_company_invite import invite_share_text_max
+
         return {
             "notification": "Ссылка готова",
-            "text": (
-                "*Приглашение координатора*\n\n"
-                f"{link}\n\n"
-                "_Регистрация координатора проходит в Telegram-боте агентства._"
-            ),
+            "text": invite_share_text_max(token),
             "format": "markdown",
             "attachments": _team_hub_kb(),
         }
@@ -369,11 +363,106 @@ def reply_max_client_company(max_uid: int, payload: str) -> dict[str, Any] | Non
             project_id=pid,
             ttl_days=_INVITE_TTL,
         )
+        from max_company_invite import invite_share_text_max
+
         return {
             "notification": "Ссылка",
-            "text": f"*Координатор на проект #{pid}*\n\n{_tg_invite_link(token)}",
+            "text": f"*Координатор на проект #{pid}*\n\n{invite_share_text_max(token)}",
             "format": "markdown",
             "attachments": inline_keyboard([[cb_btn("🔙 К проектам", "client_projects_hub")]]),
+        }
+
+    if p.startswith("max_cwcard_"):
+        if gate:
+            return gate
+        raw = p.replace("max_cwcard_", "")
+        if not raw.isdigit():
+            return None
+        wid = int(raw)
+        if not client_owns_company_member_max(max_uid, wid, member_role="staff"):
+            return {
+                "notification": "Нет доступа",
+                "text": "❌ Нет доступа к этому исполнителю.",
+                "format": "markdown",
+            }
+        from funnel_db import get_worker_brief_max
+
+        w = get_worker_brief_max(wid)
+        if not w:
+            return {
+                "notification": "Не найден",
+                "text": "Исполнитель не найден.",
+                "format": "markdown",
+            }
+        st = str(w.get("status") or "—")
+        kb_rows: list[list[dict]] = [
+            [cb_btn("🔙 К списку", "client_team_staff")],
+        ]
+        if st.lower() in ("pending_review", "clarification_needed", "new"):
+            kb_rows.insert(
+                0,
+                [
+                    cb_btn("✅ Верифицировать", f"max_cwvf_{wid}"),
+                    cb_btn("❌ Отказать", f"max_cwrj_{wid}"),
+                ],
+            )
+        return {
+            "notification": " ",
+            "text": (
+                f"*Исполнитель* `{wid}`\n\n"
+                f"ФИО: {w.get('full_name') or '—'}\n"
+                f"Тел.: {w.get('phone') or '—'}\n"
+                f"Профессия: {w.get('profession') or '—'}\n"
+                f"Статус: {st}\n"
+            ),
+            "format": "markdown",
+            "attachments": inline_keyboard(kb_rows),
+        }
+
+    if p.startswith("max_cwvf_"):
+        if gate:
+            return gate
+        raw = p.replace("max_cwvf_", "")
+        if not raw.isdigit():
+            return None
+        wid = int(raw)
+        if not client_owns_company_member_max(max_uid, wid, member_role="staff"):
+            return {"notification": "Нет доступа", "text": "❌ Нет доступа.", "format": "markdown"}
+        from funnel_db import approve_company_member_worker_max
+
+        ok = approve_company_member_worker_max(company_id=int(company_id), worker_tg_id=wid)
+        return {
+            "notification": "Готово" if ok else "Ошибка",
+            "text": (
+                "✅ Исполнитель верифицирован."
+                if ok
+                else "❌ Не удалось подтвердить. Попробуйте позже."
+            ),
+            "format": "markdown",
+            "attachments": inline_keyboard([[cb_btn("🔙 К команде", "client_team_hub")]]),
+        }
+
+    if p.startswith("max_cwrj_"):
+        if gate:
+            return gate
+        raw = p.replace("max_cwrj_", "")
+        if not raw.isdigit():
+            return None
+        wid = int(raw)
+        if not client_owns_company_member_max(max_uid, wid, member_role="staff"):
+            return {"notification": "Нет доступа", "text": "❌ Нет доступа.", "format": "markdown"}
+        from funnel_db import reject_company_member_worker_max
+
+        ok = reject_company_member_worker_max(company_id=int(company_id), worker_tg_id=wid)
+        return {
+            "notification": "Готово" if ok else "Ошибка",
+            "text": (
+                "Исполнитель отклонён."
+                if ok
+                else "❌ Не удалось отклонить."
+            ),
+            "format": "markdown",
+            "attachments": inline_keyboard([[cb_btn("🔙 К команде", "client_team_hub")]]),
         }
 
     return None

@@ -336,6 +336,21 @@ async def process_update(body: dict[str, Any]) -> None:
     logger.debug("MAX update: type=%r max_uid=%r", update_type, max_uid)
 
     if update_type in ("bot_started", "user_added") and max_uid is not None:
+        import max_company_invite as mci
+
+        start_raw = ""
+        for key in ("payload", "start_payload", "deeplink", "param", "start"):
+            v = body.get(key)
+            if isinstance(v, str) and v.strip():
+                start_raw = v.strip()
+                break
+        ci_tok = mci.parse_ci_token(start_raw) if start_raw else None
+        if ci_tok:
+            inv = mci.start_invite_session(max_uid, ci_tok)
+            if inv:
+                await _send_message(max_uid, inv)
+                await _sync_funnel(max_uid)
+                return
         visit_flows.clear_session(max_uid)
         await _send_message(max_uid, visit_card.message_role_home(max_uid))
         await _sync_funnel(max_uid)
@@ -348,6 +363,16 @@ async def process_update(body: dict[str, Any]) -> None:
         sender = _sender_from_message(body)
 
         if re.match(r"^/(start|старт)\b", text, re.I):
+            import max_company_invite as mci
+
+            rest = re.sub(r"^/(start|старт)\s*", "", text, flags=re.I).strip()
+            ci_tok = mci.parse_ci_token(rest) if rest else None
+            if ci_tok:
+                inv = mci.start_invite_session(max_uid, ci_tok)
+                if inv:
+                    await _send_message(max_uid, inv)
+                    await _sync_funnel(max_uid)
+                    return
             visit_flows.clear_session(max_uid)
             await _send_message(max_uid, visit_card.message_role_home(max_uid))
             await _sync_funnel(max_uid)
@@ -412,27 +437,15 @@ async def process_update(body: dict[str, Any]) -> None:
             await _sync_funnel(max_uid)
             return
 
-        ci_m = re.search(r"(?:start=|/)?ci_([a-f0-9]{16,64})", text, re.I)
-        if ci_m:
-            import max_client_company
+        import max_company_invite as mci
 
-            token = ci_m.group(1)
-            link = max_client_company._tg_invite_link(token)
-            await _send_message(
-                max_uid,
-                {
-                    "text": (
-                        "*Приглашение в команду*\n\n"
-                        "Полная регистрация (согласие ПДн, анкета) — в Telegram-боте агентства:\n\n"
-                        f"{link}\n\n"
-                        "_Откройте ссылку в Telegram._"
-                    ),
-                    "format": "markdown",
-                    "attachments": visit_card.main_menu_keyboard(max_uid),
-                },
-            )
-            await _sync_funnel(max_uid)
-            return
+        ci_tok = mci.parse_ci_token(text)
+        if ci_tok:
+            inv = mci.start_invite_session(max_uid, ci_tok)
+            if inv:
+                await _send_message(max_uid, inv)
+                await _sync_funnel(max_uid)
+                return
 
         reply = await visit_flows.process_text(max_uid, text, sender, inner)
         await _sync_funnel(max_uid)

@@ -4291,6 +4291,504 @@ def create_company_invite_max(
     return token
 
 
+COMPANY_MEMBER_VER_REJECTED = "rejected"
+
+
+def fetch_company_invite_by_token_max(token: str) -> dict[str, Any] | None:
+    t = (token or "").strip()
+    if not t or not DATABASE_URL:
+        return None
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, token, company_id, project_id, invite_kind,
+                           created_by_tg_id, expires_at, used_at, used_by_tg_id, revoked_at
+                    FROM company_invites WHERE token = %s
+                    """,
+                    (t,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        cols = (
+            "id",
+            "token",
+            "company_id",
+            "project_id",
+            "invite_kind",
+            "created_by_tg_id",
+            "expires_at",
+            "used_at",
+            "used_by_tg_id",
+            "revoked_at",
+        )
+        return dict(zip(cols, row))
+    except Exception:
+        logger.exception("fetch_company_invite_by_token_max")
+        return None
+
+
+def mark_company_invite_used_max(invite_id: int, used_by_tg_id: int) -> None:
+    if not DATABASE_URL:
+        return
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE company_invites
+                    SET used_at = NOW(), used_by_tg_id = %s
+                    WHERE id = %s AND used_at IS NULL
+                    """,
+                    (int(used_by_tg_id), int(invite_id)),
+                )
+            conn.commit()
+    except Exception:
+        logger.exception("mark_company_invite_used_max invite_id=%s", invite_id)
+
+
+def upsert_company_member_max(
+    *,
+    company_id: int,
+    tg_id: int,
+    member_role: str = "staff",
+    verification_status: str | None = None,
+    vacancy_alerts_opt_in: bool | None = None,
+) -> None:
+    if not DATABASE_URL:
+        return
+    role = (member_role or "staff").strip().lower()[:32]
+    ver = (verification_status or COMPANY_MEMBER_VER_APPROVED).strip().lower()[:32]
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO company_members (
+                        company_id, tg_id, member_role, verification_status, vacancy_alerts_opt_in
+                    )
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (company_id, tg_id) DO UPDATE SET
+                        member_role = EXCLUDED.member_role,
+                        verification_status = COALESCE(
+                            EXCLUDED.verification_status, company_members.verification_status
+                        ),
+                        vacancy_alerts_opt_in = COALESCE(
+                            EXCLUDED.vacancy_alerts_opt_in, company_members.vacancy_alerts_opt_in
+                        )
+                    """,
+                    (
+                        int(company_id),
+                        int(tg_id),
+                        role,
+                        ver,
+                        vacancy_alerts_opt_in,
+                    ),
+                )
+            conn.commit()
+    except Exception:
+        logger.exception("upsert_company_member_max company=%s tg=%s", company_id, tg_id)
+
+
+def set_user_company_id_max(tg_id: int, company_id: int) -> None:
+    if not DATABASE_URL:
+        return
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE users SET company_id = %s, updated_at = NOW() WHERE tg_id = %s",
+                    (int(company_id), int(tg_id)),
+                )
+            conn.commit()
+    except Exception:
+        logger.exception("set_user_company_id_max tg=%s", tg_id)
+
+
+def record_user_pd_consent_max(tg_id: int, *, version: str = "company_invite_v1") -> None:
+    if not DATABASE_URL:
+        return
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO users (tg_id, pd_consent_version, pd_consent_at, created_at, updated_at)
+                    VALUES (%s, %s, NOW(), NOW(), NOW())
+                    ON CONFLICT (tg_id) DO UPDATE SET
+                        pd_consent_version = EXCLUDED.pd_consent_version,
+                        pd_consent_at = NOW(),
+                        updated_at = NOW()
+                    """,
+                    (int(tg_id), version),
+                )
+            conn.commit()
+    except Exception:
+        logger.exception("record_user_pd_consent_max tg=%s", tg_id)
+
+
+def set_user_vacancy_alerts_opt_in_max(tg_id: int, opt_in: bool) -> None:
+    if not DATABASE_URL:
+        return
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE users SET vacancy_alerts_opt_in = %s, updated_at = NOW() WHERE tg_id = %s",
+                    (1 if opt_in else 0, int(tg_id)),
+                )
+            conn.commit()
+    except Exception:
+        logger.exception("set_user_vacancy_alerts_opt_in_max tg=%s", tg_id)
+
+
+def get_company_name_max(company_id: int) -> str:
+    if not DATABASE_URL:
+        return f"компания #{company_id}"
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT name FROM companies WHERE id = %s", (int(company_id),))
+                row = cur.fetchone()
+        if not row:
+            return f"компания #{company_id}"
+        return str(row[0] or "").strip() or f"компания #{company_id}"
+    except Exception:
+        logger.exception("get_company_name_max")
+        return f"компания #{company_id}"
+
+
+def update_user_coordinator_profile_max(
+    tg_id: int,
+    *,
+    full_name: str,
+    birth_date_iso: str,
+    position: str,
+    phone: str,
+    email: str,
+) -> None:
+    if not DATABASE_URL:
+        return
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO users (
+                        tg_id, role, full_name, phone, profession, birth_date, email, created_at, updated_at
+                    )
+                    VALUES (%s, 'worker', %s, %s, %s, %s::date, %s, NOW(), NOW())
+                    ON CONFLICT (tg_id) DO UPDATE SET
+                        full_name = EXCLUDED.full_name,
+                        phone = EXCLUDED.phone,
+                        profession = EXCLUDED.profession,
+                        birth_date = EXCLUDED.birth_date,
+                        email = EXCLUDED.email,
+                        updated_at = NOW()
+                    """,
+                    (
+                        int(tg_id),
+                        full_name,
+                        phone,
+                        position,
+                        birth_date_iso,
+                        email,
+                    ),
+                )
+            conn.commit()
+    except Exception:
+        logger.exception("update_user_coordinator_profile_max tg=%s", tg_id)
+
+
+def assign_project_coordinator_max(project_id: int, tg_id: int) -> None:
+    if not DATABASE_URL:
+        return
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO project_coordinators (project_id, tg_id)
+                    VALUES (%s, %s)
+                    ON CONFLICT (project_id, tg_id) DO NOTHING
+                    """,
+                    (int(project_id), int(tg_id)),
+                )
+            conn.commit()
+    except Exception:
+        logger.exception("assign_project_coordinator_max project=%s", project_id)
+
+
+def client_owns_company_member_max(
+    client_max_uid: int,
+    member_tg_id: int,
+    *,
+    member_role: str = "staff",
+) -> bool:
+    company_id = get_client_company_id_max(int(client_max_uid))
+    if not company_id:
+        return False
+    role = (member_role or "staff").strip().lower()
+    if not DATABASE_URL:
+        return False
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1 FROM company_members
+                    WHERE company_id = %s AND tg_id = %s AND member_role = %s
+                    LIMIT 1
+                    """,
+                    (int(company_id), int(member_tg_id), role),
+                )
+                return bool(cur.fetchone())
+    except Exception:
+        logger.exception("client_owns_company_member_max")
+        return False
+
+
+def get_worker_brief_max(worker_tg_id: int) -> dict[str, Any] | None:
+    if not DATABASE_URL:
+        return None
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT w.user_id, w.full_name, w.phone, w.profession, w.status,
+                           COALESCE(w.cooperation_mode, %s)
+                    FROM workers w WHERE w.user_id = %s LIMIT 1
+                    """,
+                    (COOPERATION_MODE_AGENCY, int(worker_tg_id)),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "user_id": int(row[0]),
+            "full_name": row[1],
+            "phone": row[2],
+            "profession": row[3],
+            "status": row[4],
+            "cooperation_mode": normalize_cooperation_mode(row[5]),
+        }
+    except Exception:
+        logger.exception("get_worker_brief_max")
+        return None
+
+
+def approve_company_member_worker_max(
+    *,
+    company_id: int,
+    worker_tg_id: int,
+) -> bool:
+    if not DATABASE_URL:
+        return False
+    wid = int(worker_tg_id)
+    w = get_worker_brief_max(wid)
+    if not w:
+        return False
+    mode = w.get("cooperation_mode") or COOPERATION_MODE_AGENCY
+    upsert_company_member_max(
+        company_id=int(company_id),
+        tg_id=wid,
+        member_role="staff",
+        verification_status=COMPANY_MEMBER_VER_APPROVED,
+    )
+    if mode == COOPERATION_MODE_CUSTOMER:
+        try:
+            with connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE workers SET status = %s WHERE user_id = %s",
+                        (WORKER_STATUS_APPROVED, wid),
+                    )
+                conn.commit()
+            return True
+        except Exception:
+            logger.exception("approve_company_member_worker_max customer uid=%s", wid)
+            return False
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE workers SET status = %s WHERE user_id = %s",
+                    (WORKER_STATUS_APPROVED, wid),
+                )
+            conn.commit()
+        return True
+    except Exception:
+        logger.exception("approve_company_member_worker_max uid=%s", wid)
+        return False
+
+
+def reject_company_member_worker_max(*, company_id: int, worker_tg_id: int) -> bool:
+    if not DATABASE_URL:
+        return False
+    wid = int(worker_tg_id)
+    upsert_company_member_max(
+        company_id=int(company_id),
+        tg_id=wid,
+        member_role="staff",
+        verification_status=COMPANY_MEMBER_VER_REJECTED,
+    )
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE workers SET status = %s WHERE user_id = %s",
+                    (WORKER_STATUS_REJECTED, wid),
+                )
+            conn.commit()
+        return True
+    except Exception:
+        logger.exception("reject_company_member_worker_max uid=%s", wid)
+        return False
+
+
+def save_company_invite_join_max(
+    max_user_id: int,
+    username: str,
+    data: dict[str, Any],
+) -> tuple[int | None, int]:
+    """
+    Финализация анкеты по приглашению ci_.
+    Возвращает (request_id или 0 для customer_pool, canonical tg_id).
+    """
+    if not DATABASE_URL:
+        tg = worker_tg_id_for_max(int(max_user_id))
+        return 0, tg
+    payload_data = dict(data or {})
+    join_source = str(payload_data.get("join_source") or "").strip().lower()
+    customer_pool = join_source == "customer_pool"
+    if customer_pool:
+        payload_data["cooperation_mode"] = COOPERATION_MODE_CUSTOMER
+    else:
+        payload_data["cooperation_mode"] = normalize_cooperation_mode(
+            payload_data.get("cooperation_mode")
+        )
+    phone = (payload_data.get("phone") or "").strip()
+    tg_id = int(payload_data.get("canonical_user_tg_id") or 0) or resolve_tg_id_for_max_user(
+        int(max_user_id)
+    )
+    if phone and not payload_data.get("canonical_user_tg_id"):
+        tg_id = _client_tg_id_for_max_cp(int(max_user_id), phone=phone, data=payload_data)
+    payload_data["canonical_user_tg_id"] = tg_id
+    full_name = (payload_data.get("full_name") or "").strip()
+    position = (payload_data.get("position") or "").strip()
+    try:
+        pay_tier = int(payload_data.get("experience_base_stars", 3))
+    except (TypeError, ValueError):
+        pay_tier = 3
+    pay_tier = max(0, min(5, pay_tier))
+    base_rating = float(pay_tier) if pay_tier >= 1 else 3.0
+    city_sql = (payload_data.get("city") or "").strip() or None
+    metro_sql = (payload_data.get("metro_station") or "").strip() or None
+    selfie_ref = (str(payload_data.get("selfie_url") or "")).strip() or None
+    payload_s = json.dumps(payload_data, ensure_ascii=False, default=str)
+    request_id = 0
+    company_id_inv = payload_data.get("company_invite_company_id")
+    invite_id = payload_data.get("company_invite_id")
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                if not customer_pool:
+                    cur.execute(
+                        """
+                        INSERT INTO agency_visit_join_requests (source, user_id, username, payload)
+                        VALUES ('max', %s, %s, %s::jsonb)
+                        RETURNING id
+                        """,
+                        (tg_id, username, payload_s),
+                    )
+                    row = cur.fetchone()
+                    request_id = int(row[0]) if row else 0
+                cur.execute(
+                    """
+                    INSERT INTO users (
+                        tg_id, max_user_id, role, full_name, phone, profession, rating,
+                        city, metro_station, selfie_photo_url, created_at, updated_at
+                    ) VALUES (%s, %s, 'worker', %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (tg_id) DO UPDATE SET
+                        max_user_id = COALESCE(EXCLUDED.max_user_id, users.max_user_id),
+                        full_name = EXCLUDED.full_name,
+                        phone = EXCLUDED.phone,
+                        profession = EXCLUDED.profession,
+                        rating = EXCLUDED.rating,
+                        city = EXCLUDED.city,
+                        metro_station = EXCLUDED.metro_station,
+                        selfie_photo_url = COALESCE(
+                            NULLIF(BTRIM(EXCLUDED.selfie_photo_url), ''), users.selfie_photo_url
+                        ),
+                        updated_at = NOW()
+                    """,
+                    (
+                        tg_id,
+                        int(max_user_id),
+                        full_name,
+                        phone,
+                        position,
+                        base_rating,
+                        city_sql,
+                        metro_sql,
+                        selfie_ref,
+                    ),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO workers (
+                        user_id, full_name, phone, profession, status, rating,
+                        compensation_pay_tier, cooperation_mode, registered_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        full_name = EXCLUDED.full_name,
+                        phone = EXCLUDED.phone,
+                        profession = EXCLUDED.profession,
+                        status = EXCLUDED.status,
+                        rating = EXCLUDED.rating,
+                        compensation_pay_tier = EXCLUDED.compensation_pay_tier,
+                        cooperation_mode = EXCLUDED.cooperation_mode
+                    """,
+                    (
+                        tg_id,
+                        full_name,
+                        phone,
+                        position,
+                        WORKER_STATUS_PENDING_REVIEW,
+                        base_rating,
+                        pay_tier,
+                        payload_data["cooperation_mode"],
+                    ),
+                )
+            conn.commit()
+    except Exception:
+        logger.exception("save_company_invite_join_max max_uid=%s", max_user_id)
+        return None, None
+    if company_id_inv:
+        try:
+            upsert_company_member_max(
+                company_id=int(company_id_inv),
+                tg_id=int(tg_id),
+                member_role="staff",
+                verification_status=COMPANY_MEMBER_VER_PENDING,
+                vacancy_alerts_opt_in=bool(payload_data.get("ci_vacancy_alerts_yes")),
+            )
+            set_user_company_id_max(int(tg_id), int(company_id_inv))
+        except Exception:
+            logger.exception("save_company_invite_join member max_uid=%s", max_user_id)
+    if invite_id:
+        try:
+            mark_company_invite_used_max(int(invite_id), int(tg_id))
+        except Exception:
+            logger.exception("save_company_invite_join mark_used max_uid=%s", max_user_id)
+    if request_id:
+        _sync_hrm_crm_card_for_join_request(request_id, tg_id, stage="new", payload_dict=payload_data)
+    return (request_id or 0), tg_id
+
+
 def list_shifts_for_company_max(company_id: int, *, limit: int = 8, offset: int = 0) -> tuple[list[dict], int]:
     if not DATABASE_URL:
         return [], 0
