@@ -2461,6 +2461,12 @@ def _render_admin_order_detail(order_id: int) -> dict[str, Any]:
 
 def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] | None:
     """Меню заказчика/исполнителя без активной SESSION (после clear_session)."""
+    import max_client_company
+
+    cc = max_client_company.reply_max_client_company(max_uid, payload)
+    if cc is not None:
+        return cc
+
     from funnel_db import (
         COOPERATION_MODE_PLATFORM,
         get_max_worker_cooperation_mode,
@@ -3561,50 +3567,7 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
         }
 
     if payload == "client_reg_create_project":
-        if not is_max_visit_client_verified(max_uid):
-            return {
-                "notification": "Нужна регистрация",
-                "text": "Сначала пройдите регистрацию заказчика.",
-                "format": "markdown",
-                "attachments": visit_card.main_menu_keyboard(),
-            }
-        company_id = get_client_company_id_max(max_uid)
-        if not company_id:
-            return {
-                "notification": "Нет компании",
-                "text": "Компания не привязана к профилю. Напишите менеджеру для привязки.",
-                "format": "markdown",
-                "attachments": visit_card.client_registered_main_menu_keyboard(),
-            }
-        project_name = f"Проект клиента {datetime.now().strftime('%d.%m %H:%M')}"
-        try:
-            project_id = create_project_for_company_max(int(company_id), project_name)
-        except ValueError as e:
-            return {
-                "notification": "Блокировка",
-                "text": f"*Создание проекта заблокировано*\n\n{str(e)}",
-                "format": "markdown",
-                "attachments": visit_card.client_projects_hub_keyboard(),
-            }
-        except Exception:
-            logger.exception("client_reg_create_project failed max_uid=%s company_id=%s", max_uid, company_id)
-            return {
-                "notification": "Ошибка",
-                "text": "Не удалось создать проект. Попробуйте позже.",
-                "format": "markdown",
-                "attachments": visit_card.client_projects_hub_keyboard(),
-            }
-        return {
-            "notification": f"Проект #{project_id} создан",
-            "text": (
-                "*Проект создан*\n\n"
-                f"ID: #{int(project_id)}\n"
-                f"Название: {project_name}\n\n"
-                "Откройте «Мои проекты», чтобы увидеть обновленный список."
-            ),
-            "format": "markdown",
-            "attachments": visit_card.client_projects_hub_keyboard(),
-        }
+        return registered_menu_static_reply(max_uid, "client_project_create")
 
     if payload == "client_reg_subscription":
         if not is_max_visit_client_verified(max_uid):
@@ -4161,6 +4124,10 @@ async def process_callback(
     payload = _norm_cb_payload(payload)
     who = _sender_label(sender)
 
+    if payload in ("main_menu", "back", "back_to_main"):
+        clear_session(max_uid)
+        return visit_card.message_role_home(max_uid)
+
     admin_reg = _admin_client_registration_callback(max_uid, payload)
     if admin_reg is not None:
         return admin_reg
@@ -4228,6 +4195,13 @@ async def process_callback(
             "wvtab_past",
             "wvtab_all",
             "client_reg_create_project",
+            "client_project_create",
+            "client_create_shift",
+            "client_assign_shift",
+            "client_team_staff",
+            "client_team_coordinators",
+            "client_invite_staff",
+            "client_invite_coordinator",
             "client_reg_subscription",
             "client_reg_team",
             "client_reg_reports",
@@ -4262,6 +4236,14 @@ async def process_callback(
             "worker_break_menu_",
             "worker_break_start_",
             "worker_break_stop_",
+            "ctstaff_p_",
+            "ctcoord_p_",
+            "caslp_",
+            "caswp_",
+            "casdo_",
+            "max_caspick_",
+            "max_cshift_proj_",
+            "proj_coord_invite_",
         )
     ):
         return registered_menu_static_reply(max_uid, payload)
@@ -5469,6 +5451,13 @@ async def process_text(
     flow = s.get("flow")
     step = s.get("step")
     data = s.setdefault("data", {})
+
+    if flow == "client_company":
+        import max_client_company
+
+        cc = max_client_company.process_client_company_session_text(max_uid, text, s)
+        if cc is not None:
+            return cc
 
     if flow == "admin" and step == "client_reg_reject_reason":
         return _admin_client_reject_reason_reply(max_uid, text, data)

@@ -106,6 +106,20 @@ def is_visit_flow_payload(p: str) -> bool:
         return True
     if p.startswith(("pos_", "jpos_", "exp_", "quick_", "jp_", "shift_", "docs_", "prio_")):
         return True
+    if p.startswith(
+        (
+            "ctstaff_p_",
+            "ctcoord_p_",
+            "caslp_",
+            "caswp_",
+            "casdo_",
+            "max_caspick_",
+            "max_cshift_proj_",
+            "proj_coord_invite_",
+            "client_assign_pick_",
+        )
+    ):
+        return True
     if (p or "").startswith("tax_"):
         return True
     if p in (
@@ -157,6 +171,13 @@ def is_visit_flow_payload(p: str) -> bool:
         "join_metro_skip",
         "client_reg_projects",
         "client_reg_create_project",
+        "client_project_create",
+        "client_create_shift",
+        "client_assign_shift",
+        "client_team_staff",
+        "client_team_coordinators",
+        "client_invite_staff",
+        "client_invite_coordinator",
         "client_reg_subscription",
         "client_reg_team",
         "client_reg_reports",
@@ -254,7 +275,9 @@ def client_projects_hub_keyboard() -> list[dict]:
     return inline_keyboard(
         [
             [cb_btn("📋 Список проектов", "my_projects")],
-            [cb_btn("➕ Создать проект", "client_reg_create_project")],
+            [cb_btn("➕ Создать проект", "client_project_create")],
+            [cb_btn("📅 Организовать смену", "client_create_shift")],
+            [cb_btn("👥 Назначить на смену", "client_assign_shift")],
             [cb_btn("🔙 К главному меню", "main_menu")],
         ]
     )
@@ -263,7 +286,10 @@ def client_projects_hub_keyboard() -> list[dict]:
 def client_team_hub_keyboard() -> list[dict]:
     return inline_keyboard(
         [
-            [cb_btn("👥 Состав команды", "client_reg_team")],
+            [cb_btn("👷 Исполнители", "client_team_staff")],
+            [cb_btn("👤 Координаторы", "client_team_coordinators")],
+            [cb_btn("👷 Пригласить персонал", "client_invite_staff")],
+            [cb_btn("👤 Пригласить координатора", "client_invite_coordinator")],
             [cb_btn("🔙 К главному меню", "main_menu")],
         ]
     )

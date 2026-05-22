@@ -65,7 +65,12 @@ WORKER_STATUS_REJECTED = "rejected"
 WORKER_STATUS_APPROVED = "approved"
 COOPERATION_MODE_AGENCY = "agency"
 COOPERATION_MODE_PLATFORM = "platform"
-VALID_COOPERATION_MODES = frozenset({COOPERATION_MODE_AGENCY, COOPERATION_MODE_PLATFORM})
+COOPERATION_MODE_CUSTOMER = "customer"
+VALID_COOPERATION_MODES = frozenset(
+    {COOPERATION_MODE_AGENCY, COOPERATION_MODE_PLATFORM, COOPERATION_MODE_CUSTOMER}
+)
+COMPANY_MEMBER_VER_APPROVED = "approved"
+COMPANY_MEMBER_VER_PENDING = "pending"
 _HRM_PIPELINE = "hrm"
 _HRM_JOIN_SOURCE = "agency_visit_join"
 _SHIFT_ACTION_SOURCE_COLS_READY = False
@@ -3776,7 +3781,7 @@ def list_company_team_for_client_max(company_id: int, limit: int = 40) -> list[d
                         COALESCE(w.rating, 0),
                         COUNT(sa.id)::int AS shifts_count
                     FROM workers w
-                    JOIN shift_assignments sa ON sa.worker_id = w.tg_id
+                    JOIN shift_assignments sa ON sa.worker_tg_id = w.tg_id
                     JOIN shifts s ON s.id = sa.shift_id
                     JOIN projects p ON p.id = s.project_id
                     WHERE p.company_id = %s
@@ -4184,3 +4189,324 @@ def vacancy_campaign_add_response(campaign_id: int, tg_user_id: int) -> dict:
     if filled:
         vacancy_campaign_set_status(campaign_id, "filled")
     return {"ok": True, "new": new, "count": cnt, "needed": needed, "filled": filled}
+
+
+def _max_client_verified(max_uid: int) -> bool:
+    return is_max_visit_client_verified(max_uid)
+
+
+def list_company_members_max(
+    company_id: int,
+    *,
+    member_role: str,
+    limit: int = 10,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    if not DATABASE_URL:
+        return []
+    role = (member_role or "staff").strip().lower()
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT cm.tg_id, COALESCE(u.full_name, ''), COALESCE(u.phone, ''),
+                           COALESCE(w.profession, ''), COALESCE(cm.verification_status, ''),
+                           COALESCE(w.status, '')
+                    FROM company_members cm
+                    LEFT JOIN users u ON u.tg_id = cm.tg_id
+                    LEFT JOIN workers w ON w.user_id = cm.tg_id
+                    WHERE cm.company_id = %s AND cm.member_role = %s
+                    ORDER BY cm.created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (int(company_id), role, max(1, min(limit, 50)), max(0, offset)),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_company_members_max company_id=%s", company_id)
+        return []
+    return [
+        {
+            "tg_id": int(r[0]),
+            "full_name": str(r[1] or ""),
+            "phone": str(r[2] or ""),
+            "profession": str(r[3] or ""),
+            "verification_status": str(r[4] or ""),
+            "worker_status": str(r[5] or ""),
+        }
+        for r in rows
+        if int(r[0] or 0) > 0
+    ]
+
+
+def count_company_members_max(company_id: int, *, member_role: str) -> int:
+    if not DATABASE_URL:
+        return 0
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM company_members WHERE company_id = %s AND member_role = %s",
+                    (int(company_id), (member_role or "staff").strip().lower()),
+                )
+                row = cur.fetchone()
+                return int(row[0] if row else 0)
+    except Exception:
+        return 0
+
+
+def create_company_invite_max(
+    *,
+    company_id: int,
+    invite_kind: str,
+    created_by_max_uid: int | None,
+    ttl_days: int = 14,
+    project_id: int | None = None,
+) -> str:
+    import secrets
+
+    if not DATABASE_URL:
+        return secrets.token_hex(16)
+    created_by_tg = resolve_tg_id_for_max_user(int(created_by_max_uid)) if created_by_max_uid else None
+    token = secrets.token_hex(16)
+    kind = (invite_kind or "staff").strip().lower()[:32]
+    ttl = max(1, min(int(ttl_days or 14), 90))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO company_invites (
+                        token, company_id, project_id, invite_kind, created_by_tg_id, expires_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, NOW() + (%s::int * INTERVAL '1 day'))
+                    """,
+                    (token, int(company_id), project_id, kind, created_by_tg, ttl),
+                )
+            conn.commit()
+    except Exception:
+        logger.exception("create_company_invite_max company_id=%s", company_id)
+        return token
+    return token
+
+
+def list_shifts_for_company_max(company_id: int, *, limit: int = 8, offset: int = 0) -> tuple[list[dict], int]:
+    if not DATABASE_URL:
+        return [], 0
+    lim, off = max(1, min(int(limit), 30)), max(0, int(offset))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) FROM shifts s
+                    JOIN projects p ON s.project_id = p.id WHERE p.company_id = %s
+                    """,
+                    (int(company_id),),
+                )
+                total = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute(
+                    """
+                    SELECT s.id, s.shift_date, s.start_time, s.end_time, p.name
+                    FROM shifts s JOIN projects p ON s.project_id = p.id
+                    WHERE p.company_id = %s
+                    ORDER BY s.shift_date DESC, s.id DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (int(company_id), lim, off),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_shifts_for_company_max")
+        return [], 0
+    out = [
+        {
+            "id": int(r[0]),
+            "shift_date": r[1],
+            "start_time": r[2],
+            "end_time": r[3],
+            "project_name": str(r[4] or ""),
+        }
+        for r in rows
+    ]
+    return out, total
+
+
+def list_client_pool_assignable_max(
+    company_id: int,
+    shift_id: int,
+    *,
+    limit: int = 8,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    if not DATABASE_URL:
+        return [], 0
+    lim, off = max(1, min(int(limit), 30)), max(0, int(offset))
+    sid = int(shift_id)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM company_members cm
+                    JOIN workers w ON w.user_id = cm.tg_id
+                    WHERE cm.company_id = %s AND cm.member_role = 'staff'
+                      AND LOWER(COALESCE(cm.verification_status, '')) = %s
+                      AND LOWER(COALESCE(w.status, '')) = %s
+                      AND NOT EXISTS (
+                        SELECT 1 FROM shift_assignments sa
+                        WHERE sa.shift_id = %s AND sa.worker_tg_id = cm.tg_id
+                      )
+                    """,
+                    (int(company_id), COMPANY_MEMBER_VER_APPROVED, WORKER_STATUS_APPROVED, sid),
+                )
+                total = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute(
+                    """
+                    SELECT cm.tg_id, COALESCE(u.full_name, w.full_name, ''), COALESCE(w.profession, '')
+                    FROM company_members cm
+                    JOIN workers w ON w.user_id = cm.tg_id
+                    LEFT JOIN users u ON u.tg_id = cm.tg_id
+                    WHERE cm.company_id = %s AND cm.member_role = 'staff'
+                      AND LOWER(COALESCE(cm.verification_status, '')) = %s
+                      AND LOWER(COALESCE(w.status, '')) = %s
+                      AND NOT EXISTS (
+                        SELECT 1 FROM shift_assignments sa
+                        WHERE sa.shift_id = %s AND sa.worker_tg_id = cm.tg_id
+                      )
+                    ORDER BY cm.created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (
+                        int(company_id),
+                        COMPANY_MEMBER_VER_APPROVED,
+                        WORKER_STATUS_APPROVED,
+                        sid,
+                        lim,
+                        off,
+                    ),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_client_pool_assignable_max")
+        return [], 0
+    return [
+        {"tg_id": int(r[0]), "full_name": str(r[1] or ""), "profession": str(r[2] or "")}
+        for r in rows
+        if int(r[0] or 0) > 0
+    ], total
+
+
+def assign_worker_client_pool_max(shift_id: int, worker_tg_id: int, company_id: int) -> tuple[bool, str]:
+    if not DATABASE_URL:
+        return False, "Нужен PostgreSQL."
+    sid, wid, cid = int(shift_id), int(worker_tg_id), int(company_id)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1 FROM shifts s
+                    JOIN projects p ON s.project_id = p.id
+                    WHERE s.id = %s AND p.company_id = %s
+                    """,
+                    (sid, cid),
+                )
+                if not cur.fetchone():
+                    return False, "Нет доступа к смене."
+                cur.execute(
+                    """
+                    SELECT 1 FROM company_members cm
+                    JOIN workers w ON w.user_id = cm.tg_id
+                    WHERE cm.company_id = %s AND cm.tg_id = %s AND cm.member_role = 'staff'
+                      AND LOWER(COALESCE(cm.verification_status, '')) = %s
+                      AND LOWER(COALESCE(w.status, '')) = %s
+                    """,
+                    (cid, wid, COMPANY_MEMBER_VER_APPROVED, WORKER_STATUS_APPROVED),
+                )
+                if not cur.fetchone():
+                    return False, "Исполнитель не в команде или не верифицирован."
+                cur.execute(
+                    """
+                    INSERT INTO shift_assignments (shift_id, worker_tg_id, status, created_at)
+                    VALUES (%s, %s, 'assigned', NOW())
+                    ON CONFLICT (shift_id, worker_tg_id) DO NOTHING
+                    """,
+                    (sid, wid),
+                )
+                if int(cur.rowcount or 0) <= 0:
+                    return False, "Уже назначен."
+            conn.commit()
+        return True, "Исполнитель назначен."
+    except Exception:
+        logger.exception("assign_worker_client_pool_max")
+        return False, "Ошибка БД."
+
+
+def create_shift_for_company_max(project_id: int, data: dict[str, Any]) -> int:
+    if not DATABASE_URL:
+        raise RuntimeError("Нужен PostgreSQL.")
+    raw_date = str(data.get("date") or "").strip()
+    date_iso = raw_date
+    try:
+        from visit_join_validators import normalize_shift_date
+
+        date_iso = normalize_shift_date(raw_date)
+    except Exception:
+        from datetime import datetime as dt_cls
+
+        for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+            try:
+                date_iso = dt_cls.strptime(raw_date, fmt).strftime("%Y-%m-%d")
+                break
+            except ValueError:
+                continue
+    pid = int(project_id)
+    rate = int(data.get("rate") or 500)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO shifts (
+                        project_id, shift_date, start_time, end_time, location, rate,
+                        workers_needed, status, created_at
+                    )
+                    VALUES (%s, %s::date, %s, %s, %s, %s, 1, 'open', NOW())
+                    RETURNING id
+                    """,
+                    (
+                        pid,
+                        date_iso,
+                        data.get("start_time"),
+                        data.get("end_time"),
+                        data.get("location"),
+                        rate,
+                    ),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return int(row[0]) if row else 0
+    except Exception:
+        logger.exception("create_shift_for_company_max project_id=%s", project_id)
+        raise
+
+
+def client_owns_shift_max(company_id: int, shift_id: int) -> bool:
+    if not DATABASE_URL:
+        return False
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1 FROM shifts s JOIN projects p ON s.project_id = p.id
+                    WHERE s.id = %s AND p.company_id = %s
+                    """,
+                    (int(shift_id), int(company_id)),
+                )
+                return cur.fetchone() is not None
+    except Exception:
+        return False

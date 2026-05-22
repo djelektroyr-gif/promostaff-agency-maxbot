@@ -236,9 +236,8 @@ def _strip_registration_escape_keyboard(max_uid: int, reply: dict[str, Any]) -> 
         if step in join_text_only_steps:
             out["attachments"] = []
     if _is_escape_only_keyboard(out.get("attachments")):
-        # В MAX при отсутствии attachments у callback-ответа старая клавиатура может остаться.
-        # Передаём пустой список, чтобы явно очистить кнопки предыдущего шага.
-        out["attachments"] = []
+        # Не отправлять inline_keyboard с 0 кнопок — MAX API 400.
+        out.pop("attachments", None)
     return out
 
 
@@ -410,6 +409,28 @@ async def process_update(body: dict[str, Any]) -> None:
         if re.match(r"^(меню|menu)\b", text, re.I):
             visit_flows.clear_session(max_uid)
             await _send_message(max_uid, visit_card.message_role_home(max_uid))
+            await _sync_funnel(max_uid)
+            return
+
+        ci_m = re.search(r"(?:start=|/)?ci_([a-f0-9]{16,64})", text, re.I)
+        if ci_m:
+            import max_client_company
+
+            token = ci_m.group(1)
+            link = max_client_company._tg_invite_link(token)
+            await _send_message(
+                max_uid,
+                {
+                    "text": (
+                        "*Приглашение в команду*\n\n"
+                        "Полная регистрация (согласие ПДн, анкета) — в Telegram-боте агентства:\n\n"
+                        f"{link}\n\n"
+                        "_Откройте ссылку в Telegram._"
+                    ),
+                    "format": "markdown",
+                    "attachments": visit_card.main_menu_keyboard(max_uid),
+                },
+            )
             await _sync_funnel(max_uid)
             return
 
