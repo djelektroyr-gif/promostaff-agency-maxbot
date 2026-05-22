@@ -134,6 +134,105 @@ def _client_tg_id_for_max_cp(
     return _synthetic_tg_for_max(uid)
 
 
+def _pg_undefined_column(exc: BaseException) -> bool:
+    err = (str(exc) or "").lower()
+    return "undefinedcolumn" in err or "does not exist" in err
+
+
+def _upsert_users_row_for_max_visit_client(
+    cur,
+    *,
+    tg_row: int,
+    max_user_id: int,
+    data: dict[str, Any],
+    company_id: int | None,
+) -> None:
+    """Строка users до visit_clients/clients — как save_client() в agency-bot."""
+    uid = int(max_user_id)
+    cn = (data.get("contact_name") or "").strip()
+    company_name = (data.get("company_name") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    inn = (data.get("inn") or "").strip()
+    pos = (data.get("position_in_org") or "").strip()
+    pd_ver = (PD_CONSENT_VERSION or "").strip() or "agency_visit_v1"
+    params_full = (
+        int(tg_row),
+        uid,
+        company_id,
+        company_name,
+        cn,
+        phone,
+        inn,
+        pos,
+        cn,
+        pd_ver,
+        PRO_PG_MAX_VISIT_CLIENT,
+    )
+    try:
+        cur.execute(
+            """
+            INSERT INTO users (
+                tg_id, max_user_id, role, company_id, company_name, contact_person, phone, inn, org_position, full_name,
+                pd_consent_at, pd_consent_version, funnel_completed_at, pro_access_at, pro_access_source,
+                created_at, updated_at
+            ) VALUES (
+                %s, %s, 'client', %s, %s, %s, %s, %s, %s, %s,
+                NOW(), %s, NOW(), NOW(), %s, NOW(), NOW()
+            )
+            ON CONFLICT (tg_id) DO UPDATE SET
+                max_user_id = COALESCE(EXCLUDED.max_user_id, users.max_user_id),
+                role = 'client',
+                company_id = COALESCE(EXCLUDED.company_id, users.company_id),
+                company_name = EXCLUDED.company_name,
+                contact_person = EXCLUDED.contact_person,
+                phone = EXCLUDED.phone,
+                inn = EXCLUDED.inn,
+                org_position = EXCLUDED.org_position,
+                full_name = EXCLUDED.full_name,
+                pd_consent_at = COALESCE(users.pd_consent_at, EXCLUDED.pd_consent_at),
+                pd_consent_version = COALESCE(users.pd_consent_version, EXCLUDED.pd_consent_version),
+                funnel_completed_at = COALESCE(users.funnel_completed_at, EXCLUDED.funnel_completed_at),
+                pro_access_at = EXCLUDED.pro_access_at,
+                pro_access_source = EXCLUDED.pro_access_source,
+                updated_at = NOW()
+            """,
+            params_full,
+        )
+        return
+    except Exception as exc:
+        if not _pg_undefined_column(exc):
+            raise
+        logger.warning(
+            "upsert users max client: extended columns missing, fallback tg_id=%s max_uid=%s",
+            tg_row,
+            uid,
+        )
+    cur.execute(
+        """
+        INSERT INTO users (
+            tg_id, role, full_name, phone, company_id, company_name, contact_person, created_at, updated_at
+        ) VALUES (%s, 'client', %s, %s, %s, %s, %s, NOW(), NOW())
+        ON CONFLICT (tg_id) DO UPDATE SET
+            role = 'client',
+            full_name = EXCLUDED.full_name,
+            phone = EXCLUDED.phone,
+            company_id = COALESCE(EXCLUDED.company_id, users.company_id),
+            company_name = EXCLUDED.company_name,
+            contact_person = EXCLUDED.contact_person,
+            updated_at = NOW()
+        """,
+        (int(tg_row), cn, phone, company_id, company_name, cn),
+    )
+    try:
+        cur.execute(
+            "UPDATE users SET max_user_id = %s WHERE tg_id = %s AND max_user_id IS NULL",
+            (uid, int(tg_row)),
+        )
+    except Exception as exc2:
+        if not _pg_undefined_column(exc2):
+            raise
+
+
 def _pg_upsert_user_for_max_visit_client(
     max_user_id: int, username: str, data: dict[str, Any], company_id: int | None = None
 ) -> None:
@@ -141,51 +240,16 @@ def _pg_upsert_user_for_max_visit_client(
     if not DATABASE_URL:
         return
     uid = int(max_user_id)
-    cn = (data.get("contact_name") or "").strip()
     tg_row = _client_tg_id_for_max_cp(uid, phone=(data.get("phone") or "").strip() or None, data=data)
     try:
         with connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO users (
-                        tg_id, max_user_id, role, company_id, company_name, contact_person, phone, inn, org_position, full_name,
-                        pd_consent_at, pd_consent_version, funnel_completed_at, pro_access_at, pro_access_source,
-                        updated_at
-                    ) VALUES (
-                        %s, %s, 'client', %s, %s, %s, %s, %s, %s, %s,
-                        NOW(), %s, NOW(), NOW(), %s, NOW()
-                    )
-                    ON CONFLICT (tg_id) DO UPDATE SET
-                        max_user_id = COALESCE(EXCLUDED.max_user_id, users.max_user_id),
-                        role = 'client',
-                        company_id = COALESCE(EXCLUDED.company_id, users.company_id),
-                        company_name = EXCLUDED.company_name,
-                        contact_person = EXCLUDED.contact_person,
-                        phone = EXCLUDED.phone,
-                        inn = EXCLUDED.inn,
-                        org_position = EXCLUDED.org_position,
-                        full_name = EXCLUDED.full_name,
-                        pd_consent_at = COALESCE(users.pd_consent_at, EXCLUDED.pd_consent_at),
-                        pd_consent_version = COALESCE(users.pd_consent_version, EXCLUDED.pd_consent_version),
-                        funnel_completed_at = COALESCE(users.funnel_completed_at, EXCLUDED.funnel_completed_at),
-                        pro_access_at = EXCLUDED.pro_access_at,
-                        pro_access_source = EXCLUDED.pro_access_source,
-                        updated_at = NOW()
-                    """,
-                    (
-                        tg_row,
-                        uid,
-                        company_id,
-                        (data.get("company_name") or "").strip(),
-                        cn,
-                        (data.get("phone") or "").strip(),
-                        (data.get("inn") or "").strip(),
-                        (data.get("position_in_org") or "").strip(),
-                        cn,
-                        (PD_CONSENT_VERSION or "").strip() or "agency_visit_v1",
-                        PRO_PG_MAX_VISIT_CLIENT,
-                    ),
+                _upsert_users_row_for_max_visit_client(
+                    cur,
+                    tg_row=tg_row,
+                    max_user_id=uid,
+                    data=data,
+                    company_id=company_id,
                 )
     except Exception:
         logger.exception("_pg_upsert_user_for_max_visit_client max_uid=%s", uid)
@@ -1000,16 +1064,50 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
     phone = (data.get("phone") or "").strip()
     inn = (data.get("inn") or "").strip()
     cemail = (data.get("contact_email") or "").strip()
-    company_id: int | None = None
-    if DATABASE_URL:
-        try:
-            with connection() as conn:
-                with conn.cursor() as cur:
+    save_data = {
+        "company_name": cn,
+        "contact_name": contact,
+        "position_in_org": pos,
+        "phone": phone,
+        "inn": inn,
+        "canonical_user_tg_id": data.get("canonical_user_tg_id"),
+    }
+    if not DATABASE_URL:
+        logger.error(
+            "save_max_visit_client_verified aborted: DATABASE_URL missing max_uid=%s",
+            uid,
+        )
+        return False
+    tg_row: int | None = None
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                tg_row = _client_tg_id_for_max_cp(uid, phone=phone or None, data=save_data)
+                inn_digits = re.sub(r"\D", "", inn)
+                inn_sql = inn_digits if len(inn_digits) in (10, 12) else ""
+                company_id: int | None = None
+                try:
+                    company_id = _ensure_company_for_max_client(cur, cn, inn_sql)
+                except Exception:
+                    logger.exception(
+                        "save_max_visit_client_verified company bind failed max_uid=%s",
+                        uid,
+                    )
+                    company_id = None
+                _upsert_users_row_for_max_visit_client(
+                    cur,
+                    tg_row=tg_row,
+                    max_user_id=uid,
+                    data=save_data,
+                    company_id=company_id,
+                )
+                try:
                     cur.execute(
                         """
                         INSERT INTO agency_max_visit_clients (
-                            max_user_id, username, company_name, contact_name, position_in_org, phone, inn, contact_email
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            max_user_id, username, company_name, contact_name, position_in_org,
+                            phone, inn, contact_email, verified_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL)
                         ON CONFLICT (max_user_id) DO UPDATE SET
                             username = EXCLUDED.username,
                             company_name = EXCLUDED.company_name,
@@ -1017,23 +1115,35 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                             position_in_org = EXCLUDED.position_in_org,
                             phone = EXCLUDED.phone,
                             inn = EXCLUDED.inn,
-                            contact_email = EXCLUDED.contact_email
+                            contact_email = EXCLUDED.contact_email,
+                            verified_at = NULL
                         """,
                         (uid, un, cn, contact, pos, phone, inn, cemail),
                     )
-                    tg_row = _client_tg_id_for_max_cp(
-                        uid, phone=phone or None, data=data
+                except Exception as exc:
+                    if not _pg_undefined_column(exc):
+                        raise
+                    logger.warning(
+                        "save_max_visit_client_verified agency_max without contact_email max_uid=%s",
+                        uid,
                     )
-                    inn_digits = re.sub(r"\D", "", inn)
-                    inn_sql = inn_digits if len(inn_digits) in (10, 12) else ""
-                    try:
-                        company_id = _ensure_company_for_max_client(cur, cn, inn_sql)
-                    except Exception:
-                        logger.exception(
-                            "save_max_visit_client_verified company bind failed max_uid=%s",
-                            uid,
-                        )
-                        company_id = None
+                    cur.execute(
+                        """
+                        INSERT INTO agency_max_visit_clients (
+                            max_user_id, username, company_name, contact_name, position_in_org, phone, inn, verified_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, NULL)
+                        ON CONFLICT (max_user_id) DO UPDATE SET
+                            username = EXCLUDED.username,
+                            company_name = EXCLUDED.company_name,
+                            contact_name = EXCLUDED.contact_name,
+                            position_in_org = EXCLUDED.position_in_org,
+                            phone = EXCLUDED.phone,
+                            inn = EXCLUDED.inn,
+                            verified_at = NULL
+                        """,
+                        (uid, un, cn, contact, pos, phone, inn),
+                    )
+                try:
                     cur.execute(
                         """
                         INSERT INTO visit_clients (
@@ -1047,10 +1157,18 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                         """,
                         (tg_row, cn, contact, phone, cemail),
                     )
+                except Exception as exc:
+                    if not _pg_undefined_column(exc):
+                        raise
+                    logger.warning(
+                        "save_max_visit_client_verified visit_clients without contact_email tg_id=%s",
+                        tg_row,
+                    )
                     cur.execute(
                         """
-                        INSERT INTO clients (user_id, company_name, contact_name, phone, registered_at)
-                        VALUES (%s, %s, %s, %s, NOW())
+                        INSERT INTO visit_clients (
+                            user_id, company_name, contact_name, phone, verified_at, created_at
+                        ) VALUES (%s, %s, %s, %s, NULL, NOW())
                         ON CONFLICT (user_id) DO UPDATE SET
                             company_name = EXCLUDED.company_name,
                             contact_name = EXCLUDED.contact_name,
@@ -1058,41 +1176,22 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                         """,
                         (tg_row, cn, contact, phone),
                     )
-                    if company_id:
-                        try:
-                            cur.execute(
-                                """
-                                UPDATE users
-                                SET company_id = %s,
-                                    company_name = %s,
-                                    contact_person = %s,
-                                    updated_at = NOW()
-                                WHERE tg_id = %s
-                                """,
-                                (int(company_id), cn, contact, int(tg_row)),
-                            )
-                        except Exception:
-                            logger.exception(
-                                "save_max_visit_client_verified users company update failed max_uid=%s",
-                                uid,
-                            )
-            _pg_upsert_user_for_max_visit_client(
-                uid,
-                un,
-                {
-                    "company_name": cn,
-                    "contact_name": contact,
-                    "position_in_org": pos,
-                    "phone": phone,
-                    "inn": inn,
-                },
-                company_id=company_id if company_id else None,
-            )
-            return True
-        except Exception:
-            logger.exception("save_max_visit_client_verified pg")
+                cur.execute(
+                    """
+                    INSERT INTO clients (user_id, company_name, contact_name, phone, registered_at)
+                    VALUES (%s, %s, %s, %s, NOW())
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        company_name = EXCLUDED.company_name,
+                        contact_name = EXCLUDED.contact_name,
+                        phone = EXCLUDED.phone
+                    """,
+                    (tg_row, cn, contact, phone),
+                )
+        return True
+    except Exception:
+        logger.exception("save_max_visit_client_verified pg max_uid=%s tg_id=%s", uid, tg_row)
     logger.error(
-        "save_max_visit_client_verified aborted: postgres write failed max_uid=%s (local sqlite fallback disabled)",
+        "save_max_visit_client_verified aborted: postgres write failed max_uid=%s",
         uid,
     )
     return False
