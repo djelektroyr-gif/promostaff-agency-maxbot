@@ -139,6 +139,61 @@ def _pg_undefined_column(exc: BaseException) -> bool:
     return "undefinedcolumn" in err or "does not exist" in err
 
 
+def _ensure_visit_clients_contact_email_column(cur) -> None:
+    try:
+        cur.execute("ALTER TABLE visit_clients ADD COLUMN IF NOT EXISTS contact_email TEXT")
+    except Exception:
+        logger.warning("visit_clients.contact_email ensure failed", exc_info=True)
+
+
+def _upsert_visit_clients_profile_pg(
+    cur,
+    tg_row: int,
+    company_name: str,
+    contact_name: str,
+    phone: str,
+    contact_email: str,
+) -> None:
+    _ensure_visit_clients_contact_email_column(cur)
+    cur.execute("SAVEPOINT sp_visit_clients_profile")
+    try:
+        cur.execute(
+            """
+            INSERT INTO visit_clients (
+                user_id, company_name, contact_name, phone, contact_email, verified_at, created_at
+            ) VALUES (%s, %s, %s, %s, %s, NULL, NOW())
+            ON CONFLICT (user_id) DO UPDATE SET
+                company_name = EXCLUDED.company_name,
+                contact_name = EXCLUDED.contact_name,
+                phone = EXCLUDED.phone,
+                contact_email = COALESCE(NULLIF(EXCLUDED.contact_email, ''), visit_clients.contact_email)
+            """,
+            (tg_row, company_name, contact_name, phone, contact_email),
+        )
+        cur.execute("RELEASE SAVEPOINT sp_visit_clients_profile")
+    except Exception as exc:
+        if not _pg_undefined_column(exc):
+            cur.execute("ROLLBACK TO SAVEPOINT sp_visit_clients_profile")
+            raise
+        cur.execute("ROLLBACK TO SAVEPOINT sp_visit_clients_profile")
+        logger.warning(
+            "visit_clients profile without contact_email tg_id=%s",
+            tg_row,
+        )
+        cur.execute(
+            """
+            INSERT INTO visit_clients (
+                user_id, company_name, contact_name, phone, verified_at, created_at
+            ) VALUES (%s, %s, %s, %s, NULL, NOW())
+            ON CONFLICT (user_id) DO UPDATE SET
+                company_name = EXCLUDED.company_name,
+                contact_name = EXCLUDED.contact_name,
+                phone = EXCLUDED.phone
+            """,
+            (tg_row, company_name, contact_name, phone),
+        )
+
+
 def _upsert_users_row_for_max_visit_client(
     cur,
     *,
@@ -603,6 +658,9 @@ def init_schema() -> None:
                     END IF;
                 END $$;
                 """
+            )
+            cur.execute(
+                "ALTER TABLE visit_clients ADD COLUMN IF NOT EXISTS contact_email TEXT"
             )
             cur.execute(
                 """
@@ -1101,6 +1159,7 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                     data=save_data,
                     company_id=company_id,
                 )
+                cur.execute("SAVEPOINT sp_agency_max_visit_clients")
                 try:
                     cur.execute(
                         """
@@ -1120,9 +1179,12 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                         """,
                         (uid, un, cn, contact, pos, phone, inn, cemail),
                     )
+                    cur.execute("RELEASE SAVEPOINT sp_agency_max_visit_clients")
                 except Exception as exc:
                     if not _pg_undefined_column(exc):
+                        cur.execute("ROLLBACK TO SAVEPOINT sp_agency_max_visit_clients")
                         raise
+                    cur.execute("ROLLBACK TO SAVEPOINT sp_agency_max_visit_clients")
                     logger.warning(
                         "save_max_visit_client_verified agency_max without contact_email max_uid=%s",
                         uid,
@@ -1143,39 +1205,7 @@ def save_max_visit_client_verified(max_user_id: int, username: str, data: dict[s
                         """,
                         (uid, un, cn, contact, pos, phone, inn),
                     )
-                try:
-                    cur.execute(
-                        """
-                        INSERT INTO visit_clients (
-                            user_id, company_name, contact_name, phone, contact_email, verified_at, created_at
-                        ) VALUES (%s, %s, %s, %s, %s, NULL, NOW())
-                        ON CONFLICT (user_id) DO UPDATE SET
-                            company_name = EXCLUDED.company_name,
-                            contact_name = EXCLUDED.contact_name,
-                            phone = EXCLUDED.phone,
-                            contact_email = COALESCE(NULLIF(EXCLUDED.contact_email, ''), visit_clients.contact_email)
-                        """,
-                        (tg_row, cn, contact, phone, cemail),
-                    )
-                except Exception as exc:
-                    if not _pg_undefined_column(exc):
-                        raise
-                    logger.warning(
-                        "save_max_visit_client_verified visit_clients without contact_email tg_id=%s",
-                        tg_row,
-                    )
-                    cur.execute(
-                        """
-                        INSERT INTO visit_clients (
-                            user_id, company_name, contact_name, phone, verified_at, created_at
-                        ) VALUES (%s, %s, %s, %s, NULL, NOW())
-                        ON CONFLICT (user_id) DO UPDATE SET
-                            company_name = EXCLUDED.company_name,
-                            contact_name = EXCLUDED.contact_name,
-                            phone = EXCLUDED.phone
-                        """,
-                        (tg_row, cn, contact, phone),
-                    )
+                _upsert_visit_clients_profile_pg(cur, tg_row, cn, contact, phone, cemail)
                 cur.execute(
                     """
                     INSERT INTO clients (user_id, company_name, contact_name, phone, registered_at)
