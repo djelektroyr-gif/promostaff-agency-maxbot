@@ -280,14 +280,39 @@ def _sender_from_message(body: dict[str, Any]) -> dict[str, Any] | None:
     return s if isinstance(s, dict) else None
 
 
+def _sanitize_max_outgoing_body(body: dict[str, Any]) -> dict[str, Any]:
+    """Убрать inline_keyboard с пустым buttons — иначе MAX API 400."""
+    out = dict(body)
+    raw_att = out.get("attachments")
+    if not isinstance(raw_att, list):
+        return out
+    clean: list[Any] = []
+    for item in raw_att:
+        if not isinstance(item, dict):
+            clean.append(item)
+            continue
+        if item.get("type") != "inline_keyboard":
+            clean.append(item)
+            continue
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        buttons = payload.get("buttons") if isinstance(payload, dict) else None
+        if isinstance(buttons, list) and buttons:
+            clean.append(item)
+    if clean:
+        out["attachments"] = clean
+    else:
+        out.pop("attachments", None)
+    return out
+
+
 async def _send_message(max_uid: int, body: dict[str, Any]) -> None:
-    body = _strip_registration_escape_keyboard(max_uid, dict(body))
+    body = _sanitize_max_outgoing_body(_strip_registration_escape_keyboard(max_uid, dict(body)))
     body.pop("notification", None)
     await post_message(MAX_TOKEN, max_uid, body)
 
 
 async def _answer_message(callback_id: str, max_uid: int, msg: dict[str, Any]) -> None:
-    msg = _strip_registration_escape_keyboard(max_uid, dict(msg))
+    msg = _sanitize_max_outgoing_body(_strip_registration_escape_keyboard(max_uid, dict(msg)))
     raw = msg.pop("notification", None)
     notif = (raw if isinstance(raw, str) else None) or " "
     if notif.strip() == "":

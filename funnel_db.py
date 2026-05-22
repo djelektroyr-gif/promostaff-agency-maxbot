@@ -3591,17 +3591,21 @@ def get_client_company_id_max(max_user_id: int) -> int | None:
     try:
         with connection() as conn:
             with conn.cursor() as cur:
+                tg_id = resolve_tg_id_for_max_user(uid)
                 cur.execute(
                     """
                     SELECT company_id
                     FROM users
-                    WHERE max_user_id = %s
-                      AND role = 'client'
-                      AND company_id IS NOT NULL
-                    ORDER BY id DESC
+                    WHERE company_id IS NOT NULL
+                      AND (
+                        max_user_id = %s
+                        OR tg_id = %s
+                        OR tg_id = %s
+                      )
+                    ORDER BY updated_at DESC NULLS LAST, tg_id DESC
                     LIMIT 1
                     """,
-                    (uid,),
+                    (uid, tg_id, worker_tg_id_for_max(uid)),
                 )
                 row = cur.fetchone()
                 if row and row[0]:

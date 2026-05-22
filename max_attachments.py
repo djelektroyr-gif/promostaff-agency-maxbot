@@ -12,7 +12,11 @@ def link_btn(text: str, url: str) -> dict:
 
 
 def inline_keyboard(button_rows: list[list[dict]]) -> list[dict]:
-    return [{"type": "inline_keyboard", "payload": {"buttons": button_rows}}]
+    """Пустой список кнопок MAX API не принимает (buttons size must be at least 1)."""
+    rows = [row for row in (button_rows or []) if row]
+    if not rows:
+        return []
+    return [{"type": "inline_keyboard", "payload": {"buttons": rows}}]
 
 
 def request_contact_btn(text: str = "📱 Поделиться контактом") -> dict:

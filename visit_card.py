@@ -392,8 +392,8 @@ def cp_flow_back_keyboard() -> list[dict]:
 
 
 def cp_step_keyboard() -> list[dict]:
-    """Шаги КП без кнопки «Назад» (паритет с Telegram-визиткой)."""
-    return inline_keyboard([])
+    """Шаги КП без inline-кнопок (паритет с Telegram-визиткой)."""
+    return []
 
 
 def order_flow_back_keyboard() -> list[dict]:
