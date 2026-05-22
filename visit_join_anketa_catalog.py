@@ -95,3 +95,29 @@ EXPERIENCE_RATING_TABLE = (
     "\n\nСтартовый уровень в системе задаётся по заявленному стажу и проверяется при модерации. "
     "Указывайте достоверный опыт — несоответствия выявляются на верификации."
 )
+
+
+def visit_vacancy_display_rows() -> list[tuple[str, str, str]]:
+    """Паритет professions_data.visit_vacancy_display_rows — каталог для доски вакансий."""
+    out: list[tuple[str, str, str]] = []
+    _fallback = "Описание появится позже."
+    for _cat, items in PROFESSION_BY_CATEGORY.items():
+        for em, title, slug in items:
+            out.append((slug, f"{em} {title}", _fallback))
+    return out
+
+
+def classify_open_vacancy_position_to_slug(position: str) -> str | None:
+    """Свободный текст кампании → slug каталога (как в TG)."""
+    s = (position or "").strip()
+    if not s:
+        return None
+    low = s.lower()
+    best_slug = None
+    best_len = 0
+    for slug, title in PROFESSION_SLUG_TO_TITLE.items():
+        tl = title.strip().lower()
+        if len(tl) >= 2 and tl in low and len(title) >= best_len:
+            best_slug = slug
+            best_len = len(title)
+    return best_slug

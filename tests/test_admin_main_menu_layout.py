@@ -44,10 +44,21 @@ def test_admin_role_home_shows_web_admin_not_about():
     assert "📋 О нас" not in labels
 
 
-def test_client_pending_menu_has_only_manager_contact():
+def test_client_pending_menu_has_manager_and_main():
     kb = vc.client_pre_erp_pending_keyboard()
     labels = _labels_from_keyboard(kb)
-    assert labels == ["📞 Связаться с менеджером"]
+    assert labels == ["📞 Связаться с менеджером", "🏠 Главное меню"]
+
+
+def test_client_verified_menu_matches_tg_order():
+    kb = vc.client_registered_main_menu_keyboard(quotes_enabled=True)
+    labels = _labels_from_keyboard(kb)
+    assert labels[0] == "🌐 Кабинет на сайте"
+    assert "📋 Заявки" in labels
+    assert "🏗️ Проекты" in labels
+    assert "📞 Связаться с менеджером" in labels
+    assert "📂 Мои проекты" not in labels
+    assert "🏠 Меню визитки" not in labels
 
 
 def test_client_registered_menu_has_manager_contact():
@@ -60,3 +71,5 @@ def test_worker_registered_menu_has_manager_contact():
     kb = vc.worker_registered_main_menu_keyboard()
     labels = _labels_from_keyboard(kb)
     assert "📞 Связаться с менеджером" in labels
+    assert "📋 Вакансии" in labels
+    assert labels.index("📋 Вакансии") < labels.index("💳 Мои выплаты")

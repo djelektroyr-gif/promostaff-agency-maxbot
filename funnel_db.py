@@ -3919,3 +3919,264 @@ def admin_set_company_subscription_grace_max(company_id: int, days: int = 7) -> 
         auto_renew=bool(sub.get("auto_renew")),
         notes=str(sub.get("notes") or "admin_grace"),
     )
+
+
+# --- vacancy_campaigns (паритет promostaff-agency-bot/db.py) ---
+
+
+def _vacancy_campaign_tuple_to_dict(row: tuple) -> dict | None:
+    if not row or len(row) < 15:
+        return None
+    return {
+        "id": int(row[0]),
+        "admin_tg_id": int(row[1]),
+        "position": str(row[2] or ""),
+        "city": str(row[3] or ""),
+        "address": str(row[4] or ""),
+        "shift_date": str(row[5] or ""),
+        "shift_time": str(row[6] or ""),
+        "pay": str(row[7] or ""),
+        "tasks": str(row[8] or ""),
+        "min_rating": float(row[9] or 0.0),
+        "slots_needed": int(row[10] or 0),
+        "status": str(row[11] or "open"),
+        "payload": str(row[12] or ""),
+        "created_at": row[13],
+        "updated_at": row[14],
+    }
+
+
+def get_worker_row_for_tg(tg_user_id: int) -> dict[str, Any] | None:
+    if not DATABASE_URL:
+        return None
+    uid = int(tg_user_id)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT full_name, phone, profession, status, rating
+                    FROM workers WHERE user_id = %s LIMIT 1
+                    """,
+                    (uid,),
+                )
+                row = cur.fetchone()
+    except Exception:
+        logger.exception("get_worker_row_for_tg uid=%s", uid)
+        return None
+    if not row:
+        return None
+    return {
+        "full_name": row[0],
+        "phone": row[1],
+        "profession": row[2],
+        "status": row[3],
+        "rating": row[4],
+    }
+
+
+def get_vacancy_campaign(campaign_id: int) -> dict | None:
+    if not DATABASE_URL:
+        return None
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, admin_tg_id, position, city, address, shift_date, shift_time,
+                           pay, tasks, min_rating, slots_needed, status, payload,
+                           created_at, updated_at
+                    FROM vacancy_campaigns WHERE id = %s
+                    """,
+                    (int(campaign_id),),
+                )
+                row = cur.fetchone()
+    except Exception:
+        logger.exception("get_vacancy_campaign id=%s", campaign_id)
+        return None
+    return _vacancy_campaign_tuple_to_dict(row) if row else None
+
+
+def list_open_vacancy_campaigns(limit: int = 30) -> list[dict]:
+    if not DATABASE_URL:
+        return []
+    lim = max(1, min(int(limit), 100))
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.id, c.admin_tg_id, c.position, c.city, c.address, c.shift_date, c.shift_time,
+                           c.pay, c.tasks, c.min_rating, c.slots_needed, c.status, c.payload,
+                           c.created_at, c.updated_at,
+                           (SELECT COUNT(*)::int FROM vacancy_campaign_responses r WHERE r.campaign_id = c.id) AS response_count
+                    FROM vacancy_campaigns c
+                    WHERE c.status = 'open'
+                    ORDER BY c.created_at DESC NULLS LAST, c.id DESC
+                    LIMIT %s
+                    """,
+                    (lim,),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_open_vacancy_campaigns")
+        return []
+    out: list[dict] = []
+    for row in rows:
+        base = _vacancy_campaign_tuple_to_dict(row[:15])
+        if base:
+            base["response_count"] = int(row[15] or 0)
+            out.append(base)
+    return out
+
+
+def list_user_vacancy_responses_current(tg_user_id: int, limit: int = 40) -> list[dict]:
+    if not DATABASE_URL:
+        return []
+    lim = max(1, min(int(limit), 80))
+    uid = int(tg_user_id)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.id, c.admin_tg_id, c.position, c.city, c.address, c.shift_date, c.shift_time,
+                           c.pay, c.tasks, c.min_rating, c.slots_needed, c.status, c.payload,
+                           c.created_at, c.updated_at,
+                           r.created_at AS responded_at,
+                           (SELECT COUNT(*)::int FROM vacancy_campaign_responses r2 WHERE r2.campaign_id = c.id) AS response_count
+                    FROM vacancy_campaign_responses r
+                    INNER JOIN vacancy_campaigns c ON c.id = r.campaign_id
+                    WHERE r.user_id = %s AND c.status IN ('open', 'filled')
+                    ORDER BY r.created_at DESC NULLS LAST, r.id DESC
+                    LIMIT %s
+                    """,
+                    (uid, lim),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_user_vacancy_responses_current uid=%s", uid)
+        return []
+    out: list[dict] = []
+    for row in rows:
+        base = _vacancy_campaign_tuple_to_dict(row[:15])
+        if base:
+            base["responded_at"] = row[15]
+            base["response_count"] = int(row[16] or 0)
+            out.append(base)
+    return out
+
+
+def list_user_vacancy_responses_past(tg_user_id: int, limit: int = 40) -> list[dict]:
+    if not DATABASE_URL:
+        return []
+    lim = max(1, min(int(limit), 80))
+    uid = int(tg_user_id)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.id, c.admin_tg_id, c.position, c.city, c.address, c.shift_date, c.shift_time,
+                           c.pay, c.tasks, c.min_rating, c.slots_needed, c.status, c.payload,
+                           c.created_at, c.updated_at,
+                           r.created_at AS responded_at,
+                           (SELECT COUNT(*)::int FROM vacancy_campaign_responses r2 WHERE r2.campaign_id = c.id) AS response_count
+                    FROM vacancy_campaign_responses r
+                    INNER JOIN vacancy_campaigns c ON c.id = r.campaign_id
+                    WHERE r.user_id = %s AND c.status = 'closed'
+                    ORDER BY r.created_at DESC NULLS LAST, r.id DESC
+                    LIMIT %s
+                    """,
+                    (uid, lim),
+                )
+                rows = cur.fetchall() or []
+    except Exception:
+        logger.exception("list_user_vacancy_responses_past uid=%s", uid)
+        return []
+    out: list[dict] = []
+    for row in rows:
+        base = _vacancy_campaign_tuple_to_dict(row[:15])
+        if base:
+            base["responded_at"] = row[15]
+            base["response_count"] = int(row[16] or 0)
+            out.append(base)
+    return out
+
+
+def vacancy_campaign_response_count(campaign_id: int) -> int:
+    if not DATABASE_URL:
+        return 0
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM vacancy_campaign_responses WHERE campaign_id = %s",
+                    (int(campaign_id),),
+                )
+                row = cur.fetchone()
+    except Exception:
+        logger.exception("vacancy_campaign_response_count id=%s", campaign_id)
+        return 0
+    return int(row[0] or 0) if row else 0
+
+
+def vacancy_campaign_set_status(campaign_id: int, status: str) -> None:
+    if not DATABASE_URL:
+        return
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE vacancy_campaigns SET status = %s, updated_at = NOW() WHERE id = %s",
+                    (str(status), int(campaign_id)),
+                )
+            conn.commit()
+    except Exception:
+        logger.exception("vacancy_campaign_set_status id=%s", campaign_id)
+
+
+def vacancy_campaign_add_response(campaign_id: int, tg_user_id: int) -> dict:
+    if not DATABASE_URL:
+        return {"ok": False, "reason": "no_pg"}
+    camp = get_vacancy_campaign(campaign_id)
+    if not camp:
+        return {"ok": False, "reason": "not_found"}
+    if camp["status"] != "open":
+        return {"ok": False, "reason": "closed", "status": camp["status"]}
+    try:
+        from max_vacancy_rules import vacancy_rating_gate_for_response
+
+        gate = vacancy_rating_gate_for_response(int(tg_user_id), camp)
+        if not gate.get("allowed"):
+            return {
+                "ok": False,
+                "reason": "rating",
+                "min_rating": float(gate.get("min_rating") or 0.0),
+                "effective": float(gate.get("effective") or 0.0),
+            }
+    except Exception:
+        logger.exception("vacancy_campaign_add_response gate uid=%s cid=%s", tg_user_id, campaign_id)
+    needed = int(camp["slots_needed"] or 0)
+    try:
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO vacancy_campaign_responses (campaign_id, user_id)
+                    VALUES (%s, %s)
+                    ON CONFLICT (campaign_id, user_id) DO NOTHING
+                    RETURNING id
+                    """,
+                    (int(campaign_id), int(tg_user_id)),
+                )
+                new = cur.fetchone() is not None
+            conn.commit()
+    except Exception:
+        logger.exception("vacancy_campaign_add_response insert uid=%s cid=%s", tg_user_id, campaign_id)
+        return {"ok": False, "reason": "db"}
+    cnt = vacancy_campaign_response_count(campaign_id)
+    filled = needed > 0 and cnt >= needed
+    if filled:
+        vacancy_campaign_set_status(campaign_id, "filled")
+    return {"ok": True, "new": new, "count": cnt, "needed": needed, "filled": filled}

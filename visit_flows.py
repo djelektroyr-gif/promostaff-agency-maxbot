@@ -3452,7 +3452,7 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
                 "attachments": visit_card.admin_hub_ops_keyboard(),
             }
 
-    if payload == "client_reg_projects":
+    if payload in ("my_projects", "client_reg_projects"):
         if is_max_visit_client_registered(max_uid) and not is_max_visit_client_verified(max_uid):
             return {
                 "notification": "Ожидает проверки",
@@ -3643,7 +3643,7 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
             return {
                 "notification": "Ожидает проверки",
                 "text": (
-                    "Раздел «История заказов» и статусы расчётов доступны "
+                    "Раздел «Заявки» и статусы расчётов доступны "
                     "после проверки профиля администратором."
                 ),
                 "format": "markdown",
@@ -3659,11 +3659,11 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
         rows = list_agency_visit_orders_for_user(max_uid, limit=25)
         if not rows:
             body = (
-                "*История заказов*\n\n"
-                "Пока нет заявок. Оформите расчёт через «Заказать расчёт»."
+                "*Заявки*\n\n"
+                "Пока нет заявок. Оформите расчёт через «Заказать проект»."
             )
         else:
-            lines = ["*История заказов*\n"]
+            lines = ["*Заявки*\n"]
             kind_labels = {"cp_request": "КП", "quick_estimate": "Срочный расчёт"}
             for r in rows:
                 p = r.get("payload") or {}
@@ -3721,7 +3721,7 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
                 [
                     [cb_btn("🔁 Повторить вход в кабинет", "open_web_cabinet")],
                     [cb_btn("📞 Связаться с менеджером", "contact_manager")],
-                    [cb_btn("🏠 Меню визитки", "visit_public_menu")],
+                    [cb_btn("🏠 Главное меню", "main_menu")],
                 ]
             )
             return {
@@ -3744,10 +3744,47 @@ def registered_menu_static_reply(max_uid: int, payload: str) -> dict[str, Any] |
             "attachments": inline_keyboard(
                 [
                     [link_btn("🌐 Открыть кабинет", url)],
-                    [cb_btn("🏠 Меню визитки", "visit_public_menu")],
+                    [cb_btn("🏠 Главное меню", "main_menu")],
                 ]
             ),
         }
+
+    if payload in ("worker_vacancies", "worker_vac_cat", "wvtab_cur", "wvtab_past", "wvtab_all") or (
+        payload.startswith("wvf:")
+        or payload.startswith("vcbd")
+        or payload.startswith("vy:")
+    ):
+        if not is_max_visit_worker_verified(max_uid):
+            return {
+                "notification": "Сначала регистрация и верификация",
+                "text": (
+                    "Сначала пройдите регистрацию исполнителя и дождитесь подтверждения заявки администратором."
+                ),
+                "format": "markdown",
+                "attachments": visit_card.main_menu_keyboard(max_uid),
+            }
+        import visit_worker_vacancies as wv
+
+        if payload == "worker_vacancies" or payload == "wvtab_all":
+            return wv.worker_vacancies_hub_screen(max_uid, "all")
+        if payload == "wvtab_cur":
+            return wv.worker_vacancies_hub_screen(max_uid, "cur")
+        if payload == "wvtab_past":
+            return wv.worker_vacancies_hub_screen(max_uid, "past")
+        if payload == "worker_vac_cat":
+            return wv.worker_vacancies_catalog_screen()
+        if payload.startswith("wvf:"):
+            slug = payload.replace("wvf:", "", 1).strip().lower()
+            if slug:
+                return wv.worker_vacancies_by_slug_screen(max_uid, slug)
+        if payload.startswith("vy:"):
+            raw = payload.replace("vy:", "", 1).strip()
+            if raw.isdigit():
+                return wv.worker_vacancy_apply(max_uid, int(raw))
+        if payload.startswith("vcbd"):
+            detail = wv.worker_vacancy_detail_screen(max_uid, payload)
+            if detail:
+                return detail
 
     worker_payload_roots = {
         "worker_reg_profile",
@@ -4120,7 +4157,13 @@ async def process_callback(
             "admin_sys_monitor",
             "admin_phone_login_btn",
             "admin_identity_dupes",
+            "my_projects",
             "client_reg_projects",
+            "worker_vacancies",
+            "worker_vac_cat",
+            "wvtab_cur",
+            "wvtab_past",
+            "wvtab_all",
             "client_reg_create_project",
             "client_reg_subscription",
             "client_reg_team",
@@ -4273,7 +4316,7 @@ async def process_callback(
             "text": (
                 "✅ *Регистрация принята.*\n\n"
                 "Данные проверяет администратор. После подтверждения откроются расчёт, "
-                "запрос КП и раздел «История заказов».\n\n"
+                "запрос КП и раздел «Заявки».\n\n"
                 "Пока можете написать менеджеру."
             ),
             "format": "markdown",

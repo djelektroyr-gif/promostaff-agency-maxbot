@@ -169,14 +169,27 @@ def is_visit_flow_payload(p: str) -> bool:
         "worker_reg_shifts",
         "worker_reg_payments",
         "worker_reg_beacon",
+        "worker_vacancies",
+        "worker_vac_cat",
+        "my_projects",
+        "wvtab_cur",
+        "wvtab_past",
+        "wvtab_all",
     ):
+        return True
+    if (p or "").startswith(("wvtab_", "wvf:", "vcbd_", "vcbd", "vy:")):
         return True
     return False
 
 
 def client_pre_erp_pending_keyboard() -> list[dict]:
-    """До верификации заказчика — только связь с менеджером."""
-    return inline_keyboard([[cb_btn("📞 Связаться с менеджером", "contact_manager")]])
+    """До верификации — паритет TG _client_pending_verification_keyboard."""
+    return inline_keyboard(
+        [
+            [cb_btn("📞 Связаться с менеджером", "contact_manager")],
+            [cb_btn("🏠 Главное меню", "main_menu")],
+        ]
+    )
 
 
 def admin_visit_registration_keyboard(client_tg_id: int) -> list[dict]:
@@ -190,21 +203,29 @@ def admin_visit_registration_keyboard(client_tg_id: int) -> list[dict]:
     )
 
 
-def client_registered_main_menu_keyboard(*, quotes_enabled: bool = True) -> list[dict]:
-    """Меню заказчика после регистрации — REGISTRATION_AND_POST_MENU_SPEC.md §5."""
-    rows: list[list[dict]] = [
-        [cb_btn("📂 Мои проекты", "client_reg_projects")],
-        [cb_btn("📋 Заявки", "client_reg_orders")],
-        [cb_btn("⚙️ Настройки", "client_reg_settings")],
-        [cb_btn("🌐 Кабинет на сайте", "open_web_cabinet")],
-    ]
+def client_home_menu_keyboard(
+    *,
+    quotes_enabled: bool = True,
+    show_web_cabinet: bool = True,
+) -> list[dict]:
+    """Паритет TG для заказчика: только веб-кабинет (без Mini App — продуктовый канон)."""
+    rows: list[list[dict]] = []
+    if show_web_cabinet:
+        rows.append([cb_btn("🌐 Кабинет на сайте", "open_web_cabinet")])
     if quotes_enabled:
+        rows.append([cb_btn("📋 Заявки", "client_reg_orders")])
         rows.append([cb_btn("📋 Заказать проект", "client_quote_quick")])
         rows.append([cb_btn("📄 Заказать КП", "client_quote_cp")])
         rows.append([cb_btn("📣 Разместить объявление", "client_quote_listing")])
+    rows.append([cb_btn("🏗️ Проекты", "my_projects")])
+    rows.append([cb_btn("⚙️ Настройки", "client_reg_settings")])
     rows.append([cb_btn("📞 Связаться с менеджером", "contact_manager")])
-    rows.append([cb_btn("🏠 Меню визитки", "visit_public_menu")])
     return inline_keyboard(rows)
+
+
+def client_registered_main_menu_keyboard(*, quotes_enabled: bool = True) -> list[dict]:
+    """Верифицированный заказчик — веб-кабинет + заявки (без Mini App)."""
+    return client_home_menu_keyboard(quotes_enabled=quotes_enabled, show_web_cabinet=True)
 
 
 def client_projects_hub_keyboard() -> list[dict]:
@@ -214,7 +235,7 @@ def client_projects_hub_keyboard() -> list[dict]:
             [cb_btn("💳 Подписка и лимиты", "client_reg_subscription")],
             [cb_btn("👥 Команда заказчика", "client_reg_team")],
             [cb_btn("📊 Отчёты Excel/PDF", "client_reg_reports")],
-            [cb_btn("🔙 Меню заказчика", "visit_public_menu")],
+            [cb_btn("🔙 К меню заказчика", "main_menu")],
         ]
     )
 
@@ -236,15 +257,15 @@ def worker_clarification_keyboard() -> list[dict]:
 
 
 def worker_registered_main_menu_keyboard() -> list[dict]:
-    """Меню исполнителя после регистрации — REGISTRATION_AND_POST_MENU_SPEC.md §6."""
+    """Паритет worker_verified_reply_keyboard + кабинет (inline в MAX)."""
     rows: list[list[dict]] = [
         [cb_btn("👤 Мои данные", "worker_reg_profile")],
         [cb_btn("📅 Мои смены", "worker_reg_shifts")],
+        [cb_btn("📋 Вакансии", "worker_vacancies")],
         [cb_btn("💳 Мои выплаты", "worker_reg_payments")],
-        [cb_btn("📍 Маяк", "worker_reg_beacon")],
+        [cb_btn("📡 Маяк", "worker_reg_beacon")],
         [cb_btn("🌐 Кабинет на сайте", "open_web_cabinet")],
         [cb_btn("📞 Связаться с менеджером", "contact_manager")],
-        [cb_btn("🏠 Меню визитки", "visit_public_menu")],
     ]
     return inline_keyboard(rows)
 
@@ -1408,7 +1429,7 @@ def message_role_home(max_uid: int | None) -> dict[str, Any]:
             "text": (
                 "*Главное меню исполнителя*\n\n"
                 "Вы вошли как верифицированный исполнитель. "
-                "Ниже — разделы профиля; публичное меню визитки — кнопка «Меню визитки»."
+                "Ниже — те же разделы, что в Telegram: данные, смены, вакансии, выплаты, маяк."
             ),
             "format": "markdown",
             "attachments": worker_registered_main_menu_keyboard(),
@@ -1439,7 +1460,7 @@ def message_role_home(max_uid: int | None) -> dict[str, Any]:
             cap = (
                 f"*Главное меню заказчика*\n\n"
                 f"Регистрация принята. Данные проверяет администратор; после подтверждения "
-                "откроются заявки на расчёт, запрос КП и раздел «История заказов».\n\n"
+                "откроются заявки на расчёт, запрос КП и раздел «Заявки».\n\n"
                 "Пока можете написать менеджеру — кнопка ниже."
             )
             kb = client_pre_erp_pending_keyboard()
